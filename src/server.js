@@ -54,8 +54,6 @@ app.use((req, res, next) => {
 
   // List of allowed origins
   const allowedOrigins = [
-    'https://kicks-shoes-2025.web.app',
-    'https://kicks-shoes-2025.firebaseapp.com',
     'http://localhost:5173',
     'http://localhost:3000',
     'http://127.0.0.1:5173',
@@ -146,15 +144,13 @@ const io = new SocketIOServer(server, {
         'http://localhost:5173',
         'http://localhost:3000',
         'http://127.0.0.1:5173',
-        'https://kicks-shoes-2025.web.app',
-        'https://kicks-shoes-2025.firebaseapp.com',
         // Azure App Service domains
         process.env.WEBSITE_HOSTNAME ? `https://${process.env.WEBSITE_HOSTNAME}` : null,
         process.env.WEBSITE_HOSTNAME ? `http://${process.env.WEBSITE_HOSTNAME}` : null,
         // Additional domains for better cross-network support
-        'https://kicks-shoes-frontend.azurewebsites.net',
-        'https://kicks-shoes-app.azurewebsites.net',
-        'https://kicks-shoes-backend.azurewebsites.net',
+        // 'https://kicks-shoes-frontend.azurewebsites.net',
+        // 'https://kicks-shoes-app.azurewebsites.net',
+        // 'https://kicks-shoes-backend.azurewebsites.net',
       ].filter(Boolean);
 
       if (allowedOrigins.indexOf(origin) !== -1) {

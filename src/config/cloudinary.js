@@ -24,7 +24,7 @@ if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY) {
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
-    folder: 'kicks-shoes/avatars',
+    folder: 'gzmart/avatars',
     allowed_formats: ['jpg', 'jpeg', 'png', 'gif'],
     transformation: [{ width: 500, height: 500, crop: 'limit' }],
     format: 'jpg',

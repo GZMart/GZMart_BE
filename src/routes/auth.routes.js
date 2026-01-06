@@ -1,15 +1,3 @@
-/**
- * @fileoverview Authentication Routes for Kicks Shoes application.
- * @created 2025-05-31
- * @file authRoutes.js
- * @description This file defines all authentication-related routes for the Kicks Shoes application.
- * It maps HTTP endpoints to their corresponding controller functions and applies necessary middleware.
- * The routes are organized by functionality and access level (public/private).
- *
- * Public routes: Register, Login, Email Verification, Password Reset, Token Refresh, Social Logins, etc.
- * Protected routes: Get Profile, Update Profile, Change Password, Logout, Set Password, etc.
- */
-
 import express from 'express';
 import {
   register,
