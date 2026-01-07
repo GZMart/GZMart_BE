@@ -1,0 +1,151 @@
+import * as categoryService from "../services/category.service.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
+import { asyncHandler } from "../middlewares/async.middleware.js";
+
+/**
+ * @desc    Create a new category
+ * @route   POST /api/categories
+ * @access  Private (Admin only)
+ */
+export const createCategory = asyncHandler(async (req, res, next) => {
+  const category = await categoryService.createCategory(req.body);
+
+  res.status(201).json({
+    success: true,
+    message: "Category created successfully",
+    data: category,
+  });
+});
+
+/**
+ * @desc    Get all categories
+ * @route   GET /api/categories
+ * @access  Public
+ */
+export const getCategories = asyncHandler(async (req, res, next) => {
+  const { parentId, level, status, search } = req.query;
+
+  const filters = {
+    parentId,
+    level: level ? parseInt(level) : undefined,
+    status,
+    search,
+  };
+
+  const categories = await categoryService.getCategories(filters);
+
+  res.status(200).json({
+    success: true,
+    count: categories.length,
+    data: categories,
+  });
+});
+
+/**
+ * @desc    Get category tree
+ * @route   GET /api/categories/tree
+ * @access  Public
+ */
+export const getCategoryTree = asyncHandler(async (req, res, next) => {
+  const tree = await categoryService.getCategoryTree();
+
+  res.status(200).json({
+    success: true,
+    data: tree,
+  });
+});
+
+/**
+ * @desc    Get single category by ID
+ * @route   GET /api/categories/:id
+ * @access  Public
+ */
+export const getCategory = asyncHandler(async (req, res, next) => {
+  const category = await categoryService.getCategoryById(req.params.id);
+
+  res.status(200).json({
+    success: true,
+    data: category,
+  });
+});
+
+/**
+ * @desc    Get child categories
+ * @route   GET /api/categories/:id/children
+ * @access  Public
+ */
+export const getChildCategories = asyncHandler(async (req, res, next) => {
+  const children = await categoryService.getChildCategories(req.params.id);
+
+  res.status(200).json({
+    success: true,
+    count: children.length,
+    data: children,
+  });
+});
+
+/**
+ * @desc    Update category
+ * @route   PUT /api/categories/:id
+ * @access  Private (Admin only)
+ */
+export const updateCategory = asyncHandler(async (req, res, next) => {
+  // Prevent updating certain fields
+  delete req.body.productCount;
+  delete req.body.createdAt;
+
+  const category = await categoryService.updateCategory(
+    req.params.id,
+    req.body
+  );
+
+  res.status(200).json({
+    success: true,
+    message: "Category updated successfully",
+    data: category,
+  });
+});
+
+/**
+ * @desc    Delete category (soft delete)
+ * @route   DELETE /api/categories/:id
+ * @access  Private (Admin only)
+ */
+export const deleteCategory = asyncHandler(async (req, res, next) => {
+  const category = await categoryService.deleteCategory(req.params.id);
+
+  res.status(200).json({
+    success: true,
+    message: "Category deleted successfully",
+    data: category,
+  });
+});
+
+/**
+ * @desc    Permanently delete category
+ * @route   DELETE /api/categories/:id/permanent
+ * @access  Private (Admin only)
+ */
+export const permanentDeleteCategory = asyncHandler(async (req, res, next) => {
+  await categoryService.permanentDeleteCategory(req.params.id);
+
+  res.status(200).json({
+    success: true,
+    message: "Category permanently deleted",
+    data: {},
+  });
+});
+
+/**
+ * @desc    Get category statistics
+ * @route   GET /api/categories/:id/stats
+ * @access  Public
+ */
+export const getCategoryStats = asyncHandler(async (req, res, next) => {
+  const stats = await categoryService.getCategoryStats(req.params.id);
+
+  res.status(200).json({
+    success: true,
+    data: stats,
+  });
+});
