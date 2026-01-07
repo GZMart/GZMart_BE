@@ -13,10 +13,14 @@ import productRoutes from "./routes/product.routes.js";
 import categoryRoutes from "./routes/category.routes.js";
 import attributeRoutes from "./routes/attribute.routes.js";
 import inventoryRoutes from "./routes/inventory.routes.js";
+import homeRoutes from "./routes/home.routes.js";
+import brandRoutes from "./routes/brand.routes.js";
+import dealRoutes from "./routes/deal.routes.js";
+import searchRoutes from "./routes/search.routes.js";
 import logger from "./utils/logger.js";
 import { setupUploadDirectories } from "./utils/setupUploads.js";
-import cartRoutes from './routes/cart.routes.js';
-import orderRoutes from './routes/order.routes.js';
+import cartRoutes from "./routes/cart.routes.js";
+import orderRoutes from "./routes/order.routes.js";
 // Load environment variables
 dotenv.config();
 
@@ -144,8 +148,12 @@ app.use("/api/products", productRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/attributes", attributeRoutes);
 app.use("/api/inventory", inventoryRoutes);
-app.use('/api/cart', cartRoutes);
-app.use('/api/orders', orderRoutes);
+app.use("/api/home", homeRoutes);
+app.use("/api/brands", brandRoutes);
+app.use("/api/deals", dealRoutes);
+app.use("/api/search", searchRoutes);
+app.use("/api/cart", cartRoutes);
+app.use("/api/orders", orderRoutes);
 // Error handler
 app.use(errorHandler);
 

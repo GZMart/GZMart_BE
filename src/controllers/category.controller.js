@@ -1,5 +1,4 @@
 import * as categoryService from "../services/category.service.js";
-import { ErrorResponse } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 
 /**
@@ -18,18 +17,19 @@ export const createCategory = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * @desc    Get all categories
+ * @desc    Get all categories (Supports Admin filters & Storefront flags)
  * @route   GET /api/categories
  * @access  Public
  */
 export const getCategories = asyncHandler(async (req, res, next) => {
-  const { parentId, level, status, search } = req.query;
+  const { parentId, level, status, search, isFeatured } = req.query;
 
   const filters = {
     parentId,
     level: level ? parseInt(level) : undefined,
     status,
     search,
+    isFeatured: isFeatured === "true", // GZM-13 feature
   };
 
   const categories = await categoryService.getCategories(filters);
@@ -56,16 +56,99 @@ export const getCategoryTree = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * @desc    Get single category by ID
+ * @desc    Get top categories (Homepage)
+ * @route   GET /api/categories/top
+ * @access  Public
+ */
+export const getTopCategories = asyncHandler(async (req, res, next) => {
+  const { limit = 8 } = req.query;
+  const categories = await categoryService.getTopCategories(parseInt(limit));
+
+  res.status(200).json({
+    success: true,
+    count: categories.length,
+    data: categories,
+  });
+});
+
+/**
+ * @desc    Get featured categories
+ * @route   GET /api/categories/featured
+ * @access  Public
+ */
+export const getFeaturedCategories = asyncHandler(async (req, res, next) => {
+  const categories = await categoryService.getFeaturedCategories();
+
+  res.status(200).json({
+    success: true,
+    data: categories,
+  });
+});
+
+/**
+ * @desc    Get categories with product counts (Sidebar)
+ * @route   GET /api/categories/with-counts
+ * @access  Public
+ */
+export const getCategoriesWithCounts = asyncHandler(async (req, res, next) => {
+  const categories = await categoryService.getCategoriesWithCounts();
+
+  res.status(200).json({
+    success: true,
+    data: categories,
+  });
+});
+
+/**
+ * @desc    Get single category by ID or Slug
  * @route   GET /api/categories/:id
  * @access  Public
  */
 export const getCategory = asyncHandler(async (req, res, next) => {
-  const category = await categoryService.getCategoryById(req.params.id);
+  // Service handles both ObjectId and Slug
+  const category = await categoryService.getCategory(req.params.id);
 
   res.status(200).json({
     success: true,
     data: category,
+  });
+});
+
+/**
+ * @desc    Get products within a category
+ * @route   GET /api/categories/:id/products
+ * @access  Public
+ */
+export const getCategoryProducts = asyncHandler(async (req, res, next) => {
+  const {
+    page = 1,
+    limit = 20,
+    sort = "-createdAt",
+    brand,
+    minPrice,
+    maxPrice,
+    minRating,
+    inStock,
+  } = req.query;
+
+  const result = await categoryService.getCategoryProducts(req.params.id, {
+    page: parseInt(page),
+    limit: parseInt(limit),
+    sort,
+    filters: {
+      brand: brand ? (Array.isArray(brand) ? brand : [brand]) : undefined,
+      minPrice: minPrice ? parseFloat(minPrice) : undefined,
+      maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+      minRating: minRating ? parseFloat(minRating) : undefined,
+      inStock: inStock === "true",
+    },
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Category products retrieved successfully",
+    data: result.products,
+    pagination: result.pagination,
   });
 });
 
@@ -90,7 +173,6 @@ export const getChildCategories = asyncHandler(async (req, res, next) => {
  * @access  Private (Admin only)
  */
 export const updateCategory = asyncHandler(async (req, res, next) => {
-  // Prevent updating certain fields
   delete req.body.productCount;
   delete req.body.createdAt;
 
