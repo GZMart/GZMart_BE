@@ -29,12 +29,17 @@ export const emailConfig = {
   defaultTimezone: process.env.EMAIL_DEFAULT_TIMEZONE || 'UTC',
 };
 
-// Validate required configuration
-if (
-  !emailConfig.googleMailerClientId ||
-  !emailConfig.googleMailerClientSecret ||
-  !emailConfig.googleMailerRefreshToken ||
-  !emailConfig.adminEmailAddress
-) {
-  throw new Error('Missing required email configuration');
+// Validate required configuration - chỉ throw error trong production
+// Trong development, cho phép thiếu config (email sẽ được skip)
+const isProduction = process.env.NODE_ENV === 'production';
+const hasEmailConfig = 
+  emailConfig.googleMailerClientId &&
+  emailConfig.googleMailerClientSecret &&
+  emailConfig.googleMailerRefreshToken &&
+  emailConfig.adminEmailAddress;
+
+if (isProduction && !hasEmailConfig) {
+  console.warn('⚠️ Warning: Missing email configuration. Email features will be disabled.');
 }
+
+export const isEmailConfigured = hasEmailConfig;

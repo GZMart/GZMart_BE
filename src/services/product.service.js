@@ -1,770 +1,576 @@
 import Product from "../models/Product.js";
-import ProductModel from "../models/ProductModel.js";
-import ProductTier from "../models/ProductTier.js";
-import ProductAttribute from "../models/ProductAttribute.js";
-import Deal from "../models/Deal.js";
-import ErrorResponse from "../utils/errorResponse.js";
-import mongoose from "mongoose";
+import Category from "../models/Category.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
+import { generateSKU } from "../utils/skuGenerator.js";
 
-class ProductService {
-  /**
-   * Get products with filters, sort, and pagination
-   * OPTIMIZED: Using aggregation pipeline to avoid N+1 queries
-   */
-  async getProducts(options) {
-    const { page = 1, limit = 20, sort = "-createdAt", filters = {} } = options;
+/**
+ * Generate URL-friendly slug
+ */
+const generateSlug = (name) => {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .substring(0, 100);
+};
 
-    const pipeline = [];
-    const matchStage = { isAvailable: true };
+/**
+ * Create a new product with embedded tiers and models
+ * (Logic: Dev - Strict validation)
+ */
+export const createProduct = async (productData, sellerId) => {
+  const {
+    name,
+    categoryId,
+    description,
+    attributes,
+    tiers,
+    models,
+    images,
+    tags,
+    brand
+  } = productData;
 
-    // Apply filters
-    if (filters.categoryId) {
-      // Validate and convert to ObjectId
-      if (mongoose.Types.ObjectId.isValid(filters.categoryId)) {
-        matchStage.categoryId = new mongoose.Types.ObjectId(filters.categoryId);
-      }
-    }
-
-    if (filters.brand) {
-      if (Array.isArray(filters.brand)) {
-        matchStage.brand = { $in: filters.brand };
-      } else {
-        matchStage.brand = filters.brand;
-      }
-    }
-
-    if (filters.minRating) {
-      matchStage.rating = { $gte: parseFloat(filters.minRating) };
-    }
-
-    if (filters.isFeatured) {
-      matchStage.isFeatured = true;
-    }
-
-    if (filters.isTrending) {
-      matchStage.isTrending = true;
-    }
-
-    if (filters.isNewArrival) {
-      matchStage.isNewArrival = true;
-    }
-
-    if (filters.search) {
-      matchStage.$text = { $search: filters.search };
-    }
-
-    pipeline.push({ $match: matchStage });
-
-    // Lookup category
-    pipeline.push({
-      $lookup: {
-        from: "categories",
-        localField: "categoryId",
-        foreignField: "_id",
-        as: "category",
-      },
-    });
-    pipeline.push({
-      $unwind: { path: "$category", preserveNullAndEmptyArrays: true },
-    });
-
-    // Lookup models for price calculation
-    pipeline.push({
-      $lookup: {
-        from: "productmodels",
-        localField: "_id",
-        foreignField: "productId",
-        as: "models",
-      },
-    });
-
-    // Calculate price and stock
-    pipeline.push({
-      $addFields: {
-        minPrice: { $min: "$models.price" },
-        maxPrice: { $max: "$models.price" },
-        totalStock: { $sum: "$models.stock" },
-        categoryId: "$category",
-      },
-    });
-
-    // Apply price filter
-    if (filters.minPrice || filters.maxPrice) {
-      const priceFilter = {};
-      if (filters.minPrice) {
-        priceFilter.maxPrice = { $gte: parseFloat(filters.minPrice) };
-      }
-      if (filters.maxPrice) {
-        priceFilter.minPrice = { $lte: parseFloat(filters.maxPrice) };
-      }
-      pipeline.push({ $match: priceFilter });
-    }
-
-    // Apply stock filter
-    if (filters.inStock) {
-      pipeline.push({ $match: { totalStock: { $gt: 0 } } });
-    }
-
-    // Lookup active deals
-    const now = new Date();
-    pipeline.push({
-      $lookup: {
-        from: "deals",
-        let: { productId: "$_id" },
-        pipeline: [
-          {
-            $match: {
-              $expr: { $eq: ["$productId", "$$productId"] },
-              status: "active",
-              startDate: { $lte: now },
-              endDate: { $gte: now },
-            },
-          },
-          { $limit: 1 },
-        ],
-        as: "activeDeal",
-      },
-    });
-    pipeline.push({
-      $unwind: { path: "$activeDeal", preserveNullAndEmptyArrays: true },
-    });
-
-    // Remove models array (not needed in response)
-    pipeline.push({
-      $project: {
-        models: 0,
-      },
-    });
-
-    // Count total before pagination
-    const countPipeline = [...pipeline, { $count: "total" }];
-    const countResult = await Product.aggregate(countPipeline);
-    const total = countResult.length > 0 ? countResult[0].total : 0;
-
-    // Apply sorting
-    const sortStage = {};
-    if (sort.startsWith("-")) {
-      sortStage[sort.substring(1)] = -1;
-    } else {
-      sortStage[sort] = 1;
-    }
-    pipeline.push({ $sort: sortStage });
-
-    // Pagination
-    pipeline.push({ $skip: (page - 1) * limit });
-    pipeline.push({ $limit: limit });
-
-    // Execute aggregation
-    const products = await Product.aggregate(pipeline);
-
-    return {
-      products,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-        hasNextPage: page < Math.ceil(total / limit),
-        hasPrevPage: page > 1,
-      },
-    };
+  const category = await Category.findById(categoryId);
+  if (!category) {
+    throw new ErrorResponse("Category not found", 404);
+  }
+  if (category.status !== "active") {
+    throw new ErrorResponse("Cannot add product to inactive category", 400);
   }
 
-  /**
-   * Get product by ID with full details
-   */
-  async getProductById(productId) {
-    const product = await Product.findOne({ _id: productId, isAvailable: true })
-      .populate("categoryId", "name slug")
-      .lean();
+  if (tiers && tiers.length > 0) {
+    if (tiers.length > 3) {
+      throw new ErrorResponse("Product cannot have more than 3 tiers", 400);
+    }
+    tiers.forEach((tier) => {
+      if (!tier.options || tier.options.length === 0) {
+        throw new ErrorResponse(`Tier "${tier.name}" must have options`, 400);
+      }
+      if (tier.options.length > 20) {
+        throw new ErrorResponse(`Tier "${tier.name}" limit is 20 options`, 400);
+      }
+    });
+  }
 
+  if (!models || models.length === 0) {
+    throw new ErrorResponse("Product must have at least one variant", 400);
+  }
+
+  if (models.length > 200) {
+    throw new ErrorResponse("Product cannot have more than 200 models", 400);
+  }
+
+  models.forEach((model, modelIdx) => {
+    if (!tiers || tiers.length === 0) {
+      if (model.tierIndex && model.tierIndex.length > 0) {
+        throw new ErrorResponse(`Model ${modelIdx} has unexpected tierIndex`, 400);
+      }
+      return;
+    }
+
+    if (!model.tierIndex || model.tierIndex.length !== tiers.length) {
+      throw new ErrorResponse(`Model ${modelIdx}: tierIndex mismatch`, 400);
+    }
+
+    model.tierIndex.forEach((idx, tierPosition) => {
+      const tier = tiers[tierPosition];
+      if (idx < 0 || idx >= tier.options.length) {
+        throw new ErrorResponse(`Model ${modelIdx}: tierIndex out of bounds`, 400);
+      }
+    });
+  });
+
+  const normalizedSKUs = [];
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
+    let sku = model.sku ? String(model.sku).toUpperCase().trim() : null;
+
+    if (!sku) {
+      let attempts = 0;
+      let candidate = "";
+      do {
+        candidate = generateSKU(name, tiers || [], model.tierIndex || []);
+        if (!normalizedSKUs.includes(candidate)) break;
+        attempts++;
+      } while (attempts < 5);
+
+      if (normalizedSKUs.includes(candidate)) {
+        candidate = `${candidate}-${Date.now().toString().slice(-4)}`;
+      }
+      sku = candidate;
+      model.sku = sku;
+    }
+
+    model.sku = String(sku).toUpperCase();
+    normalizedSKUs.push(model.sku);
+  }
+
+  const duplicates = normalizedSKUs.filter((sku, index) => normalizedSKUs.indexOf(sku) !== index);
+  if (duplicates.length > 0) {
+    throw new ErrorResponse(`Duplicate SKUs in payload: ${[...new Set(duplicates)].join(", ")}`, 400);
+  }
+
+  const existingSKUs = await Product.find({ "models.sku": { $in: normalizedSKUs } }).select("models.sku");
+  if (existingSKUs.length > 0) {
+    throw new ErrorResponse("SKU already exists in database", 400);
+  }
+
+  const prices = models.map((m) => m.price);
+  const originalPrice = Math.min(...prices);
+
+  if (originalPrice <= 0) {
+    throw new ErrorResponse("Product must have price > 0", 400);
+  }
+
+  const slug = generateSlug(name);
+  let finalSlug = slug;
+  let counter = 1;
+  while (await Product.findOne({ slug: finalSlug })) {
+    finalSlug = `${slug}-${counter}`;
+    counter++;
+  }
+
+  const totalStock = models.reduce((sum, model) => sum + model.stock, 0);
+  const status = totalStock > 0 ? "active" : "out_of_stock";
+
+  const product = new Product({
+    name,
+    slug: finalSlug,
+    categoryId,
+    description,
+    attributes: attributes || [],
+    tiers: tiers || [],
+    models,
+    originalPrice,
+    images: images || [],
+    tags: tags || [],
+    brand,
+    status,
+    sellerId,
+  });
+
+  await product.save();
+  await Category.findByIdAndUpdate(categoryId, { $inc: { productCount: 1 } });
+
+  return product;
+};
+
+/**
+ * Get product by ID
+ * (Merged: Dev logic + GZM-13 view increment)
+ */
+export const getProductById = async (productId) => {
+  const product = await Product.findById(productId).populate(
+    "categoryId",
+    "name slug"
+  );
+
+  if (!product) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
+  // Increment view count (GZM-13 feature)
+  product.viewCount = (product.viewCount || 0) + 1;
+  await product.save({ validateBeforeSave: false });
+
+  return product;
+};
+
+/**
+ * Get product by Slug
+ */
+export const getProductBySlug = async (slug) => {
+    const product = await Product.findOne({ slug }).populate(
+      "categoryId",
+      "name slug"
+    );
+  
     if (!product) {
       throw new ErrorResponse("Product not found", 404);
     }
 
-    // Get tiers
-    const tiers = await ProductTier.find({ productId }).sort("order").lean();
+    product.viewCount = (product.viewCount || 0) + 1;
+    await product.save({ validateBeforeSave: false });
+  
+    return product;
+};
 
-    // Get models (variants)
-    const models = await ProductModel.find({ productId }).lean();
+/**
+ * Get products (Admin/Seller Dashboard)
+ */
+export const getProducts = async (filters = {}, options = {}) => {
+  const {
+    page = 1,
+    limit = 20,
+    sortBy = "createdAt",
+    sortOrder = "desc",
+    categoryId,
+    status,
+    minPrice,
+    maxPrice,
+    search,
+  } = options;
 
-    // Get attributes
-    const attributes = await ProductAttribute.find({ productId })
-      .sort("order")
-      .lean();
+  const query = {};
 
-    // Get active deals
-    const now = new Date();
-    const activeDeal = await Deal.findOne({
-      productId,
-      status: "active",
-      startDate: { $lte: now },
-      endDate: { $gte: now },
-    }).lean();
+  if (categoryId) query.categoryId = categoryId;
+  if (status) query.status = status;
+  
+  if (minPrice || maxPrice) {
+    // Query embedded models price (Optimized)
+    query["models.price"] = {};
+    if (minPrice) query["models.price"].$gte = Number(minPrice);
+    if (maxPrice) query["models.price"].$lte = Number(maxPrice);
+  }
 
-    // Calculate price range
-    if (models.length > 0) {
-      const prices = models.map((m) => m.price);
-      product.minPrice = Math.min(...prices);
-      product.maxPrice = Math.max(...prices);
-      product.totalStock = models.reduce((sum, m) => sum + m.stock, 0);
+  if (search) {
+    query.$text = { $search: search };
+  }
+
+  Object.assign(query, filters);
+
+  const skip = (page - 1) * limit;
+  const sortOptions = { [sortBy]: sortOrder === "desc" ? -1 : 1 };
+
+  const [products, total] = await Promise.all([
+    Product.find(query)
+      .populate("categoryId", "name slug")
+      .sort(sortOptions)
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Product.countDocuments(query),
+  ]);
+
+  return {
+    products,
+    pagination: {
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      limit,
+    },
+  };
+};
+
+/**
+ * Advanced Search for Storefront
+ * (Replaces GZM-13 Aggregation with Optimized Embedded Query)
+ */
+export const getProductsAdvanced = async (options) => {
+    const {
+        page = 1,
+        limit = 20,
+        categoryId,
+        brands, // Array
+        minPrice,
+        maxPrice,
+        minRating,
+        inStock,
+        colors, // Array of strings
+        sizes   // Array of strings
+    } = options;
+
+    const query = { status: "active" };
+
+    if (categoryId) query.categoryId = categoryId;
+    
+    if (brands && brands.length > 0) {
+        query.brand = { $in: brands };
     }
+
+    if (minRating) {
+        query.rating = { $gte: Number(minRating) };
+    }
+
+    // Embedded Price Filter
+    if (minPrice || maxPrice) {
+        query["models.price"] = {};
+        if (minPrice) query["models.price"].$gte = Number(minPrice);
+        if (maxPrice) query["models.price"].$lte = Number(maxPrice);
+    }
+
+    // Embedded Stock Filter
+    if (inStock) {
+        // At least one model has stock > 0
+        query["models.stock"] = { $gt: 0 };
+    }
+
+    // Attribute/Tier Filter (Colors/Sizes)
+    if ((colors && colors.length > 0) || (sizes && sizes.length > 0)) {
+        // Logic: Search inside tiers options
+        const orConditions = [];
+        if (colors && colors.length > 0) {
+            orConditions.push({
+                tiers: {
+                    $elemMatch: {
+                        name: { $regex: /color|màu/i },
+                        options: { $in: colors }
+                    }
+                }
+            });
+        }
+        if (sizes && sizes.length > 0) {
+             orConditions.push({
+                tiers: {
+                    $elemMatch: {
+                        name: { $regex: /size|kích/i },
+                        options: { $in: sizes }
+                    }
+                }
+            });
+        }
+        if (orConditions.length > 0) {
+            query.$and = orConditions;
+        }
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [products, total] = await Promise.all([
+        Product.find(query)
+          .populate("categoryId", "name slug")
+          .sort({ isFeatured: -1, createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+        Product.countDocuments(query),
+    ]);
 
     return {
-      ...product,
-      tiers,
-      models,
-      attributes,
-      activeDeal: activeDeal || null,
+        products,
+        pagination: {
+            total,
+            page,
+            pages: Math.ceil(total / limit),
+            limit,
+        }
     };
+};
+
+/**
+ * Update product
+ * (Logic: Dev)
+ */
+export const updateProduct = async (productId, updateData, sellerId) => {
+  const product = await Product.findById(productId);
+
+  if (!product) {
+    throw new ErrorResponse("Product not found", 404);
   }
 
-  /**
-   * Get featured products
-   */
-  async getFeaturedProducts(limit = 10) {
-    const products = await Product.find({ isAvailable: true, isFeatured: true })
+  if (product.sellerId.toString() !== sellerId) {
+    throw new ErrorResponse("Not authorized to update this product", 403);
+  }
+
+  if (updateData.models) {
+    const prices = updateData.models.map((m) => m.price);
+    updateData.originalPrice = Math.min(...prices);
+    
+    // Auto update total stock availability status
+    const totalStock = updateData.models.reduce((sum, m) => sum + (m.stock || 0), 0);
+    if (totalStock === 0 && product.status === "active") {
+        updateData.status = "out_of_stock";
+    }
+  }
+
+  Object.assign(product, updateData);
+  await product.save();
+
+  return product;
+};
+
+/**
+ * Delete product
+ * (Logic: Dev)
+ */
+export const deleteProduct = async (productId, sellerId) => {
+  const product = await Product.findById(productId);
+
+  if (!product) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
+  if (product.sellerId.toString() !== sellerId) {
+    throw new ErrorResponse("Not authorized to delete this product", 403);
+  }
+
+  await Category.findByIdAndUpdate(product.categoryId, {
+    $inc: { productCount: -1 },
+  });
+
+  await product.deleteOne();
+
+  return product;
+};
+
+/**
+ * Get featured products (GZM-13 Feature)
+ */
+export const getFeaturedProducts = async (limit = 10) => {
+    return await Product.find({ status: "active", isFeatured: true })
       .populate("categoryId", "name slug")
       .sort("-createdAt")
       .limit(limit)
       .lean();
+};
+  
+/**
+ * Get trending products (GZM-13 Feature)
+ */
+export const getTrendingProducts = async (limit = 10) => {
+    // Trending based on sales or explicit flag
+    return await Product.find({ status: "active", $or: [{ isTrending: true }, { sold: { $gt: 10 } }] })
+        .populate("categoryId", "name slug")
+        .sort({ sold: -1 })
+        .limit(limit)
+        .lean();
+};
 
-    return await this._enrichProductsWithPriceAndDeals(products);
-  }
+/**
+ * Get new arrivals (GZM-13 Feature)
+ */
+export const getNewArrivals = async (limit = 10) => {
+    return await Product.find({ status: "active", isNewArrival: true })
+        .populate("categoryId", "name slug")
+        .sort("-createdAt")
+        .limit(limit)
+        .lean();
+};
 
-  /**
-   * Get trending products
-   */
-  async getTrendingProducts(limit = 10) {
-    const products = await Product.find({ isAvailable: true, isTrending: true })
-      .populate("categoryId", "name slug")
-      .sort("-sold")
-      .limit(limit)
-      .lean();
+/**
+ * Check stock availability for a specific SKU/Model ID
+ */
+export const checkStockAvailability = async (productId, modelId, quantity = 1) => {
+    const product = await Product.findOne(
+        { _id: productId, "models._id": modelId },
+        { "models.$": 1 } // Only fetch the matching model
+    );
 
-    return await this._enrichProductsWithPriceAndDeals(products);
-  }
-
-  /**
-   * Get new arrivals
-   */
-  async getNewArrivals(limit = 10) {
-    const products = await Product.find({ isAvailable: true })
-      .populate("categoryId", "name slug")
-      .sort("-createdAt")
-      .limit(limit)
-      .lean();
-
-    return await this._enrichProductsWithPriceAndDeals(products);
-  }
-
-  /**
-   * Get related products (same category)
-   */
-  async getRelatedProducts(productId, limit = 10) {
-    const product = await Product.findById(productId);
-
-    if (!product) {
-      throw new ErrorResponse("Product not found", 404);
+    if (!product || !product.models || product.models.length === 0) {
+        throw new ErrorResponse("Product variant not found", 404);
     }
 
-    const products = await Product.find({
-      isAvailable: true,
-      categoryId: product.categoryId,
-      _id: { $ne: productId },
-    })
-      .populate("categoryId", "name slug")
-      .sort("-rating")
-      .limit(limit)
-      .lean();
+    const model = product.models[0];
+    return {
+        available: model.stock >= quantity,
+        stock: model.stock,
+        price: model.price
+    };
+};
 
-    return await this._enrichProductsWithPriceAndDeals(products);
-  }
-
-  /**
-   * Increment product views
-   */
-  async incrementViews(productId) {
-    await Product.findByIdAndUpdate(productId, {
-      $inc: { views: 1 },
-    });
-  }
-
-  /**
-   * Get available filter options for products
-   */
-  async getAvailableFilters(categoryId = null) {
-    const query = { isAvailable: true };
-    if (categoryId) {
-      query.categoryId = categoryId;
-    }
+/**
+ * Get filter metadata (Min/Max Price, Brands) for UI
+ */
+export const getAvailableFilters = async (categoryId = null) => {
+    const query = { status: "active" };
+    if (categoryId) query.categoryId = categoryId;
 
     // Get unique brands
     const brands = await Product.distinct("brand", query);
 
-    // Get price range from models
-    const products = await Product.find(query).select("_id").lean();
-    const productIds = products.map((p) => p._id);
+    // Get price range (Optimized using aggregation on embedded models)
+    const priceStats = await Product.aggregate([
+        { $match: query },
+        { $unwind: "$models" },
+        {
+            $group: {
+                _id: null,
+                min: { $min: "$models.price" },
+                max: { $max: "$models.price" }
+            }
+        }
+    ]);
 
-    const models = await ProductModel.find({
-      productId: { $in: productIds },
-      stock: { $gt: 0 },
-    })
-      .select("price")
-      .lean();
-
-    let priceRange = { min: 0, max: 0 };
-    if (models.length > 0) {
-      const prices = models.map((m) => m.price);
-      priceRange = {
-        min: Math.min(...prices),
-        max: Math.max(...prices),
-      };
-    }
+    const priceRange = priceStats.length > 0 
+        ? { min: priceStats[0].min, max: priceStats[0].max }
+        : { min: 0, max: 0 };
 
     return {
-      brands: brands.filter(Boolean).sort(),
-      priceRange,
-      ratings: [5, 4, 3, 2, 1],
+        brands: brands.filter(Boolean).sort(),
+        priceRange,
+        ratings: [5, 4, 3, 2, 1]
     };
-  }
+};
 
-  /**
-   * Get variant details (model) based on tier selections
-   */
-  async getVariantByTierIndex(productId, tierIndex) {
-    console.log("🔍 getVariantByTierIndex:", { productId, tierIndex });
+/**
+ * Get products by seller ID
+ */
+export const getProductsBySeller = async (sellerId, options = {}) => {
+    const { page = 1, limit = 20 } = options;
+    const skip = (page - 1) * limit;
 
-    // First, try to find in ProductModel collection
-    let model = await ProductModel.findOne({
-      productId,
-      tier_index: tierIndex,
-    }).lean();
+    const [products, total] = await Promise.all([
+        Product.find({ sellerId })
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        Product.countDocuments({ sellerId })
+    ]);
 
-    console.log("🔍 Found in ProductModel collection:", model ? "Yes" : "No");
+    return { products, total, page, pages: Math.ceil(total / limit) };
+};
 
-    // If not found in collection, check if product has embedded models
-    if (!model) {
-      const product = await Product.findById(productId).lean();
-      console.log("🔍 Product found:", product ? "Yes" : "No");
-      console.log("🔍 Product has models:", product?.models?.length || 0);
+/**
+ * Get products by category ID
+ */
+export const getProductsByCategory = async (categoryId, options = {}) => {
+    const { page = 1, limit = 20 } = options;
+    const skip = (page - 1) * limit;
 
-      if (product?.models) {
-        // Try both tierIndex and tier_index field names
-        model = product.models.find((m) => {
-          const modelTierIndex = m.tierIndex || m.tier_index;
-          const match =
-            JSON.stringify(modelTierIndex) === JSON.stringify(tierIndex);
-          if (!match) {
-            console.log("🔍 Comparing:", modelTierIndex, "vs", tierIndex);
-          }
-          return match;
-        });
+    const [products, total] = await Promise.all([
+        Product.find({ categoryId, status: "active" })
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        Product.countDocuments({ categoryId, status: "active" })
+    ]);
 
-        if (model) {
-          console.log("✅ Found matching model:", model.sku);
-        } else {
-          console.log("❌ No matching model found. Available models:");
-          product.models.forEach((m, i) => {
-            console.log(
-              `   Model ${i}:`,
-              m.tierIndex || m.tier_index,
-              "->",
-              m.sku
-            );
-          });
-        }
-      }
-    }
+    return { products, total, page, pages: Math.ceil(total / limit) };
+};
 
-    if (!model) {
-      throw new ErrorResponse("Variant not found", 404);
-    }
-
-    return model;
-  }
-
-  /**
-   * Get available options for each tier based on current selection and stock
-   * Example: User chọn Color Black (index 0) -> Trả về những Size nào còn hàng
-   */
-  async getAvailableOptions(productId, partialSelection = {}) {
-    // First try ProductTier/ProductModel collections
-    let tiers = await ProductTier.find({ productId }).sort("order").lean();
-    let models = await ProductModel.find({ productId }).lean();
-
-    // If not found, get from embedded data in Product
-    if (tiers.length === 0 || models.length === 0) {
-      const product = await Product.findById(productId).lean();
-      if (product) {
-        tiers = product.tiers || [];
-        models = product.models || [];
-      }
-    }
-
-    // Build result for each tier
-    const availableOptions = tiers.map((tier, tierIndex) => {
-      const availableIndices = new Set();
-
-      models.forEach((model) => {
-        // Check if model matches partial selection
-        let matches = true;
-        for (const [selectedTierIndex, selectedOptionIndex] of Object.entries(
-          partialSelection
-        )) {
-          const modelTierIndex =
-            model.tier_index?.[selectedTierIndex] ||
-            model.tierIndex?.[selectedTierIndex];
-          if (modelTierIndex !== selectedOptionIndex) {
-            matches = false;
-            break;
-          }
-        }
-
-        // If matches and has stock, add this option index
-        if (matches && model.stock > 0) {
-          const optionIndex =
-            model.tier_index?.[tierIndex] || model.tierIndex?.[tierIndex];
-          availableIndices.add(optionIndex);
-        }
-      });
-
-      return {
-        tierId: tier._id || `tier-${tierIndex}`,
-        tierName: tier.name,
-        tierOrder: tier.order || tierIndex,
-        options: tier.options.map((option, index) => ({
-          name: option,
-          index: index,
-          image: tier.images?.[index] || null,
-          available: availableIndices.has(index),
-          disabled: !availableIndices.has(index),
-        })),
-      };
-    });
-
-    return availableOptions;
-  }
-
-  /**
-   * MongoDB Aggregation: Filter products by Color, Size, Price, Brand
-   * Advanced filtering with tier options
-   */
-  async getProductsWithAdvancedFilters(options) {
-    const {
-      page = 1,
-      limit = 20,
-      categoryId,
-      brands = [],
-      minPrice,
-      maxPrice,
-      colors = [],
-      sizes = [],
-      minRating,
-      inStock = false,
-    } = options;
-
-    const pipeline = [];
-
-    // Stage 1: Match active products
-    const matchStage = { isAvailable: true };
-    if (categoryId && mongoose.Types.ObjectId.isValid(categoryId)) {
-      matchStage.categoryId = new mongoose.Types.ObjectId(categoryId);
-    }
-    if (brands.length > 0) matchStage.brand = { $in: brands };
-    if (minRating) matchStage.rating = { $gte: minRating };
-
-    pipeline.push({ $match: matchStage });
-
-    // Stage 2: Lookup models (variants)
-    pipeline.push({
-      $lookup: {
-        from: "productmodels",
-        localField: "_id",
-        foreignField: "productId",
-        as: "models",
-      },
-    });
-
-    // Stage 3: Calculate price range and total stock
-    pipeline.push({
-      $addFields: {
-        minPrice: { $min: "$models.price" },
-        maxPrice: { $max: "$models.price" },
-        totalStock: { $sum: "$models.stock" },
-      },
-    });
-
-    // Stage 4: Filter by price range
-    if (minPrice || maxPrice) {
-      const priceFilter = {};
-      if (minPrice) priceFilter.minPrice = { $gte: minPrice };
-      if (maxPrice) priceFilter.maxPrice = { $lte: maxPrice };
-      pipeline.push({ $match: priceFilter });
-    }
-
-    // Stage 5: Filter by stock
-    if (inStock) {
-      pipeline.push({ $match: { totalStock: { $gt: 0 } } });
-    }
-
-    // Stage 6: Lookup tiers for color/size filtering
-    if (colors.length > 0 || sizes.length > 0) {
-      pipeline.push({
-        $lookup: {
-          from: "producttiers",
-          localField: "_id",
-          foreignField: "productId",
-          as: "tiers",
-        },
-      });
-
-      // Filter by colors/sizes if specified
-      // This requires checking if tiers contain the specified options
-      if (colors.length > 0) {
-        pipeline.push({
-          $match: {
-            tiers: {
-              $elemMatch: {
-                $or: [{ name: /color|màu/i, options: { $in: colors } }],
-              },
-            },
-          },
-        });
-      }
-
-      if (sizes.length > 0) {
-        pipeline.push({
-          $match: {
-            tiers: {
-              $elemMatch: {
-                $or: [{ name: /size|kích/i, options: { $in: sizes } }],
-              },
-            },
-          },
-        });
-      }
-    }
-
-    // Stage 7: Lookup category
-    pipeline.push({
-      $lookup: {
-        from: "categories",
-        localField: "categoryId",
-        foreignField: "_id",
-        as: "category",
-      },
-    });
-
-    pipeline.push({
-      $unwind: { path: "$category", preserveNullAndEmptyArrays: true },
-    });
-
-    // Stage 8: Lookup active deals
-    const now = new Date();
-    pipeline.push({
-      $lookup: {
-        from: "deals",
-        let: { productId: "$_id" },
-        pipeline: [
-          {
-            $match: {
-              $expr: { $eq: ["$productId", "$$productId"] },
-              status: "active",
-              startDate: { $lte: now },
-              endDate: { $gte: now },
-            },
-          },
-          { $limit: 1 },
-        ],
-        as: "activeDeal",
-      },
-    });
-
-    pipeline.push({
-      $unwind: { path: "$activeDeal", preserveNullAndEmptyArrays: true },
-    });
-
-    // Count total for pagination
-    const countPipeline = [...pipeline, { $count: "total" }];
-    const countResult = await Product.aggregate(countPipeline);
-    const total = countResult.length > 0 ? countResult[0].total : 0;
-
-    // Stage 9: Sort, skip, limit
-    pipeline.push({ $sort: { createdAt: -1 } });
-    pipeline.push({ $skip: (page - 1) * limit });
-    pipeline.push({ $limit: limit });
-
-    // Execute aggregation
-    const products = await Product.aggregate(pipeline);
-
-    return {
-      products,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-        hasNextPage: page < Math.ceil(total / limit),
-        hasPrevPage: page > 1,
-      },
+/**
+ * Simple Search
+ */
+export const searchProducts = async (keyword, options = {}) => {
+    const { page = 1, limit = 20 } = options;
+    const skip = (page - 1) * limit;
+    
+    const query = {
+        status: "active",
+        $text: { $search: keyword }
     };
-  }
 
-  /**
-   * Check stock availability for a model
-   */
-  async checkStockAvailability(modelId, quantity = 1) {
-    const model = await ProductModel.findById(modelId);
+    const [products, total] = await Promise.all([
+        Product.find(query)
+            .sort({ score: { $meta: "textScore" } })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        Product.countDocuments(query)
+    ]);
 
-    if (!model) {
-      throw new ErrorResponse("Product variant not found", 404);
-    }
+    return { products, total, page, pages: Math.ceil(total / limit) };
+};
 
-    return {
-      available: model.stock >= quantity,
-      stock: model.stock,
-    };
-  }
+/**
+ * Get related products
+ */
+export const getRelatedProducts = async (productId, limit = 10) => {
+    const product = await Product.findById(productId).select("categoryId");
+    if (!product) throw new ErrorResponse("Product not found", 404);
 
-  /**
-   * Get products with best offers (highest discount)
-   * GET /api/products/best-offers
-   * OPTIMIZED: Batch queries
-   */
-  async getBestOffers(limit = 20) {
-    const now = new Date();
-
-    // Get active deals with products
-    const deals = await Deal.find({
-      status: "active",
-      startDate: { $lte: now },
-      endDate: { $gte: now },
+    return await Product.find({
+        categoryId: product.categoryId,
+        _id: { $ne: productId },
+        status: "active"
     })
-      .sort({ discountPercent: -1 })
-      .limit(limit)
-      .populate({
-        path: "productId",
-        match: { isAvailable: true },
-        select: "name slug brand images rating reviews sold originalPrice",
-      })
-      .lean();
-
-    // Filter out deals where product was not found
-    const validDeals = deals.filter((deal) => deal.productId);
-    if (validDeals.length === 0) return [];
-
-    const productIds = validDeals.map((deal) => deal.productId._id);
-
-    // Batch query for all models
-    const allModels = await ProductModel.find({
-      productId: { $in: productIds },
-    })
-      .select("productId price stock")
-      .lean();
-
-    // Group models by productId
-    const modelsByProduct = {};
-    allModels.forEach((model) => {
-      const key = model.productId.toString();
-      if (!modelsByProduct[key]) {
-        modelsByProduct[key] = [];
-      }
-      modelsByProduct[key].push(model);
-    });
-
-    // Enrich products with price info and deal
-    const products = validDeals.map((deal) => {
-      const product = deal.productId;
-      const productKey = product._id.toString();
-      const models = modelsByProduct[productKey] || [];
-
-      if (models.length > 0) {
-        const prices = models.map((m) => m.price);
-        product.minPrice = Math.min(...prices);
-        product.maxPrice = Math.max(...prices);
-        product.totalStock = models.reduce((sum, m) => sum + m.stock, 0);
-      }
-
-      // Add deal info
-      product.activeDeal = {
-        _id: deal._id,
-        title: deal.title,
-        discountPercent: deal.discountPercent,
-        endDate: deal.endDate,
-        soldCount: deal.soldCount,
-        quantityLimit: deal.quantityLimit,
-      };
-
-      return product;
-    });
-
-    return products;
-  }
-
-  /**
-   * Helper: Enrich products with price and deals
-   * OPTIMIZED: Batch queries instead of N+1
-   */
-  async _enrichProductsWithPriceAndDeals(products) {
-    if (!products || products.length === 0) return products;
-
-    const now = new Date();
-    const productIds = products.map((p) => p._id);
-
-    // Batch query for all models
-    const allModels = await ProductModel.find({
-      productId: { $in: productIds },
-    })
-      .select("productId price stock")
-      .lean();
-
-    // Group models by productId
-    const modelsByProduct = {};
-    allModels.forEach((model) => {
-      const key = model.productId.toString();
-      if (!modelsByProduct[key]) {
-        modelsByProduct[key] = [];
-      }
-      modelsByProduct[key].push(model);
-    });
-
-    // Batch query for all active deals
-    const allDeals = await Deal.find({
-      productId: { $in: productIds },
-      status: "active",
-      startDate: { $lte: now },
-      endDate: { $gte: now },
-    })
-      .select("productId discountPercent title endDate soldCount quantityLimit")
-      .lean();
-
-    // Map deals by productId
-    const dealsByProduct = {};
-    allDeals.forEach((deal) => {
-      dealsByProduct[deal.productId.toString()] = deal;
-    });
-
-    // Enrich products
-    return products.map((product) => {
-      const productKey = product._id.toString();
-      const models = modelsByProduct[productKey] || [];
-
-      if (models.length > 0) {
-        const prices = models.map((m) => m.price);
-        product.minPrice = Math.min(...prices);
-        product.maxPrice = Math.max(...prices);
-        product.totalStock = models.reduce((sum, m) => sum + m.stock, 0);
-      }
-
-      const activeDeal = dealsByProduct[productKey];
-      if (activeDeal) {
-        product.activeDeal = activeDeal;
-      }
-
-      return product;
-    });
-  }
-}
-
-export default new ProductService();
+    .limit(limit)
+    .sort({ sold: -1, rating: -1 })
+    .lean();
+};

@@ -7,20 +7,41 @@ import { sendTemplatedEmail } from '../utils/sendEmail.js';
 import logger from '../utils/logger.js';
 import { generateToken } from '../utils/jwt.js';
 
+// OTP Store: Map<email, { otp: string, expiresAt: Date, attempts: number }>
 const otpStore = new Map();
+
+/**
+ * Generate 4-digit OTP
+ * @returns {string} 4-digit OTP code
+ */
+const generateOTP = () => {
+  return Math.floor(1000 + Math.random() * 9000).toString(); // 4-digit OTP
+};
+
+/**
+ * Clean expired OTPs from store
+ */
+const cleanExpiredOTPs = () => {
+  const now = Date.now();
+  for (const [email, data] of otpStore.entries()) {
+    if (data.expiresAt < now) {
+      otpStore.delete(email);
+    }
+  }
+};
 
 /**
  REGISTER
  */
 export const register = async (req, res, next) => {
   try {
-    const { fullName, username, email, password, phone, address } = req.body;
+    const { fullName, email, password } = req.body;
 
-    // Check required fields
-    if (!fullName || !username || !email || !password || !phone || !address) {
+    // Check required fields - chỉ cần 3 trường
+    if (!fullName || !email || !password) {
       return next(
         new ErrorResponse(
-          'Please provide full name, username, email, password, phone and address',
+          'Please provide full name, email and password',
           400
         )
       );
@@ -35,56 +56,129 @@ export const register = async (req, res, next) => {
     // Generate verification token
     const verificationToken = generateToken({ email }, process.env.JWT_VERIFY_EXPIRES_IN || '1h');
 
-    // Create user
-    const user = await User.create({
+    // Create user - phone và address là optional
+    // Không set phone nếu không có (để tránh validation error)
+    const userData = {
       fullName,
-      username,
       email,
       password,
-      phone,
-      address,
       role: 'buyer',
       isVerified: false,
       verificationToken,
       verificationTokenExpires: new Date(Date.now() + 3600000), // 1 hour
-    });
+    };
 
-    // Send verification email
-    await sendTemplatedEmail({
-      email: user.email,
-      templateType: 'VERIFICATION',
-      templateData: {
-        name: user.fullName,
-        verificationLink: `${
-          process.env.FRONTEND_URL || 'http://localhost:5000'
-        }/verify-email?token=${verificationToken}`,
-      },
-    });
+    // Chỉ thêm phone và address nếu có giá trị hợp lệ
+    if (req.body.phone && /^[0-9]{10,11}$/.test(req.body.phone)) {
+      userData.phone = req.body.phone;
+    }
+    if (req.body.address) {
+      userData.address = req.body.address;
+    }
 
-    // Generate tokens
-    const accessToken = generateToken({ id: user._id }, process.env.JWT_EXPIRES_IN || '1d');
-    const refreshToken = generateToken(
-      { id: user._id },
-      process.env.JWT_REFRESH_EXPIRES_IN || '7d'
-    );
+    let user;
+    try {
+      user = await User.create(userData);
+    } catch (error) {
+      // Handle validation errors
+      if (error.name === 'ValidationError') {
+        const messages = Object.values(error.errors).map(err => err.message).join(', ');
+        logger.error('User validation error:', { error: messages, userData });
+        return next(new ErrorResponse(messages, 400));
+      }
+      // Handle duplicate key error
+      if (error.code === 11000) {
+        const field = Object.keys(error.keyPattern)[0];
+        logger.error('Duplicate key error:', { field, userData });
+        return next(new ErrorResponse(`${field} already exists`, 400));
+      }
+      // Re-throw other errors
+      throw error;
+    }
+
+    // Send OTP for email verification (non-blocking - don't fail registration if email fails)
+    try {
+      const otp = generateOTP();
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+      // Store OTP
+      otpStore.set(user.email, {
+        otp,
+        expiresAt,
+        attempts: 0,
+      });
+
+      // Always log OTP in development (before trying to send email)
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('\n========================================');
+        console.log(`📧 REGISTRATION OTP for ${user.email}`);
+        console.log(`🔐 OTP Code: ${otp}`);
+        console.log(`⏰ Expires in: 5 minutes`);
+        console.log('========================================\n');
+      }
+
+      try {
+        await sendTemplatedEmail({
+          email: user.email,
+          templateType: 'OTP',
+          templateData: {
+            name: user.fullName,
+            otp,
+            expiresIn: '5 minutes',
+          },
+        });
+        logger.info('OTP sent successfully for registration', { userId: user._id, email: user.email });
+      } catch (emailError) {
+        // Log error but don't fail registration
+        logger.error('Failed to send OTP email', {
+          error: emailError.message,
+          userId: user._id,
+          email: user.email,
+        });
+        // In development, OTP is already logged above
+        if (process.env.NODE_ENV !== 'production') {
+          logger.warn('Email service not configured. OTP is logged in console above.');
+        }
+      }
+    } catch (otpError) {
+      // If OTP generation/store fails, log but don't fail registration
+      logger.error('Failed to generate/store OTP', {
+        error: otpError.message,
+        userId: user._id,
+        email: user.email,
+      });
+    }
 
     // Remove sensitive data from response
     user.password = undefined;
     user.verificationToken = undefined;
     user.verificationTokenExpires = undefined;
 
-    logger.info('User registered successfully', { userId: user._id });
+    logger.info('User registered successfully, OTP sent', { userId: user._id, email: user.email });
 
-    res.status(201).json({
+    // Get OTP for development mode (to return in response)
+    const storedOTP = otpStore.get(user.email);
+    const responseData = {
       success: true,
+      message: 'Registration successful. Please check your email for OTP verification code.',
       data: {
-        user,
-        tokens: {
-          accessToken,
-          refreshToken,
+        user: {
+          _id: user._id,
+          email: user.email,
+          fullName: user.fullName,
+          isVerified: user.isVerified,
         },
       },
-    });
+    };
+
+    // In development, include OTP in response for testing
+    if (process.env.NODE_ENV !== 'production' && storedOTP) {
+      responseData.data.otp = storedOTP.otp; // Only in development
+      responseData.message += ' (Check console or response for OTP in development)';
+    }
+
+    // Don't return tokens yet - user needs to verify OTP first
+    res.status(201).json(responseData);
   } catch (error) {
     logger.error('Error in register controller', {
       error: error.message,
@@ -223,17 +317,10 @@ export const loginWithGoogle = async (req, res) => {
     if (!user) {
       isNewUser = true;
       const fakePassword = Math.random().toString(36).slice(-8);
-      let baseUsername = email.split('@')[0],
-        username = baseUsername,
-        counter = 1;
-      while (await User.exists({ username })) {
-        username = `${baseUsername}${counter++}`;
-      }
 
       user = new User({
         fullName: name || 'Google User',
         email,
-        username,
         password: fakePassword,
         avatar: picture || '', // Ensure avatar is set
         isVerified: true,
@@ -300,18 +387,10 @@ export const loginWithFacebook = async (req, res) => {
       isNewUser = true;
 
       const fakePassword = Math.random().toString(36).slice(-8);
-      let baseUsername = email.split('@')[0];
-      let username = baseUsername;
-      let counter = 1;
-
-      while (await User.exists({ username })) {
-        username = `${baseUsername}${counter++}`;
-      }
 
       user = new User({
         fullName: name || 'Facebook User',
         email,
-        username,
         password: fakePassword,
         avatar: picture,
         isVerified: true,
@@ -396,7 +475,6 @@ export const updateProfile = async (req, res, next) => {
   try {
     const {
       fullName,
-      username,
       email,
       phone,
       address,
@@ -419,7 +497,6 @@ export const updateProfile = async (req, res, next) => {
     // Build update object
     const updateFields = {};
     if (fullName) updateFields.fullName = fullName;
-    if (username) updateFields.username = username;
     if (email) updateFields.email = email;
     if (phone) updateFields.phone = phone;
     if (address) updateFields.address = address;
@@ -555,7 +632,7 @@ export const forgotPassword = async (req, res, next) => {
       email: user.email,
       templateType: 'PASSWORD_RESET',
       templateData: {
-        name: user.username,
+        name: user.fullName,
         resetLink: `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`,
       },
     });
@@ -767,7 +844,7 @@ export const resendVerification = async (req, res, next) => {
       email: user.email,
       templateType: 'VERIFICATION',
       templateData: {
-        name: user.username,
+        name: user.fullName,
         verificationLink: `${
           process.env.FRONTEND_URL || 'http://localhost:5000'
         }/verify-email?token=${verificationToken}`,
@@ -825,3 +902,204 @@ export const refreshToken = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Invalid refresh token', 401));
   }
 });
+
+/**
+ * @desc    Send OTP to email
+ * @route   POST /api/auth/send-otp
+ * @access  Public
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ * @returns {Object} Response with success message
+ */
+export const sendOTP = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return next(new ErrorResponse('Email is required', 400));
+    }
+
+    // Clean expired OTPs
+    cleanExpiredOTPs();
+
+    // Check if OTP was sent recently (rate limiting - 1 minute)
+    const existingOTP = otpStore.get(email);
+    if (existingOTP && existingOTP.expiresAt > Date.now() + 54000) {
+      // OTP sent less than 1 minute ago
+      return next(
+        new ErrorResponse(
+          'OTP was sent recently. Please wait before requesting a new one.',
+          429
+        )
+      );
+    }
+
+    // Generate new OTP
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+    // Store OTP
+    otpStore.set(email, {
+      otp,
+      expiresAt,
+      attempts: 0,
+    });
+
+    // Always log OTP in development (before trying to send email)
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('\n========================================');
+      console.log(`📧 OTP for ${email}`);
+      console.log(`🔐 OTP Code: ${otp}`);
+      console.log(`⏰ Expires in: 5 minutes`);
+      console.log('========================================\n');
+    }
+
+    // Send OTP via email
+    try {
+      // Get user if exists to get fullName
+      const user = await User.findOne({ email });
+      const name = user ? user.fullName : 'User';
+
+      await sendTemplatedEmail({
+        email,
+        templateType: 'OTP',
+        templateData: {
+          name,
+          otp,
+          expiresIn: '5 minutes',
+        },
+      });
+      logger.info('OTP sent successfully', { email });
+    } catch (emailError) {
+      logger.error('Failed to send OTP email', {
+        error: emailError.message,
+        email,
+      });
+      // In development, OTP is already logged above
+      if (process.env.NODE_ENV !== 'production') {
+        logger.warn('Email service not configured. OTP is logged in console above.');
+      }
+    }
+
+    const responseData = {
+      success: true,
+      message: 'OTP sent successfully to your email',
+    };
+
+    // In development, include OTP in response for testing
+    if (process.env.NODE_ENV !== 'production') {
+      responseData.otp = otp; // Only in development
+      responseData.message += ' (Check console or response for OTP in development)';
+    }
+
+    res.status(200).json(responseData);
+  } catch (error) {
+    logger.error('Error in sendOTP controller', {
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  }
+};
+
+/**
+ * @desc    Verify OTP
+ * @route   POST /api/auth/verify-otp
+ * @access  Public
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ * @returns {Object} Response with verification result and tokens
+ */
+export const verifyOTP = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return next(new ErrorResponse('Email and OTP are required', 400));
+    }
+
+    // Clean expired OTPs
+    cleanExpiredOTPs();
+
+    // Get stored OTP
+    const storedOTP = otpStore.get(email);
+
+    if (!storedOTP) {
+      return next(new ErrorResponse('OTP not found or expired. Please request a new OTP.', 400));
+    }
+
+    // Check if OTP is expired
+    if (storedOTP.expiresAt < Date.now()) {
+      otpStore.delete(email);
+      return next(new ErrorResponse('OTP has expired. Please request a new OTP.', 400));
+    }
+
+    // Check attempts (max 5 attempts)
+    if (storedOTP.attempts >= 5) {
+      otpStore.delete(email);
+      return next(
+        new ErrorResponse(
+          'Too many failed attempts. Please request a new OTP.',
+          429
+        )
+      );
+    }
+
+    // Verify OTP
+    if (storedOTP.otp !== otp) {
+      storedOTP.attempts += 1;
+      return next(new ErrorResponse('Invalid OTP. Please try again.', 400));
+    }
+
+    // OTP is valid - remove from store
+    otpStore.delete(email);
+
+    // Find user by email
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return next(new ErrorResponse('User not found', 404));
+    }
+
+    // Verify the user if not already verified
+    if (!user.isVerified) {
+      user.isVerified = true;
+      user.verificationToken = undefined;
+      user.verificationTokenExpires = undefined;
+      await user.save();
+      logger.info('User verified via OTP', { userId: user._id });
+    }
+
+    // Generate tokens
+    const accessToken = generateToken({ id: user._id }, process.env.JWT_EXPIRES_IN || '1d');
+    const refreshToken = generateToken(
+      { id: user._id },
+      process.env.JWT_REFRESH_EXPIRES_IN || '7d'
+    );
+
+    // Remove sensitive data
+    user.password = undefined;
+    user.verificationToken = undefined;
+    user.verificationTokenExpires = undefined;
+
+    res.status(200).json({
+      success: true,
+      message: 'OTP verified successfully',
+      data: {
+        user,
+        tokens: {
+          accessToken,
+          refreshToken,
+        },
+      },
+    });
+  } catch (error) {
+    logger.error('Error in verifyOTP controller', {
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  }
+};
