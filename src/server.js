@@ -13,7 +13,6 @@ import productRoutes from "./routes/product.routes.js";
 import categoryRoutes from "./routes/category.routes.js";
 import attributeRoutes from "./routes/attribute.routes.js";
 import inventoryRoutes from "./routes/inventory.routes.js";
-import orderRoutes from './routes/order.routes.js';
 import logger from "./utils/logger.js";
 import { setupUploadDirectories } from "./utils/setupUploads.js";
 import cartRoutes from './routes/cart.routes.js';
