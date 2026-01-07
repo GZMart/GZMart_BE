@@ -15,7 +15,8 @@ import attributeRoutes from "./routes/attribute.routes.js";
 import inventoryRoutes from "./routes/inventory.routes.js";
 import logger from "./utils/logger.js";
 import { setupUploadDirectories } from "./utils/setupUploads.js";
-
+import cartRoutes from './routes/cart.routes.js';
+import orderRoutes from './routes/order.routes.js';
 // Load environment variables
 dotenv.config();
 
@@ -143,6 +144,8 @@ app.use("/api/products", productRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/attributes", attributeRoutes);
 app.use("/api/inventory", inventoryRoutes);
+app.use('/api/cart', cartRoutes);
+app.use('/api/orders', orderRoutes);
 // Error handler
 app.use(errorHandler);
 
