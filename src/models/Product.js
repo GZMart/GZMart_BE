@@ -56,7 +56,6 @@ const modelSchema = new mongoose.Schema(
       required: [true, "SKU is required"],
       trim: true,
       uppercase: true,
-      unique: true,
       maxlength: [100, "SKU cannot exceed 100 characters"],
     },
     price: {
@@ -107,7 +106,6 @@ const productSchema = new mongoose.Schema(
     },
     slug: {
       type: String,
-      unique: true,
       lowercase: true,
       trim: true,
     },
@@ -242,7 +240,8 @@ productSchema.index({ originalPrice: 1 });
 productSchema.index({ sold: -1 });
 productSchema.index({ rating: -1 });
 productSchema.index({ createdAt: -1 });
-productSchema.index({ "models.sku": 1 });
+productSchema.index({ "models.sku": 1 }, { unique: true });
+productSchema.index({ slug: 1 }, { unique: true });
 productSchema.index({ isFeatured: 1, status: 1 });
 productSchema.index({ isNewArrival: 1, status: 1 });
 
@@ -269,7 +268,6 @@ productSchema.pre("save", function (next) {
   if (this.isNew) {
     this.isNewArrival = true;
   }
-  next();
 });
 
 export default mongoose.model("Product", productSchema);

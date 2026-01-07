@@ -1,7 +1,6 @@
 import Deal from "../models/Deal.js";
 import Product from "../models/Product.js";
-import ProductModel from "../models/ProductModel.js";
-import ErrorResponse from "../utils/errorResponse.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
 
 class DealService {
   /**
@@ -45,9 +44,8 @@ class DealService {
     // Enrich with price info
     const enrichedDeals = await Promise.all(
       validDeals.map(async (deal) => {
-        const models = await ProductModel.find({
-          productId: deal.productId._id,
-        }).lean();
+        // Models are embedded in product document
+        const models = deal.productId.models || [];
 
         if (models.length > 0) {
           const prices = models.map((m) => m.price);
@@ -167,9 +165,8 @@ class DealService {
 
     const enrichedDeals = await Promise.all(
       activeDeals.map(async (deal) => {
-        const models = await ProductModel.find({
-          productId: deal.productId._id,
-        }).lean();
+        // Models are embedded in product document
+        const models = deal.productId.models || [];
 
         if (models.length > 0) {
           const prices = models.map((m) => m.price);

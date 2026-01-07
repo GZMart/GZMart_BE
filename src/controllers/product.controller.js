@@ -8,12 +8,17 @@ import { asyncHandler } from "../middlewares/async.middleware.js";
  * @access  Private (Seller only)
  */
 export const createProduct = asyncHandler(async (req, res, next) => {
-  const sellerId = req.user?._id; 
+  const sellerId = req.user?._id;
 
   const { name, categoryId, models } = req.body;
 
   if (!name || !categoryId || !models || models.length === 0) {
-    return next(new ErrorResponse("Please provide name, categoryId, and at least one model", 400));
+    return next(
+      new ErrorResponse(
+        "Please provide name, categoryId, and at least one model",
+        400
+      )
+    );
   }
 
   const product = await productService.createProduct(req.body, sellerId);
@@ -129,10 +134,21 @@ export const updateProduct = asyncHandler(async (req, res, next) => {
   const sellerId = req.user._id;
   const productId = req.params.id;
 
-  const restrictedFields = ["_id", "sellerId", "sold", "reviewCount", "rating", "createdAt"];
+  const restrictedFields = [
+    "_id",
+    "sellerId",
+    "sold",
+    "reviewCount",
+    "rating",
+    "createdAt",
+  ];
   restrictedFields.forEach((field) => delete req.body[field]);
 
-  const product = await productService.updateProduct(productId, req.body, sellerId);
+  const product = await productService.updateProduct(
+    productId,
+    req.body,
+    sellerId
+  );
 
   res.status(200).json({
     success: true,
@@ -211,7 +227,10 @@ export const getNewArrivals = asyncHandler(async (req, res, next) => {
  */
 export const getRelatedProducts = asyncHandler(async (req, res, next) => {
   const { limit = 10 } = req.query;
-  const products = await productService.getRelatedProducts(req.params.id, parseInt(limit));
+  const products = await productService.getRelatedProducts(
+    req.params.id,
+    parseInt(limit)
+  );
 
   res.status(200).json({
     success: true,
@@ -244,7 +263,7 @@ export const checkStockAvailability = asyncHandler(async (req, res, next) => {
   const { productId, quantity = 1 } = req.query; // Expect productId in query for faster lookup
 
   if (!productId) {
-      return next(new ErrorResponse("Product ID is required", 400));
+    return next(new ErrorResponse("Product ID is required", 400));
   }
 
   const result = await productService.checkStockAvailability(
@@ -265,9 +284,9 @@ export const checkStockAvailability = asyncHandler(async (req, res, next) => {
  * @access  Public
  */
 export const getBestOffers = asyncHandler(async (req, res, next) => {
-    // Logic to be implemented or mapped to trending for now
-    const products = await productService.getTrendingProducts(10);
-    res.status(200).json({ success: true, data: products });
+  // Logic to be implemented or mapped to trending for now
+  const products = await productService.getTrendingProducts(10);
+  res.status(200).json({ success: true, data: products });
 });
 
 /**
@@ -288,9 +307,9 @@ export const getProductsBySeller = asyncHandler(async (req, res, next) => {
     success: true,
     count: result.products.length,
     pagination: {
-        total: result.total,
-        page: result.page,
-        pages: result.pages
+      total: result.total,
+      page: result.page,
+      pages: result.pages,
     },
     data: result.products,
   });
@@ -314,9 +333,9 @@ export const getProductsByCategory = asyncHandler(async (req, res, next) => {
     success: true,
     count: result.products.length,
     pagination: {
-        total: result.total,
-        page: result.page,
-        pages: result.pages
+      total: result.total,
+      page: result.page,
+      pages: result.pages,
     },
     data: result.products,
   });
@@ -343,10 +362,56 @@ export const searchProducts = asyncHandler(async (req, res, next) => {
     success: true,
     count: result.products.length,
     pagination: {
-        total: result.total,
-        page: result.page,
-        pages: result.pages
+      total: result.total,
+      page: result.page,
+      pages: result.pages,
     },
     data: result.products,
   });
 });
+
+/**
+ * @desc    Get variant by tier selection
+ * @route   POST /api/products/:id/variant
+ * @access  Public
+ */
+export const getVariantByTierIndex = asyncHandler(async (req, res, next) => {
+  const { id } = req.params;
+  const { tierIndex } = req.body;
+
+  if (!tierIndex || !Array.isArray(tierIndex) || tierIndex.length === 0) {
+    return next(new ErrorResponse("tierIndex must be a non-empty array", 400));
+  }
+
+  const variant = await productService.getVariantByTierIndex(id, tierIndex);
+
+  res.status(200).json({
+    success: true,
+    message: "Variant retrieved successfully",
+    data: variant,
+  });
+});
+
+/**
+ * @desc    Get available options after tier selection
+ * @route   POST /api/products/:id/available-options
+ * @access  Public
+ */
+export const getAvailableOptionsForSelection = asyncHandler(
+  async (req, res, next) => {
+    const { id } = req.params;
+    const { selection } = req.body;
+
+    if (!selection || typeof selection !== "object") {
+      return next(new ErrorResponse("selection must be an object", 400));
+    }
+
+    const options = await productService.getAvailableOptions(id, selection);
+
+    res.status(200).json({
+      success: true,
+      message: "Available options retrieved successfully",
+      data: options,
+    });
+  }
+);

@@ -2,7 +2,6 @@ import Banner from "../models/Banner.js";
 import Deal from "../models/Deal.js";
 import Category from "../models/Category.js";
 import Product from "../models/Product.js";
-import ProductModel from "../models/ProductModel.js";
 import dealService from "./deal.service.js";
 
 class HomeService {
@@ -120,10 +119,8 @@ class HomeService {
 
     return await Promise.all(
       products.map(async (product) => {
-        // Get models for price range
-        const models = await ProductModel.find({
-          productId: product._id,
-        }).lean();
+        // Models are embedded in product document
+        const models = product.models || [];
 
         if (models.length > 0) {
           const prices = models.map((m) => m.price);

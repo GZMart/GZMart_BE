@@ -1,6 +1,6 @@
 import Category from "../models/Category.js";
 import Product from "../models/Product.js";
-import ErrorResponse from "../utils/errorResponse.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
 import * as productService from "./product.service.js";
 
 /**
@@ -157,12 +157,18 @@ export const deleteCategory = async (categoryId) => {
 
   const productCount = await Product.countDocuments({ categoryId });
   if (productCount > 0) {
-    throw new ErrorResponse(`Cannot delete: Category has ${productCount} products.`, 400);
+    throw new ErrorResponse(
+      `Cannot delete: Category has ${productCount} products.`,
+      400
+    );
   }
 
   const childCount = await Category.countDocuments({ parentId: categoryId });
   if (childCount > 0) {
-    throw new ErrorResponse(`Cannot delete: Category has ${childCount} sub-categories.`, 400);
+    throw new ErrorResponse(
+      `Cannot delete: Category has ${childCount} sub-categories.`,
+      400
+    );
   }
 
   category.status = "inactive";
@@ -256,7 +262,9 @@ export const getCategoryStats = async (categoryId) => {
   const [productCount, childCount, products] = await Promise.all([
     Product.countDocuments({ categoryId, status: "active" }),
     Category.countDocuments({ parentId: categoryId }),
-    Product.find({ categoryId, status: "active" }).select("sold viewCount").lean(),
+    Product.find({ categoryId, status: "active" })
+      .select("sold viewCount")
+      .lean(),
   ]);
 
   const totalSold = products.reduce((sum, p) => sum + (p.sold || 0), 0);
