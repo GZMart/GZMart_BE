@@ -203,6 +203,37 @@ export const getOrdersByStatus = async (req, res, next) => {
 };
 
 /**
+ * Get order status history (audit log)
+ */
+export const getOrderStatusHistory = async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+
+    const order = await Order.findById(orderId)
+      .select('orderNumber status statusHistory')
+      .populate('statusHistory.changedBy', 'fullName email role');
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found',
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        orderNumber: order.orderNumber,
+        currentStatus: order.status,
+        history: order.statusHistory.sort((a, b) => new Date(b.changedAt) - new Date(a.changedAt)),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Get order detail by ID
  */
 export const getOrderDetail = async (req, res, next) => {
@@ -232,12 +263,14 @@ export const getOrderDetail = async (req, res, next) => {
 
 /**
  * Update order status with validation
- * Body: { newStatus, trackingNumber?, estimatedDelivery?, notes? }
+ * Body: { newStatus, trackingNumber?, estimatedDelivery?, notes?, reason? }
  */
 export const updateOrderStatus = async (req, res, next) => {
   try {
     const { orderId } = req.params;
-    const { newStatus, trackingNumber, estimatedDelivery, notes } = req.body;
+    const { newStatus, trackingNumber, estimatedDelivery, notes, reason } = req.body;
+    const userId = req.user._id;
+    const userRole = req.user.role;
 
     const order = await Order.findById(orderId);
 
@@ -270,6 +303,9 @@ export const updateOrderStatus = async (req, res, next) => {
       });
     }
 
+    // Store old status for history
+    const oldStatus = order.status;
+
     // Update status
     order.status = newStatus;
 
@@ -278,11 +314,22 @@ export const updateOrderStatus = async (req, res, next) => {
     if (estimatedDelivery) order.estimatedDelivery = estimatedDelivery;
     if (notes) order.notes = notes;
 
+    // Add to status history
+    order.statusHistory.push({
+      status: newStatus,
+      changedBy: userId,
+      changedByRole: userRole,
+      changedAt: new Date(),
+      reason: reason || `Changed from ${oldStatus} to ${newStatus}`,
+      notes: notes || undefined,
+    });
+
     await order.save();
 
     const updatedOrder = await Order.findById(orderId)
       .populate('userId', 'fullName email phone')
-      .populate('items');
+      .populate('items')
+      .populate('statusHistory.changedBy', 'fullName email role');
 
     res.status(200).json({
       success: true,

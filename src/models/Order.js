@@ -11,7 +11,7 @@ const orderSchema = new mongoose.Schema(
     orderNumber: {
       type: String,
       unique: true,
-      required: [true, 'Order number is required'],
+      sparse: true,
     },
     // Order Status: pending, processing, shipped, delivered, delivered_pending_confirmation, completed, cancelled, refunded, refund_pending, under_investigation
     status: {
@@ -108,7 +108,6 @@ const orderSchema = new mongoose.Schema(
         message: '{VALUE} is not a valid payment status',
       },
       default: 'pending',
-      index: true,
     },
     paymentDate: {
       type: Date,
@@ -235,10 +234,43 @@ const orderSchema = new mongoose.Schema(
       },
     ],
 
-    // Additional Info
-    notes: {
-      type: String,
-    },
+    // Status History - Audit Log
+    statusHistory: [
+      {
+        status: {
+          type: String,
+          enum: {
+            values: [
+              'pending',
+              'processing',
+              'shipped',
+              'delivered',
+              'delivered_pending_confirmation',
+              'completed',
+              'cancelled',
+              'refunded',
+              'refund_pending',
+              'under_investigation',
+            ],
+          },
+        },
+        changedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+          required: true,
+        },
+        changedByRole: {
+          type: String,
+          enum: ['buyer', 'seller', 'admin'],
+        },
+        changedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        reason: String,
+        notes: String,
+      },
+    ],
     isActive: {
       type: Boolean,
       default: true,
@@ -260,18 +292,15 @@ const orderSchema = new mongoose.Schema(
 
 // Indexes
 orderSchema.index({ userId: 1, status: 1 });
-orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ createdAt: -1 });
-orderSchema.index({ paymentStatus: 1 });
 
 // Auto-generate orderNumber before saving
-orderSchema.pre('save', async function (next) {
+orderSchema.pre('save', function () {
   if (!this.orderNumber) {
     const timestamp = Date.now();
     const random = Math.floor(Math.random() * 10000);
     this.orderNumber = `ORD-${timestamp}-${random}`;
   }
-  next();
 });
 
 const Order = mongoose.model('Order', orderSchema);

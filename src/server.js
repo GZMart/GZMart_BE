@@ -9,6 +9,7 @@ import { corsMiddleware } from './config/cors.config.js';
 import connectDB from './config/database.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 import authRoutes from './routes/auth.routes.js';
+import orderRoutes from './routes/order.routes.js';
 import logger from './utils/logger.js';
 import { setupUploadDirectories } from './utils/setupUploads.js';
 
@@ -126,6 +127,7 @@ app.get('/api/tryon/debug', (req, res) => {
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/orders', orderRoutes);
 
 // Error handler
 app.use(errorHandler);

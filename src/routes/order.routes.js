@@ -7,16 +7,21 @@ import {
   getOrdersByStatus,
   generateDeliveryNote,
   cancelOrder,
-} from '../controllers/orderController.js';
-import { protect, authorize } from '../middlewares/authMiddleware.js';
-import User from '../models/Users.js';
+  getOrderStatusHistory,
+} from '../controllers/order.controller.js';
+import { protect, authorize } from '../middlewares/auth.middleware.js';
+import User from '../models/User.js';
 
 const router = express.Router();
 
-// All routes require authentication
-// router.use(protect);
-// Temporarily disabled for testing
-// router.use(authorize('shop', 'admin'));
+// Protect all routes except test endpoint
+router.use((req, res, next) => {
+  // Skip protection for test endpoint
+  if (req.path === '/test/users' && req.method === 'GET') {
+    return next();
+  }
+  protect(req, res, next);
+});
 
 /**
  * @route   GET /api/orders/test/users
@@ -53,36 +58,43 @@ router.get('/', getSellerOrders);
 /**
  * @route   GET /api/orders/status/:status
  * @desc    Get orders filtered by status
- * @access  Private (Seller)
+ * @access  Private (Seller/Admin)
  */
-router.get('/status/:status', getOrdersByStatus);
+router.get('/status/:status', authorize('seller', 'admin'), getOrdersByStatus);
 
 /**
  * @route   GET /api/orders/:orderId
  * @desc    Get order detail by ID
- * @access  Private (Seller)
+ * @access  Private (Seller/Admin)
  */
-router.get('/:orderId', getOrderDetail);
+router.get('/:orderId', authorize('seller', 'admin'), getOrderDetail);
 
 /**
  * @route   PUT /api/orders/:orderId/status
  * @desc    Update order status (pending -> processing -> shipped -> delivered)
- * @access  Private (Seller)
+ * @access  Private (Seller/Admin)
  */
-router.put('/:orderId/status', updateOrderStatus);
+router.put('/:orderId/status', authorize('seller', 'admin'), updateOrderStatus);
 
 /**
  * @route   PUT /api/orders/:orderId/cancel
  * @desc    Cancel order with reason
- * @access  Private (Seller)
+ * @access  Private (Seller/Admin)
  */
-router.put('/:orderId/cancel', cancelOrder);
+router.put('/:orderId/cancel', authorize('seller', 'admin'), cancelOrder);
+
+/**
+ * @route   GET /api/orders/:orderId/status-history
+ * @desc    Get order status change history (audit log)
+ * @access  Private (Seller/Admin)
+ */
+router.get('/:orderId/status-history', authorize('seller', 'admin'), getOrderStatusHistory);
 
 /**
  * @route   GET /api/orders/:orderId/delivery-note
  * @desc    Generate delivery note (HTML/PDF)
- * @access  Private (Seller)
+ * @access  Private (Seller/Admin)
  */
-router.get('/:orderId/delivery-note', generateDeliveryNote);
+router.get('/:orderId/delivery-note', authorize('seller', 'admin'), generateDeliveryNote);
 
 export default router;
