@@ -11,6 +11,8 @@ import { errorHandler } from './middlewares/error.middleware.js';
 import authRoutes from './routes/auth.routes.js';
 import logger from './utils/logger.js';
 import { setupUploadDirectories } from './utils/setupUploads.js';
+import cartRoutes from './routes/cart.routes.js';
+import orderRoutes from './routes/order.routes.js';
 
 // Load environment variables
 dotenv.config();
@@ -126,6 +128,8 @@ app.get('/api/tryon/debug', (req, res) => {
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/cart', cartRoutes);
+app.use('/api/orders', orderRoutes);
 
 // Error handler
 app.use(errorHandler);
