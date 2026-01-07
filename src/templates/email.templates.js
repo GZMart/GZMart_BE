@@ -68,4 +68,29 @@ export const emailTemplates = {
       </div>
     `,
   },
+
+  OTP: {
+    subject: 'Your Verification Code - GZMart',
+    getContent: ({ name, otp, expiresIn = '5 minutes' }) => `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
+        <div style="text-align: center; margin-bottom: 30px;">
+          <h1 style="color: #2c3e50; margin: 0;">Verification Code</h1>
+        </div>
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
+          <p style="color: #34495e; margin: 0;">Hi ${name || 'User'},</p>
+          <p style="color: #34495e; margin: 15px 0 0 0;">Your verification code is:</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <div style="background-color: #3498db; color: white; padding: 20px; border-radius: 8px; font-size: 32px; font-weight: bold; letter-spacing: 8px; display: inline-block;">
+              ${otp}
+            </div>
+          </div>
+          <p style="color: #34495e; margin: 15px 0 0 0;">This code will expire in ${expiresIn}.</p>
+          <p style="color: #34495e; margin: 15px 0 0 0;">If you didn't request this code, please ignore this email.</p>
+        </div>
+        <div style="text-align: center; color: #7f8c8d; font-size: 14px;">
+          <p style="margin: 0;">Best regards,<br>GZMart Team</p>
+        </div>
+      </div>
+    `,
+  },
 };
