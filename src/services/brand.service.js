@@ -1,6 +1,6 @@
 import Brand from "../models/Brand.js";
 import Product from "../models/Product.js";
-import ErrorResponse from "../utils/errorResponse.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
 
 class BrandService {
   /**

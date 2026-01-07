@@ -10,7 +10,6 @@ const categorySchema = new mongoose.Schema(
     },
     slug: {
       type: String,
-      unique: true,
       lowercase: true,
       trim: true,
       // Removed 'required' here because the pre-save middleware handles it
@@ -74,7 +73,7 @@ const categorySchema = new mongoose.Schema(
 );
 
 // Indexes (Merged)
-categorySchema.index({ slug: 1 });
+categorySchema.index({ slug: 1 }, { unique: true });
 categorySchema.index({ parentId: 1 });
 categorySchema.index({ status: 1 });
 categorySchema.index({ order: 1 });

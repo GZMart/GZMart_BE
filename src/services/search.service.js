@@ -1,8 +1,6 @@
 import Product from "../models/Product.js";
-import ProductModel from "../models/ProductModel.js";
-import ProductTier from "../models/ProductTier.js";
 import Deal from "../models/Deal.js";
-import productService from "./product.service.js";
+import * as productService from "./product.service.js";
 
 class SearchService {
   /**
@@ -80,26 +78,9 @@ class SearchService {
 
     let products = await productsQuery.lean();
 
-    // OPTIMIZED: Batch queries for models and deals instead of N+1
+    // Models are embedded in product documents
     const now = new Date();
     const productIds = products.map((p) => p._id);
-
-    // Batch query for all models
-    const allModels = await ProductModel.find({
-      productId: { $in: productIds },
-    })
-      .select("productId price stock")
-      .lean();
-
-    // Group models by productId
-    const modelsByProduct = {};
-    allModels.forEach((model) => {
-      const key = model.productId.toString();
-      if (!modelsByProduct[key]) {
-        modelsByProduct[key] = [];
-      }
-      modelsByProduct[key].push(model);
-    });
 
     // Batch query for all active deals
     const allDeals = await Deal.find({
@@ -117,10 +98,9 @@ class SearchService {
       dealsByProduct[deal.productId.toString()] = deal;
     });
 
-    // Enrich products with price and deals
+    // Enrich products with price and deals (models are embedded)
     products = products.map((product) => {
-      const productKey = product._id.toString();
-      const models = modelsByProduct[productKey] || [];
+      const models = product.models || [];
 
       if (models.length > 0) {
         const prices = models.map((m) => m.price);
@@ -129,7 +109,7 @@ class SearchService {
         product.totalStock = models.reduce((sum, m) => sum + m.stock, 0);
       }
 
-      const activeDeal = dealsByProduct[productKey];
+      const activeDeal = dealsByProduct[product._id.toString()];
       if (activeDeal) {
         product.activeDeal = activeDeal;
       }
@@ -258,48 +238,46 @@ class SearchService {
     // Get unique brands
     const brands = await Product.distinct("brand", query);
 
-    // Get price range
-    const products = await Product.find(query).select("_id").lean();
-    const productIds = products.map((p) => p._id);
+    // Get price range from embedded models
+    const products = await Product.find(query).select("models").lean();
 
-    const models = await ProductModel.find({
-      productId: { $in: productIds },
-      stock: { $gt: 0 },
-    })
-      .select("price")
-      .lean();
-
-    let priceRange = { min: 0, max: 0 };
-    if (models.length > 0) {
-      const prices = models.map((m) => m.price);
-      priceRange = {
-        min: Math.min(...prices),
-        max: Math.max(...prices),
-      };
-    }
-
-    // Get available sizes and colors from tiers
-    const tiers = await ProductTier.find({
-      productId: { $in: productIds },
-    }).lean();
-
+    const allPrices = [];
     const colors = [];
     const sizes = [];
 
-    tiers.forEach((tier) => {
-      if (
-        tier.name.toLowerCase().includes("color") ||
-        tier.name.toLowerCase().includes("màu")
-      ) {
-        colors.push(...tier.options);
-      }
-      if (
-        tier.name.toLowerCase().includes("size") ||
-        tier.name.toLowerCase().includes("kích")
-      ) {
-        sizes.push(...tier.options);
-      }
+    products.forEach((product) => {
+      const models = product.models || [];
+      models.forEach((model) => {
+        if (model.stock > 0) {
+          allPrices.push(model.price);
+        }
+      });
+
+      // Get available sizes and colors from embedded tiers
+      const tiers = product.tiers || [];
+      tiers.forEach((tier) => {
+        if (
+          tier.name.toLowerCase().includes("color") ||
+          tier.name.toLowerCase().includes("màu")
+        ) {
+          colors.push(...tier.options);
+        }
+        if (
+          tier.name.toLowerCase().includes("size") ||
+          tier.name.toLowerCase().includes("kích")
+        ) {
+          sizes.push(...tier.options);
+        }
+      });
     });
+
+    let priceRange = { min: 0, max: 0 };
+    if (allPrices.length > 0) {
+      priceRange = {
+        min: Math.min(...allPrices),
+        max: Math.max(...allPrices),
+      };
+    }
 
     return {
       brands: [...new Set(brands.filter(Boolean))].sort(),
@@ -329,7 +307,7 @@ class SearchService {
       inStock = false,
     } = options;
 
-    return await productService.getProductsWithAdvancedFilters({
+    return await productService.getProductsAdvanced({
       page,
       limit,
       categoryId,
