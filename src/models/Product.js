@@ -237,6 +237,7 @@ productSchema.index({ "models.sku": 1 });
 
 // Virtual for total stock across all models
 productSchema.virtual("totalStock").get(function () {
+  if (!this.models) return 0;
   return this.models.reduce((sum, model) => sum + model.stock, 0);
 });
 
