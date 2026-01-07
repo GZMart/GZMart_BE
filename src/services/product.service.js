@@ -30,7 +30,7 @@ export const createProduct = async (productData, sellerId) => {
     models,
     images,
     tags,
-    brand
+    brand,
   } = productData;
 
   const category = await Category.findById(categoryId);
@@ -66,7 +66,10 @@ export const createProduct = async (productData, sellerId) => {
   models.forEach((model, modelIdx) => {
     if (!tiers || tiers.length === 0) {
       if (model.tierIndex && model.tierIndex.length > 0) {
-        throw new ErrorResponse(`Model ${modelIdx} has unexpected tierIndex`, 400);
+        throw new ErrorResponse(
+          `Model ${modelIdx} has unexpected tierIndex`,
+          400
+        );
       }
       return;
     }
@@ -78,7 +81,10 @@ export const createProduct = async (productData, sellerId) => {
     model.tierIndex.forEach((idx, tierPosition) => {
       const tier = tiers[tierPosition];
       if (idx < 0 || idx >= tier.options.length) {
-        throw new ErrorResponse(`Model ${modelIdx}: tierIndex out of bounds`, 400);
+        throw new ErrorResponse(
+          `Model ${modelIdx}: tierIndex out of bounds`,
+          400
+        );
       }
     });
   });
@@ -108,12 +114,19 @@ export const createProduct = async (productData, sellerId) => {
     normalizedSKUs.push(model.sku);
   }
 
-  const duplicates = normalizedSKUs.filter((sku, index) => normalizedSKUs.indexOf(sku) !== index);
+  const duplicates = normalizedSKUs.filter(
+    (sku, index) => normalizedSKUs.indexOf(sku) !== index
+  );
   if (duplicates.length > 0) {
-    throw new ErrorResponse(`Duplicate SKUs in payload: ${[...new Set(duplicates)].join(", ")}`, 400);
+    throw new ErrorResponse(
+      `Duplicate SKUs in payload: ${[...new Set(duplicates)].join(", ")}`,
+      400
+    );
   }
 
-  const existingSKUs = await Product.find({ "models.sku": { $in: normalizedSKUs } }).select("models.sku");
+  const existingSKUs = await Product.find({
+    "models.sku": { $in: normalizedSKUs },
+  }).select("models.sku");
   if (existingSKUs.length > 0) {
     throw new ErrorResponse("SKU already exists in database", 400);
   }
@@ -183,19 +196,19 @@ export const getProductById = async (productId) => {
  * Get product by Slug
  */
 export const getProductBySlug = async (slug) => {
-    const product = await Product.findOne({ slug }).populate(
-      "categoryId",
-      "name slug"
-    );
-  
-    if (!product) {
-      throw new ErrorResponse("Product not found", 404);
-    }
+  const product = await Product.findOne({ slug }).populate(
+    "categoryId",
+    "name slug"
+  );
 
-    product.viewCount = (product.viewCount || 0) + 1;
-    await product.save({ validateBeforeSave: false });
-  
-    return product;
+  if (!product) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
+  product.viewCount = (product.viewCount || 0) + 1;
+  await product.save({ validateBeforeSave: false });
+
+  return product;
 };
 
 /**
@@ -218,7 +231,7 @@ export const getProducts = async (filters = {}, options = {}) => {
 
   if (categoryId) query.categoryId = categoryId;
   if (status) query.status = status;
-  
+
   if (minPrice || maxPrice) {
     // Query embedded models price (Optimized)
     query["models.price"] = {};
@@ -261,94 +274,94 @@ export const getProducts = async (filters = {}, options = {}) => {
  * (Replaces GZM-13 Aggregation with Optimized Embedded Query)
  */
 export const getProductsAdvanced = async (options) => {
-    const {
-        page = 1,
-        limit = 20,
-        categoryId,
-        brands, // Array
-        minPrice,
-        maxPrice,
-        minRating,
-        inStock,
-        colors, // Array of strings
-        sizes   // Array of strings
-    } = options;
+  const {
+    page = 1,
+    limit = 20,
+    categoryId,
+    brands, // Array
+    minPrice,
+    maxPrice,
+    minRating,
+    inStock,
+    colors, // Array of strings
+    sizes, // Array of strings
+  } = options;
 
-    const query = { status: "active" };
+  const query = { status: "active" };
 
-    if (categoryId) query.categoryId = categoryId;
-    
-    if (brands && brands.length > 0) {
-        query.brand = { $in: brands };
+  if (categoryId) query.categoryId = categoryId;
+
+  if (brands && brands.length > 0) {
+    query.brand = { $in: brands };
+  }
+
+  if (minRating) {
+    query.rating = { $gte: Number(minRating) };
+  }
+
+  // Embedded Price Filter
+  if (minPrice || maxPrice) {
+    query["models.price"] = {};
+    if (minPrice) query["models.price"].$gte = Number(minPrice);
+    if (maxPrice) query["models.price"].$lte = Number(maxPrice);
+  }
+
+  // Embedded Stock Filter
+  if (inStock) {
+    // At least one model has stock > 0
+    query["models.stock"] = { $gt: 0 };
+  }
+
+  // Attribute/Tier Filter (Colors/Sizes)
+  if ((colors && colors.length > 0) || (sizes && sizes.length > 0)) {
+    // Logic: Search inside tiers options
+    const orConditions = [];
+    if (colors && colors.length > 0) {
+      orConditions.push({
+        tiers: {
+          $elemMatch: {
+            name: { $regex: /color|màu/i },
+            options: { $in: colors },
+          },
+        },
+      });
     }
-
-    if (minRating) {
-        query.rating = { $gte: Number(minRating) };
+    if (sizes && sizes.length > 0) {
+      orConditions.push({
+        tiers: {
+          $elemMatch: {
+            name: { $regex: /size|kích/i },
+            options: { $in: sizes },
+          },
+        },
+      });
     }
-
-    // Embedded Price Filter
-    if (minPrice || maxPrice) {
-        query["models.price"] = {};
-        if (minPrice) query["models.price"].$gte = Number(minPrice);
-        if (maxPrice) query["models.price"].$lte = Number(maxPrice);
+    if (orConditions.length > 0) {
+      query.$and = orConditions;
     }
+  }
 
-    // Embedded Stock Filter
-    if (inStock) {
-        // At least one model has stock > 0
-        query["models.stock"] = { $gt: 0 };
-    }
+  const skip = (page - 1) * limit;
 
-    // Attribute/Tier Filter (Colors/Sizes)
-    if ((colors && colors.length > 0) || (sizes && sizes.length > 0)) {
-        // Logic: Search inside tiers options
-        const orConditions = [];
-        if (colors && colors.length > 0) {
-            orConditions.push({
-                tiers: {
-                    $elemMatch: {
-                        name: { $regex: /color|màu/i },
-                        options: { $in: colors }
-                    }
-                }
-            });
-        }
-        if (sizes && sizes.length > 0) {
-             orConditions.push({
-                tiers: {
-                    $elemMatch: {
-                        name: { $regex: /size|kích/i },
-                        options: { $in: sizes }
-                    }
-                }
-            });
-        }
-        if (orConditions.length > 0) {
-            query.$and = orConditions;
-        }
-    }
+  const [products, total] = await Promise.all([
+    Product.find(query)
+      .populate("categoryId", "name slug")
+      .sort({ isFeatured: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Product.countDocuments(query),
+  ]);
 
-    const skip = (page - 1) * limit;
-
-    const [products, total] = await Promise.all([
-        Product.find(query)
-          .populate("categoryId", "name slug")
-          .sort({ isFeatured: -1, createdAt: -1 })
-          .skip(skip)
-          .limit(limit)
-          .lean(),
-        Product.countDocuments(query),
-    ]);
-
-    return {
-        products,
-        pagination: {
-            total,
-            page,
-            pages: Math.ceil(total / limit),
-            limit,
-        }
-    };
+  return {
+    products,
+    pagination: {
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      limit,
+    },
+  };
 };
 
 /**
@@ -369,11 +382,14 @@ export const updateProduct = async (productId, updateData, sellerId) => {
   if (updateData.models) {
     const prices = updateData.models.map((m) => m.price);
     updateData.originalPrice = Math.min(...prices);
-    
+
     // Auto update total stock availability status
-    const totalStock = updateData.models.reduce((sum, m) => sum + (m.stock || 0), 0);
+    const totalStock = updateData.models.reduce(
+      (sum, m) => sum + (m.stock || 0),
+      0
+    );
     if (totalStock === 0 && product.status === "active") {
-        updateData.status = "out_of_stock";
+      updateData.status = "out_of_stock";
     }
   }
 
@@ -411,166 +427,235 @@ export const deleteProduct = async (productId, sellerId) => {
  * Get featured products (GZM-13 Feature)
  */
 export const getFeaturedProducts = async (limit = 10) => {
-    return await Product.find({ status: "active", isFeatured: true })
-      .populate("categoryId", "name slug")
-      .sort("-createdAt")
-      .limit(limit)
-      .lean();
+  return await Product.find({ status: "active", isFeatured: true })
+    .populate("categoryId", "name slug")
+    .sort("-createdAt")
+    .limit(limit)
+    .lean();
 };
-  
+
 /**
  * Get trending products (GZM-13 Feature)
  */
 export const getTrendingProducts = async (limit = 10) => {
-    // Trending based on sales or explicit flag
-    return await Product.find({ status: "active", $or: [{ isTrending: true }, { sold: { $gt: 10 } }] })
-        .populate("categoryId", "name slug")
-        .sort({ sold: -1 })
-        .limit(limit)
-        .lean();
+  // Trending based on sales or explicit flag
+  return await Product.find({
+    status: "active",
+    $or: [{ isTrending: true }, { sold: { $gt: 10 } }],
+  })
+    .populate("categoryId", "name slug")
+    .sort({ sold: -1 })
+    .limit(limit)
+    .lean();
 };
 
 /**
  * Get new arrivals (GZM-13 Feature)
  */
 export const getNewArrivals = async (limit = 10) => {
-    return await Product.find({ status: "active", isNewArrival: true })
-        .populate("categoryId", "name slug")
-        .sort("-createdAt")
-        .limit(limit)
-        .lean();
+  return await Product.find({ status: "active", isNewArrival: true })
+    .populate("categoryId", "name slug")
+    .sort("-createdAt")
+    .limit(limit)
+    .lean();
 };
 
 /**
  * Check stock availability for a specific SKU/Model ID
  */
-export const checkStockAvailability = async (productId, modelId, quantity = 1) => {
-    const product = await Product.findOne(
-        { _id: productId, "models._id": modelId },
-        { "models.$": 1 } // Only fetch the matching model
-    );
+export const checkStockAvailability = async (
+  productId,
+  modelId,
+  quantity = 1
+) => {
+  const product = await Product.findOne(
+    { _id: productId, "models._id": modelId },
+    { "models.$": 1 } // Only fetch the matching model
+  );
 
-    if (!product || !product.models || product.models.length === 0) {
-        throw new ErrorResponse("Product variant not found", 404);
-    }
+  if (!product || !product.models || product.models.length === 0) {
+    throw new ErrorResponse("Product variant not found", 404);
+  }
 
-    const model = product.models[0];
-    return {
-        available: model.stock >= quantity,
-        stock: model.stock,
-        price: model.price
-    };
+  const model = product.models[0];
+  return {
+    available: model.stock >= quantity,
+    stock: model.stock,
+    price: model.price,
+  };
 };
 
 /**
  * Get filter metadata (Min/Max Price, Brands) for UI
  */
 export const getAvailableFilters = async (categoryId = null) => {
-    const query = { status: "active" };
-    if (categoryId) query.categoryId = categoryId;
+  const query = { status: "active" };
+  if (categoryId) query.categoryId = categoryId;
 
-    // Get unique brands
-    const brands = await Product.distinct("brand", query);
+  // Get unique brands
+  const brands = await Product.distinct("brand", query);
 
-    // Get price range (Optimized using aggregation on embedded models)
-    const priceStats = await Product.aggregate([
-        { $match: query },
-        { $unwind: "$models" },
-        {
-            $group: {
-                _id: null,
-                min: { $min: "$models.price" },
-                max: { $max: "$models.price" }
-            }
-        }
-    ]);
+  // Get price range (Optimized using aggregation on embedded models)
+  const priceStats = await Product.aggregate([
+    { $match: query },
+    { $unwind: "$models" },
+    {
+      $group: {
+        _id: null,
+        min: { $min: "$models.price" },
+        max: { $max: "$models.price" },
+      },
+    },
+  ]);
 
-    const priceRange = priceStats.length > 0 
-        ? { min: priceStats[0].min, max: priceStats[0].max }
-        : { min: 0, max: 0 };
+  const priceRange =
+    priceStats.length > 0
+      ? { min: priceStats[0].min, max: priceStats[0].max }
+      : { min: 0, max: 0 };
 
-    return {
-        brands: brands.filter(Boolean).sort(),
-        priceRange,
-        ratings: [5, 4, 3, 2, 1]
-    };
+  return {
+    brands: brands.filter(Boolean).sort(),
+    priceRange,
+    ratings: [5, 4, 3, 2, 1],
+  };
 };
 
 /**
  * Get products by seller ID
  */
 export const getProductsBySeller = async (sellerId, options = {}) => {
-    const { page = 1, limit = 20 } = options;
-    const skip = (page - 1) * limit;
+  const { page = 1, limit = 20 } = options;
+  const skip = (page - 1) * limit;
 
-    const [products, total] = await Promise.all([
-        Product.find({ sellerId })
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .lean(),
-        Product.countDocuments({ sellerId })
-    ]);
+  const [products, total] = await Promise.all([
+    Product.find({ sellerId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Product.countDocuments({ sellerId }),
+  ]);
 
-    return { products, total, page, pages: Math.ceil(total / limit) };
+  return { products, total, page, pages: Math.ceil(total / limit) };
 };
 
 /**
  * Get products by category ID
  */
 export const getProductsByCategory = async (categoryId, options = {}) => {
-    const { page = 1, limit = 20 } = options;
-    const skip = (page - 1) * limit;
+  const { page = 1, limit = 20 } = options;
+  const skip = (page - 1) * limit;
 
-    const [products, total] = await Promise.all([
-        Product.find({ categoryId, status: "active" })
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .lean(),
-        Product.countDocuments({ categoryId, status: "active" })
-    ]);
+  const [products, total] = await Promise.all([
+    Product.find({ categoryId, status: "active" })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Product.countDocuments({ categoryId, status: "active" }),
+  ]);
 
-    return { products, total, page, pages: Math.ceil(total / limit) };
+  return { products, total, page, pages: Math.ceil(total / limit) };
 };
 
 /**
  * Simple Search
  */
 export const searchProducts = async (keyword, options = {}) => {
-    const { page = 1, limit = 20 } = options;
-    const skip = (page - 1) * limit;
-    
-    const query = {
-        status: "active",
-        $text: { $search: keyword }
-    };
+  const { page = 1, limit = 20 } = options;
+  const skip = (page - 1) * limit;
 
-    const [products, total] = await Promise.all([
-        Product.find(query)
-            .sort({ score: { $meta: "textScore" } })
-            .skip(skip)
-            .limit(limit)
-            .lean(),
-        Product.countDocuments(query)
-    ]);
+  const query = {
+    status: "active",
+    $text: { $search: keyword },
+  };
 
-    return { products, total, page, pages: Math.ceil(total / limit) };
+  const [products, total] = await Promise.all([
+    Product.find(query)
+      .sort({ score: { $meta: "textScore" } })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Product.countDocuments(query),
+  ]);
+
+  return { products, total, page, pages: Math.ceil(total / limit) };
 };
 
 /**
  * Get related products
  */
 export const getRelatedProducts = async (productId, limit = 10) => {
-    const product = await Product.findById(productId).select("categoryId");
-    if (!product) throw new ErrorResponse("Product not found", 404);
+  const product = await Product.findById(productId).select("categoryId");
+  if (!product) throw new ErrorResponse("Product not found", 404);
 
-    return await Product.find({
-        categoryId: product.categoryId,
-        _id: { $ne: productId },
-        status: "active"
-    })
+  return await Product.find({
+    categoryId: product.categoryId,
+    _id: { $ne: productId },
+    status: "active",
+  })
     .limit(limit)
     .sort({ sold: -1, rating: -1 })
     .lean();
+};
+
+/**
+ * Get variant by tier index
+ */
+export const getVariantByTierIndex = async (productId, tierIndex) => {
+  const product = await Product.findById(productId)
+    .select("models tiers")
+    .lean();
+  if (!product) throw new ErrorResponse("Product not found", 404);
+
+  const models = product.models || [];
+  const variant = models.find((model) => {
+    if (!model.tierIndex || !Array.isArray(model.tierIndex)) return false;
+    return JSON.stringify(model.tierIndex) === JSON.stringify(tierIndex);
+  });
+
+  if (!variant)
+    throw new ErrorResponse("Variant not found for tier selection", 404);
+  return variant;
+};
+
+/**
+ * Get available options for selection
+ */
+export const getAvailableOptions = async (productId, selection) => {
+  const product = await Product.findById(productId)
+    .select("models tiers")
+    .lean();
+  if (!product) throw new ErrorResponse("Product not found", 404);
+
+  const models = product.models || [];
+  const tiers = product.tiers || [];
+
+  // Find available options for next tier
+  const selectionKeys = Object.keys(selection);
+  const nextTierIndex = selectionKeys.length;
+
+  if (nextTierIndex >= tiers.length) {
+    return { availableOptions: [], nextTier: null };
+  }
+
+  const availableOptions = new Set();
+
+  models.forEach((model) => {
+    if (!model.tierIndex || model.stock <= 0) return;
+
+    // Check if current selection matches
+    const matches = selectionKeys.every((key) => {
+      return model.tierIndex[parseInt(key)] === selection[key];
+    });
+
+    if (matches && model.tierIndex[nextTierIndex] !== undefined) {
+      availableOptions.add(model.tierIndex[nextTierIndex]);
+    }
+  });
+
+  return {
+    availableOptions: Array.from(availableOptions),
+    nextTier: tiers[nextTierIndex],
+  };
 };

@@ -1,51 +1,46 @@
 import express from "express";
 import {
-  createProduct,
   getProducts,
   getProduct,
-  updateProduct,
-  deleteProduct,
-  getProductsBySeller,
-  getProductsByCategory,
-  searchProducts,
-  getProductsAdvanced,
-  getBestOffers,
   getFeaturedProducts,
   getTrendingProducts,
   getNewArrivals,
+  getBestOffers,
+  getProductsAdvanced,
   getAvailableFilters,
   getRelatedProducts,
   getVariantByTierIndex,
-  getAvailableOptions,
+  getAvailableOptionsForSelection,
   checkStockAvailability,
 } from "../controllers/product.controller.js";
-
-import { protect } from "../middlewares/auth.middleware.js";
-import { requireRoles } from "../middlewares/role.middleware.js";
+import { asyncHandler } from "../middlewares/async.middleware.js";
 
 const router = express.Router();
 
-router.get("/", getProducts);
-router.get("/search", searchProducts);
-router.get("/advanced", getProductsAdvanced);
-router.get("/best-offers", getBestOffers);
-router.get("/featured", getFeaturedProducts);
-router.get("/trending", getTrendingProducts);
-router.get("/new-arrivals", getNewArrivals);
-router.get("/filters", getAvailableFilters);
+// List routes (must be before :id routes)
+router.get("/search", asyncHandler(getProducts)); // Alias for search
+router.get("/advanced", asyncHandler(getProductsAdvanced));
+router.get("/featured", asyncHandler(getFeaturedProducts));
+router.get("/trending", asyncHandler(getTrendingProducts));
+router.get("/new-arrivals", asyncHandler(getNewArrivals));
+router.get("/best-offers", asyncHandler(getBestOffers));
+router.get("/filters", asyncHandler(getAvailableFilters));
 
-router.get("/seller/:sellerId", getProductsBySeller);
-router.get("/category/:categoryId", getProductsByCategory);
-router.get("/model/:modelId/stock", checkStockAvailability);
+// Get all products (base route)
+router.get("/", asyncHandler(getProducts));
 
-router.get("/:id", getProduct);
-router.get("/:id/related", getRelatedProducts);
+// Product detail routes
+router.get("/:id", asyncHandler(getProduct));
+router.get("/:id/related", asyncHandler(getRelatedProducts));
 
-router.post("/:id/variant", getVariantByTierIndex);
-router.post("/:id/available-options", getAvailableOptions);
+// Variant selection routes (POST)
+router.post("/:id/variant", asyncHandler(getVariantByTierIndex));
+router.post(
+  "/:id/available-options",
+  asyncHandler(getAvailableOptionsForSelection)
+);
 
-router.post("/", protect, requireRoles("seller", "admin"), createProduct);
-router.put("/:id", protect, requireRoles("seller", "admin"), updateProduct);
-router.delete("/:id", protect, requireRoles("seller", "admin"), deleteProduct);
+// Stock check
+router.get("/model/:modelId/stock", asyncHandler(checkStockAvailability));
 
 export default router;

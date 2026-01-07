@@ -11,7 +11,6 @@ const categoryAttributeSchema = new mongoose.Schema(
     slug: {
       type: String,
       required: true,
-      unique: true,
       lowercase: true,
       trim: true,
     },
@@ -80,7 +79,7 @@ const categoryAttributeSchema = new mongoose.Schema(
 
 // Indexes
 categoryAttributeSchema.index({ categoryId: 1, status: 1 });
-categoryAttributeSchema.index({ slug: 1 });
+categoryAttributeSchema.index({ slug: 1 }, { unique: true });
 categoryAttributeSchema.index({ displayOrder: 1 });
 
 // Generate slug before save
