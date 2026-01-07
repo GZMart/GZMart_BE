@@ -1,35 +1,39 @@
 import Category from "../models/Category.js";
 import Product from "../models/Product.js";
-import { ErrorResponse } from "../utils/errorResponse.js";
+import ErrorResponse from "../utils/errorResponse.js";
+import * as productService from "./product.service.js";
 
 /**
  * Create a new category
  */
 export const createCategory = async (categoryData) => {
-  const { name, slug, parentId, level } = categoryData;
+  const { slug, parentId } = categoryData;
 
-  // Sanitize parentId - convert empty string to null
   if (!parentId || parentId === "") {
     categoryData.parentId = null;
+    categoryData.level = 1;
   }
 
-  // Check if slug already exists and generate unique slug
   let finalSlug = slug;
-  let counter = 1;
-  while (await Category.findOne({ slug: finalSlug })) {
-    finalSlug = `${slug}-${counter}`;
-    counter++;
+  if (finalSlug) {
+    let counter = 1;
+    while (await Category.findOne({ slug: finalSlug })) {
+      finalSlug = `${slug}-${counter}`;
+      counter++;
+    }
+    categoryData.slug = finalSlug;
   }
-  categoryData.slug = finalSlug;
 
-  // If has parent, validate parent exists
   if (categoryData.parentId) {
     const parent = await Category.findById(categoryData.parentId);
     if (!parent) {
       throw new ErrorResponse("Parent category not found", 404);
     }
-    // Set level based on parent
-    categoryData.level = parent.level + 1;
+    categoryData.level = (parent.level || 0) + 1;
+
+    if (categoryData.level > 3) {
+      throw new ErrorResponse("Category level cannot exceed 3", 400);
+    }
   }
 
   const category = await Category.create(categoryData);
@@ -37,10 +41,10 @@ export const createCategory = async (categoryData) => {
 };
 
 /**
- * Get all categories with optional filters
+ * Get all categories with filters
  */
 export const getCategories = async (filters = {}) => {
-  const { parentId, level, status, search } = filters;
+  const { parentId, level, status, search, isFeatured } = filters;
 
   const query = {};
 
@@ -49,6 +53,8 @@ export const getCategories = async (filters = {}) => {
   }
   if (level) query.level = level;
   if (status) query.status = status;
+  if (isFeatured) query.isFeatured = true;
+
   if (search) {
     query.$or = [
       { name: { $regex: search, $options: "i" } },
@@ -58,18 +64,40 @@ export const getCategories = async (filters = {}) => {
 
   const categories = await Category.find(query)
     .populate("parentId", "name slug")
-    .sort({ level: 1, name: 1 });
+    .sort({ order: 1, level: 1, createdAt: -1 });
 
   return categories;
 };
 
 /**
- * Get category tree (hierarchical structure)
+ * Get category by ID or Slug
+ */
+export const getCategory = async (identifier) => {
+  let query;
+
+  if (identifier.match(/^[0-9a-fA-F]{24}$/)) {
+    query = Category.findById(identifier);
+  } else {
+    query = Category.findOne({ slug: identifier });
+  }
+
+  const category = await query.populate("parentId", "name slug").lean();
+
+  if (!category) {
+    throw new ErrorResponse("Category not found", 404);
+  }
+
+  return category;
+};
+
+/**
+ * Get category tree structure
  */
 export const getCategoryTree = async () => {
-  const categories = await Category.find({ status: "active" }).lean();
+  const categories = await Category.find({ status: "active" })
+    .sort({ order: 1, name: 1 })
+    .lean();
 
-  // Build tree structure
   const buildTree = (parentId = null) => {
     return categories
       .filter((cat) => String(cat.parentId) === String(parentId))
@@ -83,35 +111,6 @@ export const getCategoryTree = async () => {
 };
 
 /**
- * Get category by ID
- */
-export const getCategoryById = async (categoryId) => {
-  const category = await Category.findById(categoryId).populate(
-    "parentId",
-    "name slug"
-  );
-
-  if (!category) {
-    throw new ErrorResponse("Category not found", 404);
-  }
-
-  return category;
-};
-
-/**
- * Get child categories
- */
-export const getChildCategories = async (parentId) => {
-  const parent = await Category.findById(parentId);
-  if (!parent) {
-    throw new ErrorResponse("Parent category not found", 404);
-  }
-
-  const children = await Category.find({ parentId }).sort({ name: 1 });
-  return children;
-};
-
-/**
  * Update category
  */
 export const updateCategory = async (categoryId, updateData) => {
@@ -121,16 +120,18 @@ export const updateCategory = async (categoryId, updateData) => {
     throw new ErrorResponse("Category not found", 404);
   }
 
-  // If changing slug, check uniqueness
   if (updateData.slug && updateData.slug !== category.slug) {
-    const existingCategory = await Category.findOne({ slug: updateData.slug });
-    if (existingCategory) {
+    const existing = await Category.findOne({ slug: updateData.slug });
+    if (existing) {
       throw new ErrorResponse("Category slug already exists", 400);
     }
   }
 
-  // If changing parentId, validate
   if (updateData.parentId) {
+    if (String(updateData.parentId) === String(categoryId)) {
+      throw new ErrorResponse("Category cannot be its own parent", 400);
+    }
+
     const parent = await Category.findById(updateData.parentId);
     if (!parent) {
       throw new ErrorResponse("Parent category not found", 404);
@@ -145,7 +146,7 @@ export const updateCategory = async (categoryId, updateData) => {
 };
 
 /**
- * Delete category (soft delete by setting status to inactive)
+ * Delete category (Soft delete)
  */
 export const deleteCategory = async (categoryId) => {
   const category = await Category.findById(categoryId);
@@ -154,25 +155,16 @@ export const deleteCategory = async (categoryId) => {
     throw new ErrorResponse("Category not found", 404);
   }
 
-  // Check if category has products
   const productCount = await Product.countDocuments({ categoryId });
   if (productCount > 0) {
-    throw new ErrorResponse(
-      `Cannot delete category with ${productCount} products. Please move or delete products first.`,
-      400
-    );
+    throw new ErrorResponse(`Cannot delete: Category has ${productCount} products.`, 400);
   }
 
-  // Check if category has child categories
   const childCount = await Category.countDocuments({ parentId: categoryId });
   if (childCount > 0) {
-    throw new ErrorResponse(
-      `Cannot delete category with ${childCount} sub-categories. Please delete child categories first.`,
-      400
-    );
+    throw new ErrorResponse(`Cannot delete: Category has ${childCount} sub-categories.`, 400);
   }
 
-  // Soft delete
   category.status = "inactive";
   await category.save();
 
@@ -180,24 +172,17 @@ export const deleteCategory = async (categoryId) => {
 };
 
 /**
- * Permanently delete category
+ * Permanently Delete
  */
 export const permanentDeleteCategory = async (categoryId) => {
   const category = await Category.findById(categoryId);
+  if (!category) throw new ErrorResponse("Category not found", 404);
 
-  if (!category) {
-    throw new ErrorResponse("Category not found", 404);
-  }
-
-  // Check constraints
   const productCount = await Product.countDocuments({ categoryId });
-  if (productCount > 0) {
-    throw new ErrorResponse("Cannot delete category with products", 400);
-  }
-
   const childCount = await Category.countDocuments({ parentId: categoryId });
-  if (childCount > 0) {
-    throw new ErrorResponse("Cannot delete category with sub-categories", 400);
+
+  if (productCount > 0 || childCount > 0) {
+    throw new ErrorResponse("Cannot delete category with related data", 400);
   }
 
   await category.deleteOne();
@@ -205,25 +190,77 @@ export const permanentDeleteCategory = async (categoryId) => {
 };
 
 /**
- * Get category statistics
+ * Get top categories for Homepage
+ */
+export const getTopCategories = async (limit = 8) => {
+  return await Category.find({
+    status: "active",
+    isFeatured: true,
+  })
+    .sort({ order: 1, productCount: -1 })
+    .limit(limit)
+    .select("name slug icon image productCount")
+    .lean();
+};
+
+/**
+ * Get featured categories list
+ */
+export const getFeaturedCategories = async () => {
+  return await Category.find({ status: "active", isFeatured: true })
+    .sort({ order: 1 })
+    .lean();
+};
+
+/**
+ * Get categories with computed product counts
+ */
+export const getCategoriesWithCounts = async () => {
+  const categories = await Category.find({ status: "active" })
+    .sort({ order: 1 })
+    .lean();
+
+  return await Promise.all(
+    categories.map(async (category) => {
+      const productCount = await Product.countDocuments({
+        categoryId: category._id,
+        status: "active",
+      });
+      return { ...category, productCount };
+    })
+  );
+};
+
+/**
+ * Get products inside a category
+ */
+export const getCategoryProducts = async (categoryId, options) => {
+  const category = await getCategory(categoryId);
+
+  return await productService.getProducts({
+    ...options,
+    filters: {
+      ...options.filters,
+      categoryId: category._id,
+    },
+  });
+};
+
+/**
+ * Get detailed stats for Admin Dashboard
  */
 export const getCategoryStats = async (categoryId) => {
   const category = await Category.findById(categoryId);
-
-  if (!category) {
-    throw new ErrorResponse("Category not found", 404);
-  }
+  if (!category) throw new ErrorResponse("Category not found", 404);
 
   const [productCount, childCount, products] = await Promise.all([
     Product.countDocuments({ categoryId, status: "active" }),
     Category.countDocuments({ parentId: categoryId }),
-    Product.find({ categoryId, status: "active" })
-      .select("sold viewCount")
-      .lean(),
+    Product.find({ categoryId, status: "active" }).select("sold viewCount").lean(),
   ]);
 
-  const totalSold = products.reduce((sum, p) => sum + p.sold, 0);
-  const totalViews = products.reduce((sum, p) => sum + p.viewCount, 0);
+  const totalSold = products.reduce((sum, p) => sum + (p.sold || 0), 0);
+  const totalViews = products.reduce((sum, p) => sum + (p.viewCount || 0), 0);
 
   return {
     categoryId,
@@ -234,4 +271,11 @@ export const getCategoryStats = async (categoryId) => {
     totalViews,
     status: category.status,
   };
+};
+
+/**
+ * Get child categories
+ */
+export const getChildCategories = async (parentId) => {
+  return await Category.find({ parentId }).sort({ order: 1, name: 1 });
 };

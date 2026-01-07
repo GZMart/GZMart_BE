@@ -8,25 +8,16 @@ import { asyncHandler } from "../middlewares/async.middleware.js";
  * @access  Private (Seller only)
  */
 export const createProduct = asyncHandler(async (req, res, next) => {
-  // Get seller ID from authenticated user (or use dummy ID for testing)
-  const sellerId = req.user?._id || "695dd45041f5e32466527d93"; // Temporary: Use dummy ID if no auth
+  const sellerId = req.user?._id; 
 
-  // Validate request body
   const { name, categoryId, models } = req.body;
 
   if (!name || !categoryId || !models || models.length === 0) {
-    return next(
-      new ErrorResponse(
-        "Please provide name, categoryId, and at least one model",
-        400
-      )
-    );
+    return next(new ErrorResponse("Please provide name, categoryId, and at least one model", 400));
   }
 
-  // Create product via service layer
   const product = await productService.createProduct(req.body, sellerId);
 
-  // Return success response
   res.status(201).json({
     success: true,
     message: "Product created successfully",
@@ -35,12 +26,11 @@ export const createProduct = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * @desc    Get all products
+ * @desc    Get all products (Dashboard/Admin view)
  * @route   GET /api/products
  * @access  Public
  */
 export const getProducts = asyncHandler(async (req, res, next) => {
-  // Extract query parameters
   const {
     page,
     limit,
@@ -53,7 +43,6 @@ export const getProducts = asyncHandler(async (req, res, next) => {
     search,
   } = req.query;
 
-  // Build options object
   const options = {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
@@ -66,7 +55,6 @@ export const getProducts = asyncHandler(async (req, res, next) => {
     search,
   };
 
-  // Get products from service
   const result = await productService.getProducts({}, options);
 
   res.status(200).json({
@@ -78,11 +66,52 @@ export const getProducts = asyncHandler(async (req, res, next) => {
 });
 
 /**
+ * @desc    Get products with advanced filters (Storefront Search)
+ * @route   GET /api/products/advanced
+ * @access  Public
+ */
+export const getProductsAdvanced = asyncHandler(async (req, res, next) => {
+  const {
+    page = 1,
+    limit = 20,
+    categoryId,
+    brand,
+    color,
+    size,
+    minPrice,
+    maxPrice,
+    minRating,
+    inStock,
+  } = req.query;
+
+  const result = await productService.getProductsAdvanced({
+    page: parseInt(page),
+    limit: parseInt(limit),
+    categoryId,
+    brands: brand ? (Array.isArray(brand) ? brand : [brand]) : [],
+    colors: color ? (Array.isArray(color) ? color : [color]) : [],
+    sizes: size ? (Array.isArray(size) ? size : [size]) : [],
+    minPrice: minPrice ? parseFloat(minPrice) : undefined,
+    maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+    minRating: minRating ? parseFloat(minRating) : undefined,
+    inStock: inStock === "true",
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Products retrieved successfully",
+    data: result.products,
+    pagination: result.pagination,
+  });
+});
+
+/**
  * @desc    Get single product by ID
  * @route   GET /api/products/:id
  * @access  Public
  */
 export const getProduct = asyncHandler(async (req, res, next) => {
+  // Service handles 404 and View Increment
   const product = await productService.getProductById(req.params.id);
 
   res.status(200).json({
@@ -100,22 +129,10 @@ export const updateProduct = asyncHandler(async (req, res, next) => {
   const sellerId = req.user._id;
   const productId = req.params.id;
 
-  // Prevent updating certain fields
-  const restrictedFields = [
-    "_id",
-    "sellerId",
-    "sold",
-    "reviewCount",
-    "rating",
-    "createdAt",
-  ];
+  const restrictedFields = ["_id", "sellerId", "sold", "reviewCount", "rating", "createdAt"];
   restrictedFields.forEach((field) => delete req.body[field]);
 
-  const product = await productService.updateProduct(
-    productId,
-    req.body,
-    sellerId
-  );
+  const product = await productService.updateProduct(productId, req.body, sellerId);
 
   res.status(200).json({
     success: true,
@@ -143,30 +160,138 @@ export const deleteProduct = asyncHandler(async (req, res, next) => {
 });
 
 /**
+ * @desc    Get featured products
+ * @route   GET /api/products/featured
+ * @access  Public
+ */
+export const getFeaturedProducts = asyncHandler(async (req, res, next) => {
+  const { limit = 10 } = req.query;
+  const products = await productService.getFeaturedProducts(parseInt(limit));
+
+  res.status(200).json({
+    success: true,
+    data: products,
+  });
+});
+
+/**
+ * @desc    Get trending products
+ * @route   GET /api/products/trending
+ * @access  Public
+ */
+export const getTrendingProducts = asyncHandler(async (req, res, next) => {
+  const { limit = 10 } = req.query;
+  const products = await productService.getTrendingProducts(parseInt(limit));
+
+  res.status(200).json({
+    success: true,
+    data: products,
+  });
+});
+
+/**
+ * @desc    Get new arrivals
+ * @route   GET /api/products/new-arrivals
+ * @access  Public
+ */
+export const getNewArrivals = asyncHandler(async (req, res, next) => {
+  const { limit = 10 } = req.query;
+  const products = await productService.getNewArrivals(parseInt(limit));
+
+  res.status(200).json({
+    success: true,
+    data: products,
+  });
+});
+
+/**
+ * @desc    Get related products
+ * @route   GET /api/products/:id/related
+ * @access  Public
+ */
+export const getRelatedProducts = asyncHandler(async (req, res, next) => {
+  const { limit = 10 } = req.query;
+  const products = await productService.getRelatedProducts(req.params.id, parseInt(limit));
+
+  res.status(200).json({
+    success: true,
+    data: products,
+  });
+});
+
+/**
+ * @desc    Get available filters metadata
+ * @route   GET /api/products/filters
+ * @access  Public
+ */
+export const getAvailableFilters = asyncHandler(async (req, res, next) => {
+  const { categoryId } = req.query;
+  const filters = await productService.getAvailableFilters(categoryId);
+
+  res.status(200).json({
+    success: true,
+    data: filters,
+  });
+});
+
+/**
+ * @desc    Check stock availability for a specific model
+ * @route   GET /api/products/model/:modelId/stock
+ * @access  Public
+ */
+export const checkStockAvailability = asyncHandler(async (req, res, next) => {
+  const { modelId } = req.params;
+  const { productId, quantity = 1 } = req.query; // Expect productId in query for faster lookup
+
+  if (!productId) {
+      return next(new ErrorResponse("Product ID is required", 400));
+  }
+
+  const result = await productService.checkStockAvailability(
+    productId,
+    modelId,
+    parseInt(quantity)
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+});
+
+/**
+ * @desc    Get best offers (placeholder for deals integration)
+ * @route   GET /api/products/best-offers
+ * @access  Public
+ */
+export const getBestOffers = asyncHandler(async (req, res, next) => {
+    // Logic to be implemented or mapped to trending for now
+    const products = await productService.getTrendingProducts(10);
+    res.status(200).json({ success: true, data: products });
+});
+
+/**
  * @desc    Get products by seller
  * @route   GET /api/products/seller/:sellerId
  * @access  Public
  */
 export const getProductsBySeller = asyncHandler(async (req, res, next) => {
   const { sellerId } = req.params;
-  const { page, limit, sortBy, sortOrder, status } = req.query;
+  const { page, limit } = req.query;
 
-  const options = {
+  const result = await productService.getProductsBySeller(sellerId, {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
-    sortBy: sortBy || "createdAt",
-    sortOrder: sortOrder || "desc",
-    status,
-  };
-
-  const filters = { sellerId };
-
-  const result = await productService.getProducts(filters, options);
+  });
 
   res.status(200).json({
     success: true,
     count: result.products.length,
-    pagination: result.pagination,
+    pagination: {
+        total: result.total,
+        page: result.page,
+        pages: result.pages
+    },
     data: result.products,
   });
 });
@@ -178,58 +303,50 @@ export const getProductsBySeller = asyncHandler(async (req, res, next) => {
  */
 export const getProductsByCategory = asyncHandler(async (req, res, next) => {
   const { categoryId } = req.params;
-  const { page, limit, sortBy, sortOrder, minPrice, maxPrice } = req.query;
+  const { page, limit } = req.query;
 
-  const options = {
+  const result = await productService.getProductsByCategory(categoryId, {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
-    sortBy: sortBy || "createdAt",
-    sortOrder: sortOrder || "desc",
-    categoryId,
-    minPrice: minPrice ? parseFloat(minPrice) : undefined,
-    maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
-  };
-
-  const result = await productService.getProducts({}, options);
+  });
 
   res.status(200).json({
     success: true,
     count: result.products.length,
-    pagination: result.pagination,
+    pagination: {
+        total: result.total,
+        page: result.page,
+        pages: result.pages
+    },
     data: result.products,
   });
 });
 
 /**
- * @desc    Search products
+ * @desc    Simple Search
  * @route   GET /api/products/search
  * @access  Public
  */
 export const searchProducts = asyncHandler(async (req, res, next) => {
-  const { q, page, limit, sortBy, sortOrder, categoryId, minPrice, maxPrice } =
-    req.query;
+  const { q, page, limit } = req.query;
 
   if (!q) {
     return next(new ErrorResponse("Please provide a search query", 400));
   }
 
-  const options = {
+  const result = await productService.searchProducts(q, {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
-    sortBy: sortBy || "createdAt",
-    sortOrder: sortOrder || "desc",
-    search: q,
-    categoryId,
-    minPrice: minPrice ? parseFloat(minPrice) : undefined,
-    maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
-  };
-
-  const result = await productService.getProducts({}, options);
+  });
 
   res.status(200).json({
     success: true,
     count: result.products.length,
-    pagination: result.pagination,
+    pagination: {
+        total: result.total,
+        page: result.page,
+        pages: result.pages
+    },
     data: result.products,
   });
 });

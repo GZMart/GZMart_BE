@@ -1,6 +1,5 @@
 import mongoose from "mongoose";
 
-// Sub-schema for product attributes (Material, Brand, etc.)
 const productAttributeSchema = new mongoose.Schema(
   {
     label: {
@@ -24,7 +23,6 @@ const productAttributeSchema = new mongoose.Schema(
   { _id: false }
 );
 
-// Sub-schema for product tiers (Color, Size, etc.)
 const tierSchema = new mongoose.Schema(
   {
     name: {
@@ -51,7 +49,6 @@ const tierSchema = new mongoose.Schema(
   { _id: false }
 );
 
-// Sub-schema for product models/variants (SKU combinations)
 const modelSchema = new mongoose.Schema(
   {
     sku: {
@@ -81,12 +78,6 @@ const modelSchema = new mongoose.Schema(
     tierIndex: {
       type: [Number],
       required: [true, "Tier index is required"],
-      validate: {
-        validator: function (arr) {
-          return arr.every((idx) => Number.isInteger(idx) && idx >= 0);
-        },
-        message: "Tier index must contain non-negative integers",
-      },
     },
     image: {
       type: String,
@@ -105,7 +96,6 @@ const modelSchema = new mongoose.Schema(
   { _id: true }
 );
 
-// Main Product Schema
 const productSchema = new mongoose.Schema(
   {
     name: {
@@ -182,17 +172,17 @@ const productSchema = new mongoose.Schema(
     reviewCount: {
       type: Number,
       default: 0,
-      min: [0, "Review count must be non-negative"],
+      min: 0,
     },
     sold: {
       type: Number,
       default: 0,
-      min: [0, "Sold count must be non-negative"],
+      min: 0,
     },
     viewCount: {
       type: Number,
       default: 0,
-      min: [0, "View count must be non-negative"],
+      min: 0,
     },
     status: {
       type: String,
@@ -210,22 +200,41 @@ const productSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    brand: {
+      type: String,
+      trim: true,
+      default: null,
+    },
     isFeatured: {
       type: Boolean,
       default: false,
     },
-    isAvailable: {
+    isTrending: {
       type: Boolean,
-      default: true,
+      default: false,
+    },
+    isNewArrival: {
+      type: Boolean,
+      default: false,
+    },
+    wishlistCount: {
+      type: Number,
+      default: 0,
+    },
+    seo: {
+      title: String,
+      description: String,
+      keywords: [String],
     },
   },
   {
     timestamps: true,
     versionKey: false,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
   }
 );
 
-// Indexes for performance optimization
 productSchema.index({ name: "text", description: "text" });
 productSchema.index({ categoryId: 1, status: 1 });
 productSchema.index({ sellerId: 1, status: 1 });
@@ -234,14 +243,33 @@ productSchema.index({ sold: -1 });
 productSchema.index({ rating: -1 });
 productSchema.index({ createdAt: -1 });
 productSchema.index({ "models.sku": 1 });
+productSchema.index({ isFeatured: 1, status: 1 });
+productSchema.index({ isNewArrival: 1, status: 1 });
 
-// Virtual for total stock across all models
 productSchema.virtual("totalStock").get(function () {
-  return this.models.reduce((sum, model) => sum + model.stock, 0);
+  if (this.models && this.models.length > 0) {
+    return this.models.reduce((sum, model) => sum + model.stock, 0);
+  }
+  return 0;
 });
 
-// Ensure virtuals are included when converting to JSON
-productSchema.set("toJSON", { virtuals: true });
-productSchema.set("toObject", { virtuals: true });
+productSchema.pre("save", function (next) {
+  if (!this.slug && this.name) {
+    this.slug = this.name
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/đ/g, "d")
+      .replace(/[^a-z0-9\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .trim();
+  }
+
+  if (this.isNew) {
+    this.isNewArrival = true;
+  }
+  next();
+});
 
 export default mongoose.model("Product", productSchema);
