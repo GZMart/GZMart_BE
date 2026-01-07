@@ -14,6 +14,8 @@ import {
   loginWithGoogle,
   loginWithFacebook,
   setPassword,
+  sendOTP,
+  verifyOTP,
 } from '../controllers/auth.controller.js';
 import { protect, optionalAuth } from '../middlewares/auth.middleware.js';
 import { requireBuyer, requireSeller, requireAdmin } from '../middlewares/role.middleware.js';
@@ -50,6 +52,20 @@ router.get('/verify-email', verifyEmail);
  * @access  Public
  */
 router.post('/resend-verification', resendVerification);
+
+/**
+ * @route   POST /api/auth/send-otp
+ * @desc    Send OTP to email
+ * @access  Public
+ */
+router.post('/send-otp', sendOTP);
+
+/**
+ * @route   POST /api/auth/verify-otp
+ * @desc    Verify OTP
+ * @access  Public
+ */
+router.post('/verify-otp', verifyOTP);
 
 /**
  * @route   POST /api/auth/forgot-password

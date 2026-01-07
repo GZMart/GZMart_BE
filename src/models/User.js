@@ -10,14 +10,6 @@ const userSchema = new mongoose.Schema(
       minlength: [2, 'Full name must be at least 2 characters long'],
       maxlength: [50, 'Full name cannot exceed 50 characters'],
     },
-    username: {
-      type: String,
-      required: [true, 'Username is required'],
-      unique: true,
-      trim: true,
-      minlength: [3, 'Username must be at least 3 characters long'],
-      maxlength: [30, 'Username cannot exceed 30 characters'],
-    },
     aboutMe: {
       type: String,
       trim: true,
@@ -77,7 +69,15 @@ const userSchema = new mongoose.Schema(
     phone: {
       type: String,
       trim: true,
-      match: [/^[0-9]{10,11}$/, 'Please enter a valid phone number'],
+      validate: {
+        validator: function(v) {
+          // Allow empty string or undefined
+          if (!v || v === '') return true;
+          // If provided, must match pattern
+          return /^[0-9]{10,11}$/.test(v);
+        },
+        message: 'Please enter a valid phone number (10-11 digits)',
+      },
     },
     reward_point: {
       type: Number,

@@ -4,16 +4,21 @@ import { emailConfig } from "../config/email.config.js";
 import { emailTemplates } from "../templates/email.templates.js";
 import logger from "./logger.js";
 
-// Initialize OAuth2Client
-const oauth2Client = new OAuth2Client(
-  emailConfig.googleMailerClientId,
-  emailConfig.googleMailerClientSecret
-);
+// Initialize OAuth2Client only if config exists
+let oauth2Client = null;
+if (emailConfig.googleMailerClientId && emailConfig.googleMailerClientSecret) {
+  oauth2Client = new OAuth2Client(
+    emailConfig.googleMailerClientId,
+    emailConfig.googleMailerClientSecret
+  );
 
-// Set credentials
-oauth2Client.setCredentials({
-  refresh_token: emailConfig.googleMailerRefreshToken,
-});
+  // Set credentials only if refresh token exists
+  if (emailConfig.googleMailerRefreshToken) {
+    oauth2Client.setCredentials({
+      refresh_token: emailConfig.googleMailerRefreshToken,
+    });
+  }
+}
 
 /**
  * Send an email using Gmail OAuth2
@@ -24,7 +29,34 @@ oauth2Client.setCredentials({
  * @returns {Promise<void>}
  */
 export const sendEmail = async (options) => {
+  // Check if email is configured
+  const hasEmailConfig = 
+    emailConfig.googleMailerClientId &&
+    emailConfig.googleMailerClientSecret &&
+    emailConfig.googleMailerRefreshToken &&
+    emailConfig.adminEmailAddress;
+  
+  if (!hasEmailConfig) {
+    logger.warn("Email not configured. Skipping email send:", {
+      recipient: options.email,
+      subject: options.subject,
+    });
+    // In development, just log and return without error
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('📧 Email would be sent to:', options.email);
+      console.log('📧 Subject:', options.subject);
+      return;
+    }
+    // In production, throw error if email is required
+    throw new Error('Email service is not configured');
+  }
+
   try {
+    // Check if oauth2Client is initialized
+    if (!oauth2Client) {
+      throw new Error('OAuth2 client is not initialized');
+    }
+
     // Get access token
     const { token: accessToken } = await oauth2Client.getAccessToken();
 
@@ -57,6 +89,11 @@ export const sendEmail = async (options) => {
       error: error.message,
       stack: error.stack,
     });
+    // In development, don't throw error - just log
+    if (process.env.NODE_ENV !== 'production') {
+      logger.warn("Email sending failed but continuing in development mode");
+      return;
+    }
     throw error;
   }
 };
