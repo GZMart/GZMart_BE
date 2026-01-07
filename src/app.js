@@ -1,7 +1,10 @@
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+
+// Import routes
+import orderRoutes from './routes/orderRoutes.js';
 
 const app = express();
 
@@ -19,6 +22,9 @@ app.get('/', (req, res) => {
   });
 });
 
+// API Routes
+app.use('/api/orders', orderRoutes);
+
 // Error Handling Middleware
 app.use((req, res, next) => {
   const error = new Error(`Not Found - ${req.originalUrl}`);
@@ -35,4 +41,4 @@ app.use((error, req, res, next) => {
   });
 });
 
-module.exports = app;
+export default app;

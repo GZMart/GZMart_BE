@@ -1,0 +1,271 @@
+{
+  "info": {
+    "name": "GZMart Seller Order Management API",
+    "description": "Test collection for Seller Order Management endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Get All Orders (with filters)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{jwt_token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:3000/api/seller/orders?page=1&limit=10&status=pending&sortBy=createdAt",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "seller", "orders"],
+          "query": [
+            {
+              "key": "page",
+              "value": "1",
+              "description": "Trang hiện tại"
+            },
+            {
+              "key": "limit",
+              "value": "10",
+              "description": "Số item trên mỗi trang"
+            },
+            {
+              "key": "status",
+              "value": "pending",
+              "disabled": false,
+              "description": "Filter: pending, confirmed, shipping, delivered, cancelled (tùy chọn)"
+            },
+            {
+              "key": "sortBy",
+              "value": "createdAt",
+              "description": "Sort: createdAt, newest-first, oldest-first, total-high, total-low"
+            }
+          ]
+        },
+        "description": "Lấy danh sách tất cả đơn hàng của seller với pagination & filter"
+      },
+      "response": []
+    },
+    {
+      "name": "2. Get Orders by Status",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{jwt_token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:3000/api/seller/orders/status/pending?page=1&limit=10",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "seller", "orders", "status", "pending"],
+          "query": [
+            {
+              "key": "page",
+              "value": "1"
+            },
+            {
+              "key": "limit",
+              "value": "10"
+            }
+          ]
+        },
+        "description": "Lấy danh sách đơn theo status cụ thể + số đếm mỗi status"
+      },
+      "response": []
+    },
+    {
+      "name": "3. Get Order Detail by ID",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{jwt_token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:3000/api/seller/orders/{{order_id}}",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "seller", "orders", "{{order_id}}"]
+        },
+        "description": "Lấy chi tiết đơn hàng cùng đầy đủ thông tin sản phẩm, buyer, shipper"
+      },
+      "response": []
+    },
+    {
+      "name": "4. Update Order Status - Confirm",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{jwt_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"newStatus\": \"confirmed\",\n  \"sellerNotes\": \"Đã kiểm tra hàng, sẵn sàng giao\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/seller/orders/{{order_id}}/status",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "seller", "orders", "{{order_id}}", "status"]
+        },
+        "description": "Xác nhận đơn hàng (pending → confirmed)"
+      },
+      "response": []
+    },
+    {
+      "name": "5. Update Order Status - Assign Shipper",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{jwt_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"newStatus\": \"shipping\",\n  \"shipperId\": \"{{shipper_id}}\",\n  \"estimatedDeliveryDate\": \"2024-01-08T18:00:00Z\",\n  \"sellerNotes\": \"Giao cho bạn Minh, liên hệ shipper để xác nhận\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/seller/orders/{{order_id}}/status",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "seller", "orders", "{{order_id}}", "status"]
+        },
+        "description": "Chuyển đơn sang trạng thái giao hàng (confirmed → shipping) + assign shipper"
+      },
+      "response": []
+    },
+    {
+      "name": "6. Update Order Status - Mark Delivered",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{jwt_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"newStatus\": \"delivered\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/seller/orders/{{order_id}}/status",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "seller", "orders", "{{order_id}}", "status"]
+        },
+        "description": "Đánh dấu đơn đã giao (shipping → delivered)"
+      },
+      "response": []
+    },
+    {
+      "name": "7. Cancel Order",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{jwt_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"reason\": \"Hết hàng trong kho\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/seller/orders/{{order_id}}/cancel",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "seller", "orders", "{{order_id}}", "cancel"]
+        },
+        "description": "Hủy đơn hàng (chỉ khi status = pending hoặc confirmed). Seller phải cung cấp lý do"
+      },
+      "response": []
+    },
+    {
+      "name": "8. Generate Delivery Note",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{jwt_token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:3000/api/seller/orders/{{order_id}}/delivery-note",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "seller", "orders", "{{order_id}}", "delivery-note"]
+        },
+        "description": "In phiếu giao hàng HTML. Có thể lưu HTML và convert sang PDF"
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "jwt_token",
+      "value": "your_jwt_token_here",
+      "type": "string"
+    },
+    {
+      "key": "order_id",
+      "value": "order_mongodb_id_here",
+      "type": "string"
+    },
+    {
+      "key": "shipper_id",
+      "value": "shipper_mongodb_id_here",
+      "type": "string"
+    }
+  ]
+}
