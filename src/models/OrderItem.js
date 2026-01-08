@@ -12,6 +12,14 @@ const orderItemSchema = new mongoose.Schema(
       ref: 'Product',
       required: [true, 'Product ID is required'],
     },
+    modelId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: [true, 'Model/Variant ID is required'],
+    },
+    sku: {
+      type: String,
+      required: [true, 'SKU is required'],
+    },
     quantity: {
       type: Number,
       required: [true, 'Quantity is required'],
@@ -22,13 +30,10 @@ const orderItemSchema = new mongoose.Schema(
       required: [true, 'Price is required'],
       min: [0, 'Price cannot be negative'],
     },
-    size: {
-      type: String,
-      required: [true, 'Size is required'],
-    },
-    color: {
-      type: String,
-      required: [true, 'Color is required'],
+    tierSelections: {
+      type: Map,
+      of: String,
+      required: [true, 'Tier selections are required'],
     },
     subtotal: {
       type: Number,
@@ -52,6 +57,8 @@ const orderItemSchema = new mongoose.Schema(
 // Indexes
 orderItemSchema.index({ orderId: 1 });
 orderItemSchema.index({ productId: 1 });
+orderItemSchema.index({ modelId: 1 });
+orderItemSchema.index({ sku: 1 });
 
 const OrderItem = mongoose.model('OrderItem', orderItemSchema);
 

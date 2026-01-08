@@ -2,32 +2,49 @@ import mongoose from 'mongoose';
 
 const flashSaleProductSchema = new mongoose.Schema(
   {
-    flashSaleId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'FlashSale',
-      required: [true, 'Flash sale ID is required'],
-      index: true,
-    },
+    // Product Information
     productId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Product',
       required: [true, 'Product ID is required'],
+      unique: true,
       index: true,
     },
-    discountPercent: {
+    
+    // Flash Sale Information
+    salePrice: {
       type: Number,
-      min: [0, 'Discount cannot be negative'],
-      max: [100, 'Discount cannot exceed 100%'],
+      required: [true, 'Sale price is required'],
+      min: [0, 'Sale price cannot be negative'],
     },
-    flashPrice: {
+    totalQuantity: {
       type: Number,
-      required: [true, 'Flash price is required'],
-      min: [0, 'Flash price cannot be negative'],
+      required: [true, 'Total quantity is required'],
+      min: [1, 'Total quantity must be at least 1'],
     },
-    stock: {
+    soldQuantity: {
       type: Number,
       default: 0,
-      min: [0, 'Stock cannot be negative'],
+      min: [0, 'Sold quantity cannot be negative'],
+    },
+    startAt: {
+      type: Date,
+      required: [true, 'Start date is required'],
+      index: true,
+    },
+    endAt: {
+      type: Date,
+      required: [true, 'End date is required'],
+      index: true,
+    },
+    status: {
+      type: String,
+      enum: {
+        values: ['upcoming', 'active', 'ended', 'cancelled'],
+        message: '{VALUE} is not a valid status',
+      },
+      default: 'upcoming',
+      index: true,
     },
   },
   {
@@ -36,8 +53,20 @@ const flashSaleProductSchema = new mongoose.Schema(
 );
 
 // Indexes
-flashSaleProductSchema.index({ flashSaleId: 1, productId: 1 }, { unique: true });
-flashSaleProductSchema.index({ productId: 1 });
+flashSaleProductSchema.index({ startAt: 1, endAt: 1 });
+flashSaleProductSchema.index({ status: 1 });
+
+// Pre-save: Update status based on current time
+flashSaleProductSchema.pre('save', async function () {
+  const now = new Date();
+  if (now < this.startAt) {
+    this.status = 'upcoming';
+  } else if (now >= this.startAt && now <= this.endAt && this.status !== 'cancelled') {
+    this.status = 'active';
+  } else if (now > this.endAt && this.status !== 'cancelled') {
+    this.status = 'ended';
+  }
+});
 
 const FlashSaleProduct = mongoose.model('FlashSaleProduct', flashSaleProductSchema);
 

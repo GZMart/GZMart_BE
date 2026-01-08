@@ -8,7 +8,7 @@ import {
   generateDeliveryNote,
   cancelOrder,
   getOrderStatusHistory,
-} from '../controllers/order.controller.js';
+} from '../controllers/orderSeller.controller.js';
 import { protect, authorize } from '../middlewares/auth.middleware.js';
 import User from '../models/User.js';
 
@@ -63,6 +63,20 @@ router.get('/', getSellerOrders);
 router.get('/status/:status', authorize('seller', 'admin'), getOrdersByStatus);
 
 /**
+ * @route   GET /api/orders/:orderId/status-history
+ * @desc    Get order status change history (audit log)
+ * @access  Private (Seller/Admin)
+ */
+router.get('/:orderId/status-history', authorize('seller', 'admin'), getOrderStatusHistory);
+
+/**
+ * @route   GET /api/orders/:orderId/delivery-note
+ * @desc    Generate delivery note (HTML/PDF)
+ * @access  Private (Seller/Admin)
+ */
+router.get('/:orderId/delivery-note', authorize('seller', 'admin'), generateDeliveryNote);
+
+/**
  * @route   GET /api/orders/:orderId
  * @desc    Get order detail by ID
  * @access  Private (Seller/Admin)
@@ -82,19 +96,5 @@ router.put('/:orderId/status', authorize('seller', 'admin'), updateOrderStatus);
  * @access  Private (Seller/Admin)
  */
 router.put('/:orderId/cancel', authorize('seller', 'admin'), cancelOrder);
-
-/**
- * @route   GET /api/orders/:orderId/status-history
- * @desc    Get order status change history (audit log)
- * @access  Private (Seller/Admin)
- */
-router.get('/:orderId/status-history', authorize('seller', 'admin'), getOrderStatusHistory);
-
-/**
- * @route   GET /api/orders/:orderId/delivery-note
- * @desc    Generate delivery note (HTML/PDF)
- * @access  Private (Seller/Admin)
- */
-router.get('/:orderId/delivery-note', authorize('seller', 'admin'), generateDeliveryNote);
 
 export default router;
