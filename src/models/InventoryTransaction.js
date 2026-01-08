@@ -101,11 +101,10 @@ inventoryTransactionSchema.index({ createdBy: 1, createdAt: -1 });
 inventoryTransactionSchema.index({ createdAt: -1 });
 
 // Calculate total cost before save
-inventoryTransactionSchema.pre("save", function (next) {
+inventoryTransactionSchema.pre("save", async function () {
   if (this.costPrice && this.quantity) {
     this.totalCost = Math.abs(this.quantity) * this.costPrice;
   }
-  next();
 });
 
 export default mongoose.model(

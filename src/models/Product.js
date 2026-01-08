@@ -246,10 +246,8 @@ productSchema.index({ isFeatured: 1, status: 1 });
 productSchema.index({ isNewArrival: 1, status: 1 });
 
 productSchema.virtual("totalStock").get(function () {
-  if (this.models && this.models.length > 0) {
-    return this.models.reduce((sum, model) => sum + model.stock, 0);
-  }
-  return 0;
+  if (!this.models) return 0;
+  return this.models.reduce((sum, model) => sum + model.stock, 0);
 });
 
 productSchema.pre("save", function (next) {
