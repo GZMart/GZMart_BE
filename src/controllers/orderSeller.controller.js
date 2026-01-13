@@ -18,18 +18,21 @@ export const createOrder = asyncHandler(async (req, res) => {
 
 /**
  * @desc    Get all orders with pagination and filters
- * @route   GET /api/orders
+ * @route   GET /api/seller/orders
  * @access  Private
  */
 export const getSellerOrders = asyncHandler(async (req, res) => {
   const { page, limit, status, sortBy } = req.query;
 
-  const result = await orderSellerService.getSellerOrders({
-    page: Number(page) || 1,
-    limit: Number(limit) || 10,
-    status,
-    sortBy: sortBy || 'createdAt',
-  });
+  const result = await orderSellerService.getSellerOrders(
+    {
+      page: Number(page) || 1,
+      limit: Number(limit) || 10,
+      status,
+      sortBy: sortBy || 'createdAt',
+    },
+    req.user._id
+  );
 
   res.status(200).json({
     success: true,

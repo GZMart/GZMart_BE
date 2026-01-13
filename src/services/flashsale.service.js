@@ -103,16 +103,32 @@ export const getActiveFlashSales = async () => {
   const flashSales = await FlashSaleProduct.find({
     status: 'active',
   })
-    .populate('productId', 'name slug images')
-    .select('_id productId salePrice totalQuantity soldQuantity startAt endAt status createdAt')
+    .populate('productId', 'name slug images originalPrice rating reviewCount sold')
     .lean();
 
-  // Add countdown info
-  const flashSalesWithCountdown = flashSales.map((sale) => ({
-    ...sale,
-    remainingQuantity: sale.totalQuantity - sale.soldQuantity,
-    timeRemaining: Math.max(0, new Date(sale.endAt).getTime() - now.getTime()),
-  }));
+  // Add countdown info and discount details
+  const flashSalesWithCountdown = flashSales.map((sale) => {
+    const discountAmount = sale.productId?.originalPrice ? sale.productId.originalPrice - sale.salePrice : 0;
+    const discountPercent = sale.productId?.originalPrice ? Math.round((discountAmount / sale.productId.originalPrice) * 100) : 0;
+    
+    return {
+      _id: sale._id,
+      productId: sale.productId,
+      salePrice: sale.salePrice,
+      originalPrice: sale.productId?.originalPrice || 0,
+      discountAmount,
+      discountPercent,
+      totalQuantity: sale.totalQuantity,
+      soldQuantity: sale.soldQuantity,
+      remainingQuantity: sale.totalQuantity - sale.soldQuantity,
+      soldPercentage: sale.totalQuantity > 0 ? Math.round((sale.soldQuantity / sale.totalQuantity) * 100) : 0,
+      startAt: sale.startAt,
+      endAt: sale.endAt,
+      timeRemaining: Math.max(0, new Date(sale.endAt).getTime() - now.getTime()),
+      status: sale.status,
+      createdAt: sale.createdAt,
+    };
+  });
 
   return flashSalesWithCountdown;
 };
@@ -279,23 +295,31 @@ export const getFlashSalePrice = async (productId, regularPrice) => {
  * Get flash sale stats
  */
 export const getFlashSaleStats = async (flashSaleId) => {
-  const flashSale = await FlashSaleProduct.findById(flashSaleId);
+  const flashSale = await FlashSaleProduct.findById(flashSaleId)
+    .populate('productId', 'name originalPrice images');
 
   if (!flashSale) {
     throw new ErrorResponse('Flash sale not found', 404);
   }
 
   const remainingQuantity = flashSale.totalQuantity - flashSale.soldQuantity;
-  const discountAmount = flashSale.productId?.originalPrice ? flashSale.productId.originalPrice - flashSale.salePrice : 0;
+  const product = flashSale.productId;
+  const discountAmount = product?.originalPrice ? product.originalPrice - flashSale.salePrice : 0;
+  const discountPercent = product?.originalPrice ? Math.round((discountAmount / product.originalPrice) * 100) : 0;
+  const totalDiscountValue = discountAmount * flashSale.soldQuantity;
 
   return {
     _id: flashSale._id,
     productId: flashSale.productId,
     salePrice: flashSale.salePrice,
+    originalPrice: product?.originalPrice || 0,
+    discountAmount: discountAmount,
+    discountPercent: discountPercent,
+    totalDiscountValue: totalDiscountValue,
     totalQuantity: flashSale.totalQuantity,
     soldQuantity: flashSale.soldQuantity,
     remainingQuantity,
-    discountAmount,
+    soldPercentage: flashSale.totalQuantity > 0 ? Math.round((flashSale.soldQuantity / flashSale.totalQuantity) * 100) : 0,
     status: flashSale.status,
     startAt: flashSale.startAt,
     endAt: flashSale.endAt,

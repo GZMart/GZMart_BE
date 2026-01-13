@@ -24,7 +24,7 @@ router.use((req, res, next) => {
 });
 
 /**
- * @route   GET /api/orders/test/users
+ * @route   GET /api/seller/orders/test/users
  * @desc    Get list of users for testing (get valid userId)
  * @access  Public (for testing only)
  */
@@ -42,56 +42,56 @@ router.get('/test/users', async (req, res, next) => {
 });
 
 /**
- * @route   POST /api/orders
- * @desc    Create new order (for testing)
- * @access  Public
+ * @route   POST /api/seller/orders
+ * @desc    Create new order (seller creates for buyer)
+ * @access  Private (Seller/Admin)
  */
-router.post('/', createOrder);
+router.post('/', authorize('seller', 'admin'), createOrder);
 
 /**
- * @route   GET /api/orders
+ * @route   GET /api/seller/orders
  * @desc    Get all orders (with filters & pagination)
- * @access  Private (Seller)
+ * @access  Private (Seller/Admin)
  */
-router.get('/', getSellerOrders);
+router.get('/', authorize('seller', 'admin'), getSellerOrders);
 
 /**
- * @route   GET /api/orders/status/:status
+ * @route   GET /api/seller/orders/status/:status
  * @desc    Get orders filtered by status
  * @access  Private (Seller/Admin)
  */
 router.get('/status/:status', authorize('seller', 'admin'), getOrdersByStatus);
 
 /**
- * @route   GET /api/orders/:orderId/status-history
+ * @route   GET /api/seller/orders/:orderId/status-history
  * @desc    Get order status change history (audit log)
  * @access  Private (Seller/Admin)
  */
 router.get('/:orderId/status-history', authorize('seller', 'admin'), getOrderStatusHistory);
 
 /**
- * @route   GET /api/orders/:orderId/delivery-note
+ * @route   GET /api/seller/orders/:orderId/delivery-note
  * @desc    Generate delivery note (HTML/PDF)
  * @access  Private (Seller/Admin)
  */
 router.get('/:orderId/delivery-note', authorize('seller', 'admin'), generateDeliveryNote);
 
 /**
- * @route   GET /api/orders/:orderId
+ * @route   GET /api/seller/orders/:orderId
  * @desc    Get order detail by ID
  * @access  Private (Seller/Admin)
  */
 router.get('/:orderId', authorize('seller', 'admin'), getOrderDetail);
 
 /**
- * @route   PUT /api/orders/:orderId/status
+ * @route   PUT /api/seller/orders/:orderId/status
  * @desc    Update order status (pending -> processing -> shipped -> delivered)
  * @access  Private (Seller/Admin)
  */
 router.put('/:orderId/status', authorize('seller', 'admin'), updateOrderStatus);
 
 /**
- * @route   PUT /api/orders/:orderId/cancel
+ * @route   PUT /api/seller/orders/:orderId/cancel
  * @desc    Cancel order with reason
  * @access  Private (Seller/Admin)
  */

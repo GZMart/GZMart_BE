@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Order from '../models/Order.js';
 import OrderItem from '../models/OrderItem.js';
+import Product from '../models/Product.js';
 import { ErrorResponse } from '../utils/errorResponse.js';
 
 /**
@@ -88,13 +89,48 @@ export const createOrder = async (orderData) => {
 
 /**
  * Get all orders with pagination and filters
+ * Returns orders that contain products from the seller
  */
-export const getSellerOrders = async (filters = {}) => {
+export const getSellerOrders = async (filters = {}, sellerId) => {
   const { page = 1, limit = 10, status, sortBy = 'createdAt' } = filters;
   const skip = (page - 1) * limit;
 
+  if (!sellerId) {
+    throw new ErrorResponse('Seller ID is required', 400);
+  }
+
+  // Find all products belonging to this seller
+  const sellerProducts = await Product.find({ sellerId }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return {
+      total: 0,
+      page: Number(page),
+      limit: Number(limit),
+      pages: 0,
+      data: [],
+    };
+  }
+
+  // Find OrderItems containing seller's products
+  const orderItems = await OrderItem.find({ productId: { $in: sellerProductIds } }).select('orderId');
+  const orderIds = [...new Set(orderItems.map(item => item.orderId.toString()))].map(
+    id => new mongoose.Types.ObjectId(id)
+  );
+
+  if (orderIds.length === 0) {
+    return {
+      total: 0,
+      page: Number(page),
+      limit: Number(limit),
+      pages: 0,
+      data: [],
+    };
+  }
+
   // Build filter
-  const filterQuery = {};
+  const filterQuery = { _id: { $in: orderIds } };
   if (status) {
     filterQuery.status = status;
   }

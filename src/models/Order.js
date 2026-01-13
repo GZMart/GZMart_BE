@@ -55,6 +55,12 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    discountAmount: {
+      type: Number,
+      default: 0,
+      min: [0, 'Discount amount must be non-negative'],
+      description: 'Total discount value from flash sales and coupons in currency units',
+    },
     discountCode: {
       type: String,
     },

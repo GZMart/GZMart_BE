@@ -5,17 +5,17 @@ import InventoryTransaction from '../models/InventoryTransaction.js';
 import { asyncHandler } from '../middlewares/async.middleware.js';
 import { ErrorResponse } from '../utils/errorResponse.js';
 
-// Helper to check stock via InventoryTransaction
-const checkStockAvailability = async (productId, modelId, sku, requestedQty) => {
+// Helper to check stock via InventoryTransaction with fallback to model.stock
+const checkStockAvailability = async (productId, modelId, sku, requestedQty, modelStock = 0) => {
   const latestTransaction = await InventoryTransaction.findOne({
     productId,
-    // modelId, // Removing modelId from query to rely on SKU which is unique per product
     sku,
   })
     .sort({ createdAt: -1 })
     .lean();
 
-  const currentStock = latestTransaction ? latestTransaction.stockAfter : 0;
+  // Fallback to model.stock if no transaction exists (initial stock from product creation)
+  const currentStock = latestTransaction ? latestTransaction.stockAfter : modelStock;
   return { available: currentStock >= requestedQty, currentStock };
 };
 
@@ -70,7 +70,7 @@ export const getCart = asyncHandler(async (req, res, next) => {
     let stockInfo = { available: false, currentStock: 0 };
 
     if (model) {
-      stockInfo = await checkStockAvailability(product._id, model._id, model.sku, item.quantity);
+      stockInfo = await checkStockAvailability(product._id, model._id, model.sku, item.quantity, model.stock);
     }
     
     total += item.price * item.quantity;
@@ -149,7 +149,8 @@ export const addToCart = asyncHandler(async (req, res, next) => {
     productId,
     model._id,
     model.sku,
-    newQuantity
+    newQuantity,
+    model.stock
   );
 
   if (!available) {
@@ -226,7 +227,8 @@ export const updateCartItem = asyncHandler(async (req, res, next) => {
     product._id,
     model._id,
     model.sku,
-    quantity
+    quantity,
+    model.stock
   );
 
   if (!available) {

@@ -5,7 +5,7 @@ import { asyncHandler } from '../middlewares/async.middleware.js';
 /**
  * @desc    Create a new flash sale for a product
  * @route   POST /api/flash-sales
- * @access  Private (Admin only)
+ * @access  Private (Seller, Admin)
  */
 export const createFlashSale = asyncHandler(async (req, res) => {
   const { productId, salePrice, totalQuantity, startAt, endAt } = req.body;
@@ -134,7 +134,7 @@ export const getFlashSaleProduct = asyncHandler(async (req, res, next) => {
 /**
  * @desc    Update flash sale
  * @route   PUT /api/flash-sales/:flashSaleId
- * @access  Private (Admin only)
+ * @access  Private (Seller, Admin)
  */
 export const updateFlashSale = asyncHandler(async (req, res, next) => {
   const allowedFields = ['salePrice', 'totalQuantity', 'startAt', 'endAt'];
@@ -156,9 +156,9 @@ export const updateFlashSale = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * @desc    Update flash sale product
- * @route   PUT /api/flash-sales/:flashSaleId
- * @access  Private (Admin only)
+ * @desc    Update flash sale product (price, quantity)
+ * @route   PUT /api/flash-sales/:flashSaleId/product
+ * @access  Private (Seller, Admin)
  */
 export const updateFlashSaleProduct = asyncHandler(async (req, res, next) => {
   const allowedFields = ['salePrice', 'totalQuantity'];
@@ -183,24 +183,24 @@ export const updateFlashSaleProduct = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * @desc    Remove product from flash sale
+ * @desc    Remove product from flash sale (alias for delete)
  * @route   DELETE /api/flash-sales/:flashSaleId
- * @access  Private (Admin only)
+ * @access  Private (Seller, Admin)
  */
 export const removeProductFromFlashSale = asyncHandler(async (req, res, next) => {
-  await flashSaleService.deleteFlashSale(req.params.flashSaleId);
+  const flashSale = await flashSaleService.removeProductFromFlashSale(req.params.flashSaleId);
 
   res.status(200).json({
     success: true,
-    message: 'Flash sale deleted',
-    data: {},
+    message: 'Flash sale removed successfully',
+    data: flashSale,
   });
 });
 
 /**
  * @desc    Delete flash sale
  * @route   DELETE /api/flash-sales/:flashSaleId
- * @access  Private (Admin only)
+ * @access  Private (Seller, Admin)
  */
 export const deleteFlashSale = asyncHandler(async (req, res, next) => {
   await flashSaleService.deleteFlashSale(req.params.flashSaleId);
@@ -213,9 +213,9 @@ export const deleteFlashSale = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * @desc    Get flash sale stats
+ * @desc    Get flash sale stats (views, sold, revenue, discount)
  * @route   GET /api/flash-sales/:flashSaleId/stats
- * @access  Private (Admin only)
+ * @access  Private (Seller, Admin)
  */
 export const getFlashSaleStats = asyncHandler(async (req, res, next) => {
   const stats = await flashSaleService.getFlashSaleStats(req.params.flashSaleId);
