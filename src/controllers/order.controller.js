@@ -4,9 +4,11 @@ import Cart from '../models/Cart.js';
 import CartItem from '../models/CartItem.js';
 import Product from '../models/Product.js';
 import InventoryTransaction from '../models/InventoryTransaction.js';
+import FlashSaleProduct from '../models/FlashSaleProduct.js';
 import User from '../models/User.js';
 import { asyncHandler } from '../middlewares/async.middleware.js';
 import { ErrorResponse } from '../utils/errorResponse.js';
+import * as flashSaleService from '../services/flashsale.service.js';
 
 // @desc    Get checkout info (user details)
 // @route   GET /api/orders/checkout-info
@@ -52,15 +54,11 @@ const generateOrderNumber = () => {
 };
 
 // Helper to check stock (reused logic, kept simple)
-const checkStock = async (productId, sku, qty) => {
+const checkStock = async (productId, sku, qty, modelStock = 0) => {
     const latestTx = await InventoryTransaction.findOne({ productId, sku }).sort({ createdAt: -1 }).lean();
     
-    // Fallback for dev: if no transaction exists, assume stock is 100
-    if (!latestTx) {
-        return { available: true, currentStock: 100 };
-    }
-
-    const currentStock = latestTx.stockAfter;
+    // Fallback to model.stock if no transaction exists (initial stock from product creation)
+    const currentStock = latestTx ? latestTx.stockAfter : modelStock;
     return { available: currentStock >= qty, currentStock };
 };
 
@@ -154,16 +152,21 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           return next(new ErrorResponse(`Product variant ${product.name} (${item.color}, ${item.size}) is no longer available`, 400));
       }
 
-      const { available, currentStock } = await checkStock(product._id, model.sku, item.quantity);
+      const { available, currentStock } = await checkStock(product._id, model.sku, item.quantity, model.stock);
       if (!available) {
           return next(new ErrorResponse(`Insufficient stock for ${product.name}. Available: ${currentStock}`, 400));
       }
 
-      subtotal += item.price * item.quantity;
+      // Check flash sale pricing
+      const flashSaleInfo = await flashSaleService.getFlashSalePrice(product._id, model.price);
+      const finalPrice = flashSaleInfo.price;
+
+      subtotal += finalPrice * item.quantity;
       validItems.push({
           cartItem: item,
           model: model,
-          product: product
+          product: product,
+          flashSaleInfo: flashSaleInfo
       });
   }
 
@@ -184,27 +187,44 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       shippingCost,
       paymentMethod,
       notes,
-      isActive: true
+      isActive: true,
+      items: []
   });
 
   // 5. Create Order Items & Deduct Inventory
-  for (const { cartItem, model, product } of validItems) {
+  const orderItemIds = [];
+  for (const { cartItem, model, product, flashSaleInfo } of validItems) {
       // Create Order Item
-      await OrderItem.create({
+      const orderItem = await OrderItem.create({
           orderId: order._id,
           productId: product._id,
+          modelId: model._id,
+          sku: model.sku,
           quantity: cartItem.quantity,
-          price: cartItem.price,
-          size: cartItem.size,
-          color: cartItem.color,
-          subtotal: cartItem.price * cartItem.quantity,
-          originalPrice: model.price // or product.originalPrice
+          price: flashSaleInfo.price,
+          tierSelections: {
+              size: cartItem.size,
+              color: cartItem.color
+          },
+          subtotal: flashSaleInfo.price * cartItem.quantity,
+          originalPrice: model.price,
+          isFlashSale: flashSaleInfo.isFlashSale
       });
+      
+      orderItemIds.push(orderItem._id);
+
+      // Update flash sale sold quantity if applicable
+      if (flashSaleInfo.isFlashSale && flashSaleInfo.flashSaleId) {
+          await FlashSaleProduct.findByIdAndUpdate(
+              flashSaleInfo.flashSaleId,
+              { $inc: { soldQuantity: cartItem.quantity } }
+          );
+      }
 
       // Deduct Inventory
       // Requires fetching latest stock AGAIN to be safe (simple optimistic lock)
       const latestTx = await InventoryTransaction.findOne({ productId: product._id, sku: model.sku }).sort({ createdAt: -1 });
-      const currentStock = latestTx ? latestTx.stockAfter : 0;
+      const currentStock = latestTx ? latestTx.stockAfter : model.stock;
       
       await InventoryTransaction.create({
           productId: product._id,
@@ -221,10 +241,17 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       });
   }
 
+  // Add order items to order document
+  order.items = orderItemIds;
+  await order.save();
+
   // 6. Clear Cart
   await CartItem.deleteMany({ cartId: cart._id });
   cart.totalPrice = 0;
   await cart.save();
+
+  // Populate order items before sending response
+  await order.populate('items');
 
   res.status(201).json({
       success: true,
@@ -334,7 +361,7 @@ export const cancelOrder = asyncHandler(async (req, res, next) => {
 
         if (model) {
             const latestTx = await InventoryTransaction.findOne({ productId: product._id, sku: model.sku }).sort({ createdAt: -1 });
-            const currentStock = latestTx ? latestTx.stockAfter : 0;
+            const currentStock = latestTx ? latestTx.stockAfter : model.stock;
 
             await InventoryTransaction.create({
                 productId: product._id,
@@ -349,6 +376,17 @@ export const cancelOrder = asyncHandler(async (req, res, next) => {
                 createdBy: req.user._id,
                 note: `Order Cancelled ${order.orderNumber}`
             });
+
+            // Revert flash sale sold quantity if it was a flash sale
+            if (item.isFlashSale) {
+                const flashSale = await FlashSaleProduct.findOne({ productId: product._id, status: 'active' });
+                if (flashSale) {
+                    await FlashSaleProduct.findByIdAndUpdate(
+                        flashSale._id,
+                        { $inc: { soldQuantity: -item.quantity } }
+                    );
+                }
+            }
         }
     }
 

@@ -55,6 +55,12 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    discountAmount: {
+      type: Number,
+      default: 0,
+      min: [0, 'Discount amount must be non-negative'],
+      description: 'Total discount value from flash sales and coupons in currency units',
+    },
     discountCode: {
       type: String,
     },
@@ -136,6 +142,30 @@ const orderSchema = new mongoose.Schema(
     autoCompleteDueAt: Date,
     completedAt: Date,
     customerConfirmedAt: Date,
+    
+    // ===== Order Items & History =====
+    items: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'OrderItem',
+      },
+    ],
+    statusHistory: [
+      {
+        status: String,
+        changedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+        },
+        changedByRole: String,
+        changedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        reason: String,
+        notes: String,
+      },
+    ],
   },
   {
     timestamps: true,

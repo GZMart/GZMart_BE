@@ -21,6 +21,10 @@ import logger from "./utils/logger.js";
 import { setupUploadDirectories } from "./utils/setupUploads.js";
 import cartRoutes from "./routes/cart.routes.js";
 import orderRoutes from "./routes/order.routes.js";
+import orderSellerRoutes from "./routes/orderSeller.routes.js";
+import flashSaleRoutes from "./routes/flashsale.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
+
 // Load environment variables
 dotenv.config();
 
@@ -154,6 +158,9 @@ app.use("/api/deals", dealRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/orders", orderRoutes);
+app.use("/api/seller/orders", orderSellerRoutes);
+app.use("/api/flash-sales", flashSaleRoutes);
+app.use("/api/dashboard", dashboardRoutes);
 // Error handler
 app.use(errorHandler);
 
