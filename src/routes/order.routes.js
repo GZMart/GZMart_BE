@@ -5,7 +5,8 @@ import {
   getOrderById,
   cancelOrder,
   getCheckoutInfo,
-  previewOrder
+  previewOrder,
+  generateInvoice
 } from '../controllers/order.controller.js';
 import { protect } from '../middlewares/auth.middleware.js';
 
@@ -23,6 +24,8 @@ router.route('/')
 
 router.route('/:id')
   .get(getOrderById);
+
+router.get('/:id/invoice', generateInvoice);
 
 router.route('/:id/cancel')
   .put(cancelOrder);

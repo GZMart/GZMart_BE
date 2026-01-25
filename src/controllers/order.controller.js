@@ -263,14 +263,135 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 // @route   GET /api/orders
 // @access  Private
 export const getMyOrders = asyncHandler(async (req, res, next) => {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     const orders = await Order.find({ userId: req.user._id })
-        .sort({ createdAt: -1 });
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit);
+
+    const total = await Order.countDocuments({ userId: req.user._id });
 
     res.status(200).json({
         success: true,
         count: orders.length,
+        pagination: {
+            total,
+            page,
+            pages: Math.ceil(total / limit)
+        },
         data: orders
     });
+});
+
+/**
+ * @desc    Generate Invoice
+ * @route   GET /api/orders/:id/invoice
+ * @access  Private
+ */
+export const generateInvoice = asyncHandler(async (req, res, next) => {
+  const order = await Order.findById(req.params.id)
+    .populate('userId', 'fullName email phone address')
+    .populate('items');
+
+  if (!order) {
+    return next(new ErrorResponse('Order not found', 404));
+  }
+
+  // Verify owner
+  if (order.userId._id.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+     return next(new ErrorResponse('Not authorized', 401));
+  }
+
+  // Generate simple HTML invoice
+    const itemsHTML = order.items.map(item => `
+    <tr>
+      <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.sku}</td>
+      <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
+      <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">$${item.price.toLocaleString()}</td>
+      <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">$${item.subtotal.toLocaleString()}</td>
+    </tr>
+  `).join('');
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <title>Invoice #${order.orderNumber}</title>
+      <style>
+        body { font-family: 'Helvetica Neue', 'Helvetica', Helvetica, Arial, sans-serif; color: #555; }
+        .invoice-box { max-width: 800px; margin: auto; padding: 30px; border: 1px solid #eee; box-shadow: 0 0 10px rgba(0, 0, 0, .15); font-size: 16px; line-height: 24px; color: #555; }
+        .invoice-header { display: flex; justify-content: space-between; margin-bottom: 50px; }
+        .invoice-title { font-size: 45px; line-height: 45px; color: #333; }
+        .invoice-details { text-align: right; }
+        table { width: 100%; line-height: inherit; text-align: left; border-collapse: collapse; }
+        table th { padding: 10px; background: #eee; border-bottom: 1px solid #ddd; font-weight: bold; }
+        .total-row td { font-weight: bold; border-top: 2px solid #eee; padding-top: 20px; }
+      </style>
+    </head>
+    <body>
+      <div class="invoice-box">
+        <div class="invoice-header">
+           <div>
+              <div class="invoice-title">INVOICE</div>
+              <div>GZMart Inc.</div>
+           </div>
+           <div class="invoice-details">
+              <div>Invoice #: ${order.orderNumber}</div>
+              <div>Date: ${new Date(order.createdAt).toLocaleDateString()}</div>
+           </div>
+        </div>
+
+        <div style="margin-bottom: 30px; display: flex; justify-content: space-between;">
+           <div>
+              <strong>Bill To:</strong><br/>
+              ${order.userId.fullName}<br/>
+              ${order.userId.email}<br/>
+              ${order.userId.phone || ''}
+           </div>
+           <div style="text-align: right;">
+              <strong>Ship To:</strong><br/>
+              ${order.shippingAddress}
+           </div>
+        </div>
+
+        <table>
+           <thead>
+              <tr>
+                 <th>Item</th>
+                 <th style="text-align: center;">Qty</th>
+                 <th style="text-align: right;">Price</th>
+                 <th style="text-align: right;">Total</th>
+              </tr>
+           </thead>
+           <tbody>
+              ${itemsHTML}
+              <tr class="total-row">
+                 <td colspan="3" style="text-align: right;">Subtotal:</td>
+                 <td style="text-align: right;">$${order.subtotal.toLocaleString()}</td>
+              </tr>
+              <tr>
+                 <td colspan="3" style="text-align: right;">Shipping:</td>
+                 <td style="text-align: right;">$${order.shippingCost.toLocaleString()}</td>
+              </tr>
+              <tr>
+                 <td colspan="3" style="text-align: right; font-size: 1.2em; font-weight: bold;">Total:</td>
+                 <td style="text-align: right; font-size: 1.2em; font-weight: bold;">$${order.totalPrice.toLocaleString()}</td>
+              </tr>
+           </tbody>
+        </table>
+      </div>
+    </body>
+    </html>
+  `;
+
+  res.status(200).json({
+    success: true,
+    data: html
+  });
 });
 
 // @desc    Get single order
