@@ -1,5 +1,7 @@
 import InventoryTransaction from "../models/InventoryTransaction.js";
+import InventoryItem from "../models/InventoryItem.js";
 import Product from "../models/Product.js";
+import mongoose from "mongoose";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
 /**
@@ -13,7 +15,7 @@ export const stockIn = async (transactionData, userId) => {
     throw new ErrorResponse("Quantity must be greater than 0", 400);
   }
 
-  // Find product and model
+  // Validate product and model exist
   const product = await Product.findById(productId);
   if (!product) {
     throw new ErrorResponse("Product not found", 404);
@@ -28,34 +30,78 @@ export const stockIn = async (transactionData, userId) => {
     throw new ErrorResponse("SKU does not match model", 400);
   }
 
-  const stockBefore = model.stock;
-  const stockAfter = stockBefore + quantity;
+  // Start DB transaction for atomicity
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  // Update product stock
-  model.stock = stockAfter;
-  if (costPrice !== undefined && costPrice !== null) {
-    model.costPrice = costPrice;
+  try {
+    // Find or create inventory item
+    let inventoryItem = await InventoryItem.findOne({
+      sku: sku.toUpperCase(),
+      warehouseId,
+    }).session(session);
+
+    if (!inventoryItem) {
+      inventoryItem = await InventoryItem.create(
+        [
+          {
+            productId,
+            modelId,
+            sku: sku.toUpperCase(),
+            quantity: 0,
+            costPrice: 0,
+            warehouseId,
+          },
+        ],
+        { session },
+      );
+      inventoryItem = inventoryItem[0];
+    }
+
+    const stockBefore = inventoryItem.quantity;
+
+    // Update stock with weighted average cost
+    inventoryItem.addStock(quantity, costPrice || 0);
+    await inventoryItem.save({ session });
+
+    const stockAfter = inventoryItem.quantity;
+
+    // Sync stock back to Product.models for backward compatibility (optional)
+    model.stock = stockAfter;
+    model.costPrice = inventoryItem.costPrice;
+    await product.save({ session });
+
+    // Create transaction record
+    const transaction = await InventoryTransaction.create(
+      [
+        {
+          productId,
+          modelId,
+          sku: sku.toUpperCase(),
+          type: "in",
+          quantity,
+          stockBefore,
+          stockAfter,
+          costPrice: inventoryItem.costPrice,
+          note,
+          warehouseId,
+          referenceType: "manual",
+          createdBy: userId,
+          status: "completed",
+        },
+      ],
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    return transaction[0];
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
   }
-  await product.save();
-
-  // Create transaction record
-  const transaction = await InventoryTransaction.create({
-    productId,
-    modelId,
-    sku: sku.toUpperCase(),
-    type: "in",
-    quantity,
-    stockBefore,
-    stockAfter,
-    costPrice,
-    note,
-    warehouseId,
-    referenceType: "manual",
-    createdBy: userId,
-    status: "completed",
-  });
-
-  return transaction;
 };
 
 /**
@@ -69,7 +115,7 @@ export const stockOut = async (transactionData, userId) => {
     throw new ErrorResponse("Quantity must be greater than 0", 400);
   }
 
-  // Find product and model
+  // Validate product and model exist
   const product = await Product.findById(productId);
   if (!product) {
     throw new ErrorResponse("Product not found", 404);
@@ -84,38 +130,64 @@ export const stockOut = async (transactionData, userId) => {
     throw new ErrorResponse("SKU does not match model", 400);
   }
 
-  const stockBefore = model.stock;
-  const stockAfter = stockBefore - quantity;
+  // Start DB transaction for atomicity
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  if (stockAfter < 0) {
-    throw new ErrorResponse(
-      `Insufficient stock. Available: ${stockBefore}, Requested: ${quantity}`,
-      400
+  try {
+    // Find inventory item
+    const inventoryItem = await InventoryItem.findOne({
+      sku: sku.toUpperCase(),
+      warehouseId,
+    }).session(session);
+
+    if (!inventoryItem) {
+      throw new ErrorResponse("Inventory item not found", 404);
+    }
+
+    const stockBefore = inventoryItem.quantity;
+
+    // Reduce stock (will throw error if insufficient)
+    inventoryItem.reduceStock(quantity);
+    await inventoryItem.save({ session });
+
+    const stockAfter = inventoryItem.quantity;
+
+    // Sync stock back to Product.models for backward compatibility (optional)
+    model.stock = stockAfter;
+    await product.save({ session });
+
+    // Create transaction record
+    const transaction = await InventoryTransaction.create(
+      [
+        {
+          productId,
+          modelId,
+          sku: sku.toUpperCase(),
+          type: "out",
+          quantity: -quantity, // Negative for stock out
+          stockBefore,
+          stockAfter,
+          costPrice: inventoryItem.costPrice || 0,
+          note,
+          warehouseId,
+          referenceType: "manual",
+          createdBy: userId,
+          status: "completed",
+        },
+      ],
+      { session },
     );
+
+    await session.commitTransaction();
+
+    return transaction[0];
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
   }
-
-  // Update product stock
-  model.stock = stockAfter;
-  await product.save();
-
-  // Create transaction record
-  const transaction = await InventoryTransaction.create({
-    productId,
-    modelId,
-    sku: sku.toUpperCase(),
-    type: "out",
-    quantity: -quantity, // Negative for stock out
-    stockBefore,
-    stockAfter,
-    costPrice: model.costPrice || 0,
-    note,
-    warehouseId,
-    referenceType: "manual",
-    createdBy: userId,
-    status: "completed",
-  });
-
-  return transaction;
 };
 
 /**
@@ -129,7 +201,7 @@ export const adjustStock = async (transactionData, userId) => {
     throw new ErrorResponse("Stock cannot be negative", 400);
   }
 
-  // Find product and model
+  // Validate product and model exist
   const product = await Product.findById(productId);
   if (!product) {
     throw new ErrorResponse("Product not found", 404);
@@ -144,32 +216,77 @@ export const adjustStock = async (transactionData, userId) => {
     throw new ErrorResponse("SKU does not match model", 400);
   }
 
-  const stockBefore = model.stock;
-  const stockAfter = newStock;
-  const quantity = stockAfter - stockBefore;
+  // Start DB transaction for atomicity
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  // Update product stock
-  model.stock = stockAfter;
-  await product.save();
+  try {
+    // Find or create inventory item
+    let inventoryItem = await InventoryItem.findOne({
+      sku: sku.toUpperCase(),
+      warehouseId,
+    }).session(session);
 
-  // Create transaction record
-  const transaction = await InventoryTransaction.create({
-    productId,
-    modelId,
-    sku: sku.toUpperCase(),
-    type: "adjust",
-    quantity,
-    stockBefore,
-    stockAfter,
-    costPrice: model.costPrice || 0,
-    note: note || `Stock adjusted from ${stockBefore} to ${stockAfter}`,
-    warehouseId,
-    referenceType: "adjustment",
-    createdBy: userId,
-    status: "completed",
-  });
+    if (!inventoryItem) {
+      inventoryItem = await InventoryItem.create(
+        [
+          {
+            productId,
+            modelId,
+            sku: sku.toUpperCase(),
+            quantity: 0,
+            costPrice: model.costPrice || 0,
+            warehouseId,
+          },
+        ],
+        { session },
+      );
+      inventoryItem = inventoryItem[0];
+    }
 
-  return transaction;
+    const stockBefore = inventoryItem.quantity;
+    const stockAfter = newStock;
+    const quantity = stockAfter - stockBefore;
+
+    // Set new stock
+    inventoryItem.setStock(stockAfter);
+    await inventoryItem.save({ session });
+
+    // Sync stock back to Product.models for backward compatibility (optional)
+    model.stock = stockAfter;
+    await product.save({ session });
+
+    // Create transaction record
+    const transaction = await InventoryTransaction.create(
+      [
+        {
+          productId,
+          modelId,
+          sku: sku.toUpperCase(),
+          type: "adjust",
+          quantity,
+          stockBefore,
+          stockAfter,
+          costPrice: inventoryItem.costPrice || 0,
+          note: note || `Stock adjusted from ${stockBefore} to ${stockAfter}`,
+          warehouseId,
+          referenceType: "adjustment",
+          createdBy: userId,
+          status: "completed",
+        },
+      ],
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    return transaction[0];
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
 
 /**
@@ -261,17 +378,40 @@ export const getProductInventorySummary = async (productId) => {
     .filter((t) => t.quantity < 0)
     .reduce((sum, t) => sum + Math.abs(t.quantity), 0);
 
-  const currentStock = product.models.reduce((sum, m) => sum + m.stock, 0);
+  // Get inventory items for all models
+  const inventoryItems = await InventoryItem.find({ productId }).lean();
 
-  const modelsSummary = product.models.map((model) => ({
-    modelId: model._id,
-    sku: model.sku,
-    currentStock: model.stock,
-    price: model.price,
-    costPrice: model.costPrice || 0,
-    stockValue: model.stock * (model.costPrice || 0),
-    tierIndex: model.tierIndex,
-  }));
+  const currentStock = inventoryItems.reduce(
+    (sum, item) => sum + item.quantity,
+    0,
+  );
+
+  const modelsSummary = await Promise.all(
+    product.models.map(async (model) => {
+      const inventoryItem = inventoryItems.find(
+        (item) => item.sku === model.sku,
+      );
+
+      return {
+        modelId: model._id,
+        sku: model.sku,
+        currentStock: inventoryItem?.quantity || 0,
+        availableStock: inventoryItem?.availableQuantity || 0,
+        reservedStock: inventoryItem?.reservedQuantity || 0,
+        price: model.price,
+        costPrice: inventoryItem?.costPrice || model.costPrice || 0,
+        stockValue:
+          (inventoryItem?.quantity || 0) * (inventoryItem?.costPrice || 0),
+        stockStatus: inventoryItem?.stockStatus || "out_of_stock",
+        tierIndex: model.tierIndex,
+      };
+    }),
+  );
+
+  const totalStockValue = modelsSummary.reduce(
+    (sum, m) => sum + m.stockValue,
+    0,
+  );
 
   return {
     productId,
@@ -279,7 +419,7 @@ export const getProductInventorySummary = async (productId) => {
     totalIn,
     totalOut,
     currentStock,
-    totalStockValue: modelsSummary.reduce((sum, m) => sum + m.stockValue, 0),
+    totalStockValue,
     models: modelsSummary,
     recentTransactions: transactions.slice(0, 10),
   };
@@ -311,9 +451,8 @@ export const getInventoryStats = async (filters = {}) => {
     },
   ]);
 
-  const totalTransactions = await InventoryTransaction.countDocuments(
-    matchStage
-  );
+  const totalTransactions =
+    await InventoryTransaction.countDocuments(matchStage);
 
   return {
     totalTransactions,
@@ -340,17 +479,17 @@ export const bulkStockUpdate = async (updates, userId) => {
       if (type === "in") {
         transaction = await stockIn(
           { productId, modelId, sku, quantity, costPrice: update.costPrice },
-          userId
+          userId,
         );
       } else if (type === "out") {
         transaction = await stockOut(
           { productId, modelId, sku, quantity },
-          userId
+          userId,
         );
       } else {
         transaction = await adjustStock(
           { productId, modelId, sku, newStock: quantity },
-          userId
+          userId,
         );
       }
 
@@ -364,4 +503,227 @@ export const bulkStockUpdate = async (updates, userId) => {
   }
 
   return { results, errors };
+};
+
+/**
+ * Get inventory item by SKU
+ */
+export const getInventoryItemBySKU = async (sku, warehouseId = null) => {
+  const inventoryItem = await InventoryItem.findOne({
+    sku: sku.toUpperCase(),
+    warehouseId,
+  })
+    .populate("productId", "name slug images")
+    .lean();
+
+  if (!inventoryItem) {
+    throw new ErrorResponse("Inventory item not found", 404);
+  }
+
+  return inventoryItem;
+};
+
+/**
+ * Get all inventory items with filters
+ */
+export const getInventoryItems = async (filters = {}, options = {}) => {
+  const {
+    productId,
+    warehouseId,
+    status,
+    lowStock,
+    page = 1,
+    limit = 50,
+  } = options;
+
+  const query = {};
+
+  if (productId) query.productId = productId;
+  if (warehouseId) query.warehouseId = warehouseId;
+  if (status) query.status = status;
+
+  // Filter for low stock items
+  if (lowStock === true || lowStock === "true") {
+    query.$expr = { $lte: ["$quantity", "$lowStockThreshold"] };
+  }
+
+  const skip = (page - 1) * limit;
+
+  const [items, total] = await Promise.all([
+    InventoryItem.find(query)
+      .populate("productId", "name slug images")
+      .sort({ quantity: 1 }) // Show low stock first
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    InventoryItem.countDocuments(query),
+  ]);
+
+  return {
+    items,
+    pagination: {
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      limit,
+    },
+  };
+};
+
+/**
+ * Reserve stock for order (when order is created but not paid)
+ */
+export const reserveStock = async (sku, quantity, warehouseId = null) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const inventoryItem = await InventoryItem.findOne({
+      sku: sku.toUpperCase(),
+      warehouseId,
+    }).session(session);
+
+    if (!inventoryItem) {
+      throw new ErrorResponse("Inventory item not found", 404);
+    }
+
+    if (inventoryItem.availableQuantity < quantity) {
+      throw new ErrorResponse(
+        `Insufficient available stock. Available: ${inventoryItem.availableQuantity}, Requested: ${quantity}`,
+        400,
+      );
+    }
+
+    inventoryItem.reservedQuantity += quantity;
+    await inventoryItem.save({ session });
+
+    await session.commitTransaction();
+
+    return inventoryItem;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
+/**
+ * Release reserved stock (when order is cancelled)
+ */
+export const releaseReservedStock = async (
+  sku,
+  quantity,
+  warehouseId = null,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const inventoryItem = await InventoryItem.findOne({
+      sku: sku.toUpperCase(),
+      warehouseId,
+    }).session(session);
+
+    if (!inventoryItem) {
+      throw new ErrorResponse("Inventory item not found", 404);
+    }
+
+    inventoryItem.reservedQuantity = Math.max(
+      0,
+      inventoryItem.reservedQuantity - quantity,
+    );
+    await inventoryItem.save({ session });
+
+    await session.commitTransaction();
+
+    return inventoryItem;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
+/**
+ * Confirm stock (convert reserved to actual stock reduction - when order is paid)
+ */
+export const confirmStock = async (
+  sku,
+  quantity,
+  userId,
+  orderId,
+  warehouseId = null,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const inventoryItem = await InventoryItem.findOne({
+      sku: sku.toUpperCase(),
+      warehouseId,
+    }).session(session);
+
+    if (!inventoryItem) {
+      throw new ErrorResponse("Inventory item not found", 404);
+    }
+
+    const stockBefore = inventoryItem.quantity;
+
+    // Reduce both reserved and actual quantity
+    inventoryItem.reservedQuantity = Math.max(
+      0,
+      inventoryItem.reservedQuantity - quantity,
+    );
+    inventoryItem.quantity = Math.max(0, inventoryItem.quantity - quantity);
+
+    await inventoryItem.save({ session });
+
+    const stockAfter = inventoryItem.quantity;
+
+    // Create transaction record
+    const transaction = await InventoryTransaction.create(
+      [
+        {
+          productId: inventoryItem.productId,
+          modelId: inventoryItem.modelId,
+          sku: sku.toUpperCase(),
+          type: "out",
+          quantity: -quantity,
+          stockBefore,
+          stockAfter,
+          costPrice: inventoryItem.costPrice || 0,
+          note: `Stock reduced for order ${orderId}`,
+          warehouseId,
+          referenceType: "order",
+          referenceId: orderId,
+          createdBy: userId,
+          status: "completed",
+        },
+      ],
+      { session },
+    );
+
+    // Sync to Product model
+    const product = await Product.findById(inventoryItem.productId).session(
+      session,
+    );
+    if (product) {
+      const model = product.models.id(inventoryItem.modelId);
+      if (model) {
+        model.stock = stockAfter;
+        await product.save({ session });
+      }
+    }
+
+    await session.commitTransaction();
+
+    return { inventoryItem, transaction: transaction[0] };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
