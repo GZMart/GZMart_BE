@@ -19,6 +19,10 @@ const brandSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    featuredImage: {
+      type: String,
+      default: null,
+    },
     description: {
       type: String,
       default: null,
@@ -48,7 +52,7 @@ const brandSchema = new mongoose.Schema(
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  }
+  },
 );
 
 // Indexes
