@@ -17,6 +17,8 @@ import homeRoutes from "./routes/home.routes.js";
 import brandRoutes from "./routes/brand.routes.js";
 import dealRoutes from "./routes/deal.routes.js";
 import searchRoutes from "./routes/search.routes.js";
+import favouriteRoutes from "./routes/favourite.routes.js";
+import userRoutes from "./routes/user.routes.js";
 import logger from "./utils/logger.js";
 import { setupUploadDirectories } from "./utils/setupUploads.js";
 import cartRoutes from "./routes/cart.routes.js";
@@ -24,6 +26,7 @@ import orderRoutes from "./routes/order.routes.js";
 import orderSellerRoutes from "./routes/orderSeller.routes.js";
 import flashSaleRoutes from "./routes/flashsale.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
+import uploadRoutes from "./routes/upload.routes.js";
 
 // Load environment variables
 dotenv.config();
@@ -46,22 +49,22 @@ app.use(corsMiddleware);
 app.options("*", corsMiddleware);
 
 // Enhanced request logging with detailed debug info
-app.use((req, res, next) => {
-  console.log(`=== REQUEST DEBUG ===`);
-  console.log(
-    `${req.method} ${req.path} from ${req.headers.origin || "unknown"}`
-  );
-  console.log("Host:", req.headers.host);
-  console.log("User-Agent:", req.headers["user-agent"]);
-  console.log("Content-Type:", req.headers["content-type"]);
-  console.log("Content-Length:", req.headers["content-length"]);
-  console.log("Request URL:", req.url);
-  console.log("Request path:", req.path);
-  console.log("Request base URL:", req.baseUrl);
-  console.log("Request original URL:", req.originalUrl);
-  console.log("========================");
-  next();
-});
+// app.use((req, res, next) => {
+//   console.log(`=== REQUEST DEBUG ===`);
+//   console.log(
+//     `${req.method} ${req.path} from ${req.headers.origin || "unknown"}`,
+//   );
+//   console.log("Host:", req.headers.host);
+//   console.log("User-Agent:", req.headers["user-agent"]);
+//   console.log("Content-Type:", req.headers["content-type"]);
+//   console.log("Content-Length:", req.headers["content-length"]);
+//   console.log("Request URL:", req.url);
+//   console.log("Request path:", req.path);
+//   console.log("Request base URL:", req.baseUrl);
+//   console.log("Request original URL:", req.originalUrl);
+//   console.log("========================");
+//   next();
+// });
 
 // Fallback CORS headers (backup if cors middleware fails)
 app.use((req, res, next) => {
@@ -86,11 +89,11 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader(
       "Access-Control-Allow-Methods",
-      "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+      "GET,POST,PUT,DELETE,PATCH,OPTIONS",
     );
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Content-Type,Authorization,X-Requested-With,Accept,Origin"
+      "Content-Type,Authorization,X-Requested-With,Accept,Origin",
     );
   }
 
@@ -107,7 +110,7 @@ app.use(morgan("dev"));
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
-  })
+  }),
 );
 app.use(compression());
 
@@ -156,11 +159,14 @@ app.use("/api/home", homeRoutes);
 app.use("/api/brands", brandRoutes);
 app.use("/api/deals", dealRoutes);
 app.use("/api/search", searchRoutes);
+app.use("/api/favourites", favouriteRoutes);
+app.use("/api/users", userRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/seller/orders", orderSellerRoutes);
 app.use("/api/flash-sales", flashSaleRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/upload", uploadRoutes);
 // Error handler
 app.use(errorHandler);
 

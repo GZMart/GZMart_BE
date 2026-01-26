@@ -28,7 +28,7 @@ class BrandService {
     })
       .sort({ productCount: -1, order: 1 })
       .limit(limit)
-      .select("name slug logo productCount")
+      .select("name slug logo featuredImage productCount")
       .lean();
 
     return brands;
@@ -77,7 +77,7 @@ class BrandService {
     const [products, total] = await Promise.all([
       Product.find(query)
         .select(
-          "name slug brand images rating reviews sold originalPrice status"
+          "name slug brand images rating reviews sold originalPrice status",
         )
         .populate("activeDeal", "discountPercent title endDate")
         .sort(sort)
