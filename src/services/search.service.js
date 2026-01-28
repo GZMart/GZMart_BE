@@ -197,28 +197,79 @@ class SearchService {
    */
   async autocomplete(query) {
     if (!query || query.trim().length < 2) {
-      return [];
+      return { products: [], categories: [], brands: [] };
     }
 
     const regex = new RegExp(query.trim(), "i");
 
-    const results = await Product.find({
-      isAvailable: true,
-      name: regex,
+    console.log("🔍 Autocomplete search for:", query.trim());
+    console.log("🔍 Regex pattern:", regex);
+
+    // Search products by name, brand, or tags
+    const products = await Product.find({
+      status: "active",
+      $or: [
+        { name: regex },
+        { brand: regex },
+        { tags: regex },
+        { description: regex },
+      ],
     })
-      .select("name slug images")
-      .limit(5)
+      .select("name slug images models brand tags")
+      .limit(10)
       .lean();
 
-    return results.map((product) => ({
-      id: product._id,
-      name: product.name,
-      slug: product.slug,
-      image:
-        product.images && product.images.length > 0
-          ? product.images[0].url
-          : null,
-    }));
+    console.log("🔍 Found products:", products.length);
+    console.log(
+      "🔍 Products:",
+      products.map((p) => ({ name: p.name, brand: p.brand })),
+    );
+
+    // Search categories
+    const Category = (await import("../models/Category.js")).default;
+    const categories = await Category.find({
+      isActive: true,
+      name: regex,
+    })
+      .select("name slug")
+      .limit(3)
+      .lean();
+
+    // Search brands
+    const Brand = (await import("../models/Brand.js")).default;
+    const brands = await Brand.find({
+      isActive: true,
+      name: regex,
+    })
+      .select("name logo")
+      .limit(3)
+      .lean();
+
+    return {
+      products: products.map((product) => {
+        const models = product.models || [];
+        const firstModel = models.find((m) => m.isActive) || models[0] || {};
+
+        return {
+          _id: product._id,
+          name: product.name,
+          slug: product.slug,
+          images: product.images || [],
+          price: firstModel.price || 0,
+          brand: product.brand,
+        };
+      }),
+      categories: categories.map((cat) => ({
+        _id: cat._id,
+        name: cat.name,
+        slug: cat.slug,
+      })),
+      brands: brands.map((brand) => ({
+        _id: brand._id,
+        name: brand.name,
+        logo: brand.logo,
+      })),
+    };
   }
 
   /**
