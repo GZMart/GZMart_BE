@@ -303,10 +303,33 @@ export const getBestOffers = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * @desc    Get products by seller
- * @route   GET /api/products/seller/:sellerId
- * @access  Public
+ * @desc    Get current seller's products
+ * @route   GET /api/products/my-products
+ * @access  Private (Seller only)
  */
+export const getMyProducts = asyncHandler(async (req, res, next) => {
+  const sellerId = req.user._id;
+  const { page, limit } = req.query;
+
+  const result = await productService.getProductsBySeller(sellerId, {
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
+  });
+
+  res.status(200).json({
+    success: true,
+    count: result.products.length,
+    pagination: {
+      total: result.total,
+      page: result.page,
+      pages: result.pages,
+    },
+    data: result.products,
+  });
+});
+
+/**
+ * @desc    Get products by seller (Public)
 export const getProductsBySeller = asyncHandler(async (req, res, next) => {
   const { sellerId } = req.params;
   const { page, limit } = req.query;

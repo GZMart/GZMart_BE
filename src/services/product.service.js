@@ -436,13 +436,46 @@ export const updateProduct = async (productId, updateData, sellerId) => {
     throw new ErrorResponse("Product not found", 404);
   }
 
-  if (product.sellerId.toString() !== sellerId) {
+  // Debug: Log both values to identify mismatch
+  console.log("🔍 Authorization check:", {
+    productSellerId: product.sellerId?.toString(),
+    requestSellerId: sellerId?.toString(),
+    match: product.sellerId?.toString() === sellerId?.toString(),
+  });
+
+  if (product.sellerId?.toString() !== sellerId?.toString()) {
     throw new ErrorResponse("Not authorized to update this product", 403);
   }
 
   if (updateData.models) {
     const prices = updateData.models.map((m) => m.price);
     updateData.originalPrice = Math.min(...prices);
+
+    // Preserve existing SKUs or generate new ones if missing
+    const existingModels = product.models || [];
+    updateData.models = updateData.models.map((model, idx) => {
+      if (!model.sku) {
+        // Try to find matching existing model by tierIndex
+        const existingModel = existingModels.find(
+          (em) =>
+            JSON.stringify(em.tierIndex) === JSON.stringify(model.tierIndex),
+        );
+        if (existingModel?.sku) {
+          model.sku = existingModel.sku;
+        } else if (existingModels[idx]?.sku) {
+          // Fallback to same index
+          model.sku = existingModels[idx].sku;
+        } else {
+          // Generate new SKU
+          model.sku = generateSKU(
+            product.name,
+            updateData.tiers || product.tiers || [],
+            model.tierIndex || [],
+          );
+        }
+      }
+      return model;
+    });
 
     // Auto update total stock availability status
     const totalStock = updateData.models.reduce(

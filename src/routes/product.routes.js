@@ -15,6 +15,7 @@ import {
   createProduct,
   updateProduct,
   deleteProduct,
+  getMyProducts,
 } from "../controllers/product.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { protect } from "../middlewares/auth.middleware.js";
@@ -147,6 +148,14 @@ router.post(
   protect,
   requireRoles("seller", "admin"),
   asyncHandler(createProduct),
+);
+
+// Get my products (Seller)
+router.get(
+  "/my-products",
+  protect,
+  requireRoles("seller", "admin"),
+  asyncHandler(getMyProducts),
 );
 
 // Product detail routes
