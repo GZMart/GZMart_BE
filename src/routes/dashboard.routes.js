@@ -1,4 +1,4 @@
-import express from 'express';
+import express from "express";
 import {
   getDashboardAnalytics,
   getRevenueStats,
@@ -10,41 +10,57 @@ import {
   getProductAnalytics,
   getSalesTrend,
   getComparisonStats,
-} from '../controllers/dashboard.controller.js';
-import { protect, authorize } from '../middlewares/auth.middleware.js';
-import { asyncHandler } from '../middlewares/async.middleware.js';
+} from "../controllers/dashboard.controller.js";
+import { protect, authorize } from "../middlewares/auth.middleware.js";
+import { asyncHandler } from "../middlewares/async.middleware.js";
 
 const router = express.Router();
 
 // Protect all dashboard routes (Seller/Admin only)
 router.use(protect);
-router.use(authorize('seller', 'admin'));
-
-// ============= MAIN DASHBOARD =============
+router.use(authorize("seller", "admin"));
 
 /**
- * @route   GET /api/dashboard
- * @desc    Get complete dashboard analytics (revenue, best sellers, low stock, etc.)
- * @access  Private (Seller, Admin)
+ * @swagger
+ * /api/dashboard:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get dashboard analytics
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.get('/', asyncHandler(getDashboardAnalytics));
-
-// ============= REVENUE ANALYTICS =============
-
-/**
- * @route   GET /api/dashboard/revenue
- * @desc    Get revenue stats (today, this week, this month, this year)
- * @access  Private (Seller, Admin)
- */
-router.get('/revenue', asyncHandler(getRevenueStats));
+router.get("/", asyncHandler(getDashboardAnalytics));
 
 /**
- * @route   GET /api/dashboard/revenue-trend
- * @desc    Get revenue over time (daily, weekly, monthly)
- * @access  Private (Seller, Admin)
- * @query   period: 'daily' | 'weekly' | 'monthly'
+ * @swagger
+ * /api/dashboard/revenue:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get revenue stats
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.get('/revenue-trend', asyncHandler(getRevenueOverTime));
+router.get("/revenue", asyncHandler(getRevenueStats));
+
+/**
+ * @swagger
+ * /api/dashboard/revenue-trend:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get revenue over time
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/revenue-trend", asyncHandler(getRevenueOverTime));
 
 // ============= PRODUCT ANALYTICS =============
 
@@ -54,7 +70,7 @@ router.get('/revenue-trend', asyncHandler(getRevenueOverTime));
  * @access  Private (Seller, Admin)
  * @query   limit: number (default: 5)
  */
-router.get('/best-sellers', asyncHandler(getBestSellingProducts));
+router.get("/best-sellers", asyncHandler(getBestSellingProducts));
 
 /**
  * @route   GET /api/dashboard/low-stock
@@ -62,7 +78,7 @@ router.get('/best-sellers', asyncHandler(getBestSellingProducts));
  * @access  Private (Seller, Admin)
  * @query   threshold: number (default: 20), limit: number (default: 10)
  */
-router.get('/low-stock', asyncHandler(getLowStockProducts));
+router.get("/low-stock", asyncHandler(getLowStockProducts));
 
 /**
  * @route   GET /api/dashboard/product-analytics
@@ -70,7 +86,7 @@ router.get('/low-stock', asyncHandler(getLowStockProducts));
  * @access  Private (Seller, Admin)
  * @query   limit: number (default: 10)
  */
-router.get('/product-analytics', asyncHandler(getProductAnalytics));
+router.get("/product-analytics", asyncHandler(getProductAnalytics));
 
 // ============= ORDER STATISTICS =============
 
@@ -79,7 +95,7 @@ router.get('/product-analytics', asyncHandler(getProductAnalytics));
  * @desc    Get order statistics (total, pending, processing, shipped, delivered, cancelled)
  * @access  Private (Seller, Admin)
  */
-router.get('/order-stats', asyncHandler(getOrderStats));
+router.get("/order-stats", asyncHandler(getOrderStats));
 
 // ============= CUSTOMER STATISTICS =============
 
@@ -88,7 +104,7 @@ router.get('/order-stats', asyncHandler(getOrderStats));
  * @desc    Get customer statistics (total, repeat, new, repeat rate)
  * @access  Private (Seller, Admin)
  */
-router.get('/customer-stats', asyncHandler(getCustomerStats));
+router.get("/customer-stats", asyncHandler(getCustomerStats));
 
 // ============= TREND ANALYSIS =============
 
@@ -98,7 +114,7 @@ router.get('/customer-stats', asyncHandler(getCustomerStats));
  * @access  Private (Seller, Admin)
  * @query   days: number (default: 30)
  */
-router.get('/sales-trend', asyncHandler(getSalesTrend));
+router.get("/sales-trend", asyncHandler(getSalesTrend));
 
 /**
  * @route   GET /api/dashboard/comparison
@@ -106,6 +122,6 @@ router.get('/sales-trend', asyncHandler(getSalesTrend));
  * @access  Private (Seller, Admin)
  * @query   period: 'month' | 'week' (default: 'month')
  */
-router.get('/comparison', asyncHandler(getComparisonStats));
+router.get("/comparison", asyncHandler(getComparisonStats));
 
 export default router;

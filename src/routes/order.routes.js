@@ -1,4 +1,4 @@
-import express from 'express';
+import express from "express";
 import {
   createOrder,
   getMyOrders,
@@ -6,28 +6,122 @@ import {
   cancelOrder,
   getCheckoutInfo,
   previewOrder,
-  generateInvoice
-} from '../controllers/order.controller.js';
-import { protect } from '../middlewares/auth.middleware.js';
+  generateInvoice,
+} from "../controllers/order.controller.js";
+import { protect } from "../middlewares/auth.middleware.js";
 
 const router = express.Router();
 
-router.use(protect); // All order routes exist protected
+router.use(protect);
 
-// Place specific routes before parameterized routes
-router.get('/checkout-info', getCheckoutInfo);
-router.post('/preview', previewOrder);
+/**
+ * @swagger
+ * /api/orders/checkout-info:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get checkout info
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/checkout-info", getCheckoutInfo);
 
-router.route('/')
-  .post(createOrder)
-  .get(getMyOrders);
+/**
+ * @swagger
+ * /api/orders/preview:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Preview order
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.post("/preview", previewOrder);
 
-router.route('/:id')
-  .get(getOrderById);
+/**
+ * @swagger
+ * /api/orders:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Create order
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: Success
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get my orders
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.route("/").post(createOrder).get(getMyOrders);
 
-router.get('/:id/invoice', generateInvoice);
+/**
+ * @swagger
+ * /api/orders/{id}:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get order by ID
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.route("/:id").get(getOrderById);
 
-router.route('/:id/cancel')
-  .put(cancelOrder);
+/**
+ * @swagger
+ * /api/orders/{id}/invoice:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Generate invoice
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/:id/invoice", generateInvoice);
+
+/**
+ * @swagger
+ * /api/orders/{id}/cancel:
+ *   put:
+ *     tags: [Orders]
+ *     summary: Cancel order
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.route("/:id/cancel").put(cancelOrder);
 
 export default router;
