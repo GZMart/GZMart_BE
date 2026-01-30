@@ -10,6 +10,14 @@ import {
   getProductAnalytics,
   getSalesTrend,
   getComparisonStats,
+  getOverviewStats,
+  getTopProducts,
+  getRecentOrders,
+  getCategorySales,
+  getRevenueData,
+  getUserGrowth,
+  getQuickStats,
+  getAllDashboardData,
 } from "../controllers/dashboard.controller.js";
 import { protect, authorize } from "../middlewares/auth.middleware.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
@@ -123,5 +131,167 @@ router.get("/sales-trend", asyncHandler(getSalesTrend));
  * @query   period: 'month' | 'week' (default: 'month')
  */
 router.get("/comparison", asyncHandler(getComparisonStats));
+
+// ============= ADMIN DASHBOARD ENDPOINTS =============
+
+/**
+ * @swagger
+ * /api/dashboard/overview-stats:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get overview statistics (Admin only)
+ *     description: Returns total revenue, orders, users, products with trends
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get(
+  "/overview-stats",
+  authorize("admin"),
+  asyncHandler(getOverviewStats),
+);
+
+/**
+ * @swagger
+ * /api/dashboard/top-products:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get top selling products (Admin only)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *         description: Number of products to return (default 5)
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/top-products", authorize("admin"), asyncHandler(getTopProducts));
+
+/**
+ * @swagger
+ * /api/dashboard/recent-orders:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get recent orders (Admin only)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *         description: Number of orders to return (default 5)
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/recent-orders", authorize("admin"), asyncHandler(getRecentOrders));
+
+/**
+ * @swagger
+ * /api/dashboard/category-sales:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get sales by category (Admin only)
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get(
+  "/category-sales",
+  authorize("admin"),
+  asyncHandler(getCategorySales),
+);
+
+/**
+ * @swagger
+ * /api/dashboard/revenue-data:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get revenue data by period (Admin only)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: period
+ *         schema:
+ *           type: string
+ *           enum: [monthly, yearly]
+ *         description: Period type (default monthly)
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/revenue-data", authorize("admin"), asyncHandler(getRevenueData));
+
+/**
+ * @swagger
+ * /api/dashboard/user-growth:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get user growth by period (Admin only)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: period
+ *         schema:
+ *           type: string
+ *           enum: [monthly, yearly]
+ *         description: Period type (default monthly)
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/user-growth", authorize("admin"), asyncHandler(getUserGrowth));
+
+/**
+ * @swagger
+ * /api/dashboard/quick-stats:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get quick statistics (Admin only)
+ *     description: Returns pending orders, low stock items, new users today, and customer satisfaction
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/quick-stats", authorize("admin"), asyncHandler(getQuickStats));
+
+/**
+ * @swagger
+ * /api/dashboard/admin/all:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get all dashboard data in one request (Admin only)
+ *     description: Batch endpoint that returns all dashboard data at once to reduce API calls
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: topProductsLimit
+ *         schema:
+ *           type: integer
+ *           default: 5
+ *       - in: query
+ *         name: recentOrdersLimit
+ *         schema:
+ *           type: integer
+ *           default: 5
+ *     responses:
+ *       200:
+ *         description: Success with all dashboard data
+ */
+router.get("/admin/all", authorize("admin"), asyncHandler(getAllDashboardData));
 
 export default router;

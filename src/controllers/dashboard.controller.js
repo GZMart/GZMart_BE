@@ -1,6 +1,6 @@
-import * as dashboardService from '../services/dashboard.service.js';
-import { asyncHandler } from '../middlewares/async.middleware.js';
-import { ErrorResponse } from '../utils/errorResponse.js';
+import * as dashboardService from "../services/dashboard.service.js";
+import { asyncHandler } from "../middlewares/async.middleware.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
 
 /**
  * @desc    Get complete dashboard analytics
@@ -40,12 +40,12 @@ export const getRevenueOverTime = asyncHandler(async (req, res) => {
 
   const revenueData = await dashboardService.getRevenueOverTime(
     req.user._id,
-    period || 'daily'
+    period || "daily",
   );
 
   res.status(200).json({
     success: true,
-    period: period || 'daily',
+    period: period || "daily",
     data: revenueData,
   });
 });
@@ -60,7 +60,7 @@ export const getBestSellingProducts = asyncHandler(async (req, res) => {
 
   const bestSellers = await dashboardService.getBestSellingProducts(
     req.user._id,
-    parseInt(limit) || 5
+    parseInt(limit) || 5,
   );
 
   res.status(200).json({
@@ -81,7 +81,7 @@ export const getLowStockProducts = asyncHandler(async (req, res) => {
   const lowStock = await dashboardService.getLowStockProducts(
     req.user._id,
     parseInt(threshold) || 20,
-    parseInt(limit) || 10
+    parseInt(limit) || 10,
   );
 
   res.status(200).json({
@@ -129,7 +129,7 @@ export const getProductAnalytics = asyncHandler(async (req, res) => {
 
   const analytics = await dashboardService.getProductAnalytics(
     req.user._id,
-    parseInt(limit) || 10
+    parseInt(limit) || 10,
   );
 
   res.status(200).json({
@@ -149,7 +149,7 @@ export const getSalesTrend = asyncHandler(async (req, res) => {
 
   const trend = await dashboardService.getSalesTrend(
     req.user._id,
-    parseInt(days) || 30
+    parseInt(days) || 30,
   );
 
   res.status(200).json({
@@ -170,12 +170,188 @@ export const getComparisonStats = asyncHandler(async (req, res) => {
 
   const comparison = await dashboardService.getComparisonStats(
     req.user._id,
-    period || 'month'
+    period || "month",
   );
 
   res.status(200).json({
     success: true,
-    period: period || 'month',
+    period: period || "month",
     data: comparison,
+  });
+});
+
+/**
+ * @desc    Get overview stats (revenue, orders, users, products with trends)
+ * @route   GET /api/dashboard/overview-stats
+ * @access  Private (Admin only)
+ */
+export const getOverviewStats = asyncHandler(async (req, res) => {
+  const stats = await dashboardService.getOverviewStats();
+
+  res.status(200).json({
+    success: true,
+    data: stats,
+  });
+});
+
+/**
+ * @desc    Get top selling products
+ * @route   GET /api/dashboard/top-products
+ * @access  Private (Admin only)
+ */
+export const getTopProducts = asyncHandler(async (req, res) => {
+  const { limit } = req.query;
+
+  const topProducts = await dashboardService.getTopProducts(
+    parseInt(limit) || 5,
+  );
+
+  res.status(200).json({
+    success: true,
+    count: topProducts.length,
+    data: topProducts,
+  });
+});
+
+/**
+ * @desc    Get recent orders
+ * @route   GET /api/dashboard/recent-orders
+ * @access  Private (Admin only)
+ */
+export const getRecentOrders = asyncHandler(async (req, res) => {
+  const { limit } = req.query;
+
+  const recentOrders = await dashboardService.getRecentOrders(
+    parseInt(limit) || 5,
+  );
+
+  res.status(200).json({
+    success: true,
+    count: recentOrders.length,
+    data: recentOrders,
+  });
+});
+
+/**
+ * @desc    Get category sales distribution
+ * @route   GET /api/dashboard/category-sales
+ * @access  Private (Admin only)
+ */
+export const getCategorySales = asyncHandler(async (req, res) => {
+  const categorySales = await dashboardService.getCategorySales();
+
+  res.status(200).json({
+    success: true,
+    count: categorySales.length,
+    data: categorySales,
+  });
+});
+
+/**
+ * @desc    Get revenue data by period
+ * @route   GET /api/dashboard/revenue-data
+ * @access  Private (Admin only)
+ */
+export const getRevenueData = asyncHandler(async (req, res) => {
+  const { period } = req.query; // 'monthly' or 'yearly'
+
+  const revenueData = await dashboardService.getRevenueData(
+    period || "monthly",
+  );
+
+  res.status(200).json({
+    success: true,
+    period: period || "monthly",
+    count: revenueData.length,
+    data: revenueData,
+  });
+});
+
+/**
+ * @desc    Get user growth data by period
+ * @route   GET /api/dashboard/user-growth
+ * @access  Private (Admin only)
+ */
+export const getUserGrowth = asyncHandler(async (req, res) => {
+  const { period } = req.query; // 'monthly' or 'yearly'
+
+  const userGrowth = await dashboardService.getUserGrowth(period || "monthly");
+
+  res.status(200).json({
+    success: true,
+    period: period || "monthly",
+    count: userGrowth.length,
+    data: userGrowth,
+  });
+});
+
+/**
+ * @desc    Get quick statistics
+ * @route   GET /api/dashboard/quick-stats
+ * @access  Private (Admin only)
+ */
+export const getQuickStats = asyncHandler(async (req, res) => {
+  const quickStats = await dashboardService.getQuickStats();
+
+  res.status(200).json({
+    success: true,
+    data: quickStats,
+  });
+});
+
+/**
+ * @desc    Get all dashboard data in one request (batch)
+ * @route   GET /api/dashboard/admin/all
+ * @access  Private (Admin only)
+ */
+export const getAllDashboardData = asyncHandler(async (req, res) => {
+  const {
+    topProductsLimit = 5,
+    recentOrdersLimit = 5,
+    revenueDataPeriod = "monthly",
+    userGrowthPeriod = "monthly",
+  } = req.query;
+
+  // Fetch all dashboard data in parallel
+  const [
+    overviewStats,
+    topProducts,
+    recentOrders,
+    categorySales,
+    revenueDataMonthly,
+    revenueDataYearly,
+    userGrowthDataMonthly,
+    userGrowthDataYearly,
+    quickStats,
+  ] = await Promise.all([
+    dashboardService.getOverviewStats(),
+    dashboardService.getTopProducts(parseInt(topProductsLimit)),
+    dashboardService.getRecentOrders(parseInt(recentOrdersLimit)),
+    dashboardService.getCategorySales(),
+    dashboardService.getRevenueData("monthly"),
+    dashboardService.getRevenueData("yearly"),
+    dashboardService.getUserGrowth("monthly"),
+    dashboardService.getUserGrowth("yearly"),
+    dashboardService.getQuickStats(),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      overviewStats,
+      topProducts,
+      recentOrders,
+      categorySales,
+      revenueData: {
+        monthly: revenueDataMonthly,
+        yearly: revenueDataYearly,
+      },
+      userGrowth: {
+        monthly: userGrowthDataMonthly,
+        yearly: userGrowthDataYearly,
+      },
+      quickStats,
+    },
+    timestamp: new Date().toISOString(),
   });
 });
