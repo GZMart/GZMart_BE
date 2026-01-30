@@ -1083,6 +1083,26 @@ export const verifyOTP = async (req, res, next) => {
       user.verificationTokenExpires = undefined;
       await user.save();
       logger.info('User verified via OTP', { userId: user._id });
+
+      // Send welcome email if user is a buyer
+      if (user.role === 'buyer') {
+        try {
+          await sendTemplatedEmail({
+            email: user.email,
+            templateType: 'WELCOME',
+            templateData: {
+              name: user.fullName,
+            },
+          });
+          logger.info('Welcome email sent successfully', { userId: user._id });
+        } catch (emailError) {
+          logger.error('Failed to send welcome email', {
+            error: emailError.message,
+            userId: user._id,
+          });
+          // Don't fail the verification if welcome email fails
+        }
+      }
     }
 
     // Generate tokens
