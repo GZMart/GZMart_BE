@@ -27,7 +27,12 @@ import orderSellerRoutes from "./routes/orderSeller.routes.js";
 import flashSaleRoutes from "./routes/flashsale.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
+import voucherRoutes from "./routes/voucher.routes.js";
+import shopProgramRoutes from "./routes/shopProgram.routes.js";
+import comboPromotionRoutes from "./routes/comboPromotion.routes.js";
+import addOnDealRoutes from "./routes/addOnDeal.routes.js";
 
+import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 // Load environment variables
 dotenv.config();
 
@@ -167,6 +172,11 @@ app.use("/api/seller/orders", orderSellerRoutes);
 app.use("/api/flash-sales", flashSaleRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/upload", uploadRoutes);
+app.use("/api/vouchers/system", systemVoucherRoutes);
+app.use("/api/vouchers", voucherRoutes);
+app.use("/api/seller/shop-programs", shopProgramRoutes);
+app.use("/api/seller/combos", comboPromotionRoutes);
+app.use("/api/seller/addons", addOnDealRoutes);
 // Error handler
 app.use(errorHandler);
 

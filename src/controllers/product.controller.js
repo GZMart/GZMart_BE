@@ -16,8 +16,8 @@ export const createProduct = asyncHandler(async (req, res, next) => {
     return next(
       new ErrorResponse(
         "Please provide name, categoryId, and at least one model",
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -147,7 +147,7 @@ export const updateProduct = asyncHandler(async (req, res, next) => {
   const product = await productService.updateProduct(
     productId,
     req.body,
-    sellerId
+    sellerId,
   );
 
   res.status(200).json({
@@ -229,7 +229,7 @@ export const getRelatedProducts = asyncHandler(async (req, res, next) => {
   const { limit = 10 } = req.query;
   const products = await productService.getRelatedProducts(
     req.params.id,
-    parseInt(limit)
+    parseInt(limit),
   );
 
   res.status(200).json({
@@ -269,7 +269,7 @@ export const checkStockAvailability = asyncHandler(async (req, res, next) => {
   const result = await productService.checkStockAvailability(
     productId,
     modelId,
-    parseInt(quantity)
+    parseInt(quantity),
   );
 
   res.status(200).json({
@@ -290,10 +290,33 @@ export const getBestOffers = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * @desc    Get products by seller
- * @route   GET /api/products/seller/:sellerId
- * @access  Public
+ * @desc    Get current seller's products
+ * @route   GET /api/products/my-products
+ * @access  Private (Seller only)
  */
+export const getMyProducts = asyncHandler(async (req, res, next) => {
+  const sellerId = req.user._id;
+  const { page, limit } = req.query;
+
+  const result = await productService.getProductsBySeller(sellerId, {
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
+  });
+
+  res.status(200).json({
+    success: true,
+    count: result.products.length,
+    pagination: {
+      total: result.total,
+      page: result.page,
+      pages: result.pages,
+    },
+    data: result.products,
+  });
+});
+
+/**
+ * @desc    Get products by seller (Public)
 export const getProductsBySeller = asyncHandler(async (req, res, next) => {
   const { sellerId } = req.params;
   const { page, limit } = req.query;
@@ -413,5 +436,5 @@ export const getAvailableOptionsForSelection = asyncHandler(
       message: "Available options retrieved successfully",
       data: options,
     });
-  }
+  },
 );

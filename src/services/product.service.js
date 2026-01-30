@@ -68,7 +68,7 @@ export const createProduct = async (productData, sellerId) => {
       if (model.tierIndex && model.tierIndex.length > 0) {
         throw new ErrorResponse(
           `Model ${modelIdx} has unexpected tierIndex`,
-          400
+          400,
         );
       }
       return;
@@ -83,7 +83,7 @@ export const createProduct = async (productData, sellerId) => {
       if (idx < 0 || idx >= tier.options.length) {
         throw new ErrorResponse(
           `Model ${modelIdx}: tierIndex out of bounds`,
-          400
+          400,
         );
       }
     });
@@ -115,12 +115,12 @@ export const createProduct = async (productData, sellerId) => {
   }
 
   const duplicates = normalizedSKUs.filter(
-    (sku, index) => normalizedSKUs.indexOf(sku) !== index
+    (sku, index) => normalizedSKUs.indexOf(sku) !== index,
   );
   if (duplicates.length > 0) {
     throw new ErrorResponse(
       `Duplicate SKUs in payload: ${[...new Set(duplicates)].join(", ")}`,
-      400
+      400,
     );
   }
 
@@ -178,7 +178,7 @@ export const createProduct = async (productData, sellerId) => {
 export const getProductById = async (productId) => {
   const product = await Product.findById(productId).populate(
     "categoryId",
-    "name slug"
+    "name slug",
   );
 
   if (!product) {
@@ -198,7 +198,7 @@ export const getProductById = async (productId) => {
 export const getProductBySlug = async (slug) => {
   const product = await Product.findOne({ slug }).populate(
     "categoryId",
-    "name slug"
+    "name slug",
   );
 
   if (!product) {
@@ -375,7 +375,14 @@ export const updateProduct = async (productId, updateData, sellerId) => {
     throw new ErrorResponse("Product not found", 404);
   }
 
-  if (product.sellerId.toString() !== sellerId) {
+  // Debug: Log both values to identify mismatch
+  console.log("🔍 Authorization check:", {
+    productSellerId: product.sellerId?.toString(),
+    requestSellerId: sellerId?.toString(),
+    match: product.sellerId?.toString() === sellerId?.toString(),
+  });
+
+  if (product.sellerId?.toString() !== sellerId?.toString()) {
     throw new ErrorResponse("Not authorized to update this product", 403);
   }
 
@@ -383,10 +390,36 @@ export const updateProduct = async (productId, updateData, sellerId) => {
     const prices = updateData.models.map((m) => m.price);
     updateData.originalPrice = Math.min(...prices);
 
+    // Preserve existing SKUs or generate new ones if missing
+    const existingModels = product.models || [];
+    updateData.models = updateData.models.map((model, idx) => {
+      if (!model.sku) {
+        // Try to find matching existing model by tierIndex
+        const existingModel = existingModels.find(
+          (em) =>
+            JSON.stringify(em.tierIndex) === JSON.stringify(model.tierIndex),
+        );
+        if (existingModel?.sku) {
+          model.sku = existingModel.sku;
+        } else if (existingModels[idx]?.sku) {
+          // Fallback to same index
+          model.sku = existingModels[idx].sku;
+        } else {
+          // Generate new SKU
+          model.sku = generateSKU(
+            product.name,
+            updateData.tiers || product.tiers || [],
+            model.tierIndex || [],
+          );
+        }
+      }
+      return model;
+    });
+
     // Auto update total stock availability status
     const totalStock = updateData.models.reduce(
       (sum, m) => sum + (m.stock || 0),
-      0
+      0,
     );
     if (totalStock === 0 && product.status === "active") {
       updateData.status = "out_of_stock";
@@ -466,11 +499,11 @@ export const getNewArrivals = async (limit = 10) => {
 export const checkStockAvailability = async (
   productId,
   modelId,
-  quantity = 1
+  quantity = 1,
 ) => {
   const product = await Product.findOne(
     { _id: productId, "models._id": modelId },
-    { "models.$": 1 } // Only fetch the matching model
+    { "models.$": 1 }, // Only fetch the matching model
   );
 
   if (!product || !product.models || product.models.length === 0) {
