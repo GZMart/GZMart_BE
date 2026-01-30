@@ -7,6 +7,7 @@ import morgan from "morgan";
 import { Server as SocketIOServer } from "socket.io";
 import { corsMiddleware } from "./config/cors.config.js";
 import connectDB from "./config/database.js";
+import { swaggerUi, swaggerSpec } from "./config/swagger.js";
 import { errorHandler } from "./middlewares/error.middleware.js";
 import authRoutes from "./routes/auth.routes.js";
 import productRoutes from "./routes/product.routes.js";
@@ -27,7 +28,14 @@ import orderSellerRoutes from "./routes/orderSeller.routes.js";
 import flashSaleRoutes from "./routes/flashsale.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
+import voucherRoutes from "./routes/voucher.routes.js";
+import shopProgramRoutes from "./routes/shopProgram.routes.js";
+import comboPromotionRoutes from "./routes/comboPromotion.routes.js";
+import addOnDealRoutes from "./routes/addOnDeal.routes.js";
+import paymentRoutes from "./routes/payment.routes.js";
+import addressRoutes from "./routes/address.routes.js";
 
+import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 // Load environment variables
 dotenv.config();
 
@@ -122,6 +130,16 @@ app.get("/", (req, res) => {
   res.json({ message: "Welcome to GZMart API" });
 });
 
+// Swagger API Documentation
+app.use(
+  "/api-docs",
+  swaggerUi.serve,
+  swaggerUi.setup(swaggerSpec, {
+    customCss: ".swagger-ui .topbar { display: none }",
+    customSiteTitle: "GZMart API Documentation",
+  }),
+);
+
 // Health check endpoint for deployment monitoring
 app.get("/api/health", (req, res) => {
   res.status(200).json({
@@ -167,6 +185,14 @@ app.use("/api/seller/orders", orderSellerRoutes);
 app.use("/api/flash-sales", flashSaleRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/upload", uploadRoutes);
+app.use("/api/vouchers/system", systemVoucherRoutes);
+app.use("/api/vouchers", voucherRoutes);
+app.use("/api/seller/shop-programs", shopProgramRoutes);
+app.use("/api/seller/combos", comboPromotionRoutes);
+app.use("/api/seller/addons", addOnDealRoutes);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/addresses", addressRoutes);
+
 // Error handler
 app.use(errorHandler);
 
