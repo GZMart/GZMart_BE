@@ -1,4 +1,4 @@
-import express from 'express';
+import express from "express";
 import {
   register,
   login,
@@ -16,99 +16,189 @@ import {
   setPassword,
   sendOTP,
   verifyOTP,
-} from '../controllers/auth.controller.js';
-import { protect, optionalAuth } from '../middlewares/auth.middleware.js';
-import { requireBuyer, requireSeller, requireAdmin } from '../middlewares/role.middleware.js';
+} from "../controllers/auth.controller.js";
+import { protect, optionalAuth } from "../middlewares/auth.middleware.js";
+import {
+  requireBuyer,
+  requireSeller,
+  requireAdmin,
+} from "../middlewares/role.middleware.js";
 
-import upload from '../middlewares/upload.middleware.js';
+import upload from "../middlewares/upload.middleware.js";
 
 const router = express.Router();
 
-// Public routes (no auth required)
 /**
- * @route   POST /api/auth/register
- * @desc    Register new user
- * @access  Public
+ * @swagger
+ * /api/auth/register:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Register new user
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               username:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *               fullName:
+ *                 type: string
+ *               role:
+ *                 type: string
+ *                 enum: [buyer, seller]
+ *     responses:
+ *       201:
+ *         description: Success
  */
-router.post('/register', register);
+router.post("/register", register);
 
 /**
- * @route   POST /api/auth/login
- * @desc    Login user
- * @access  Public
+ * @swagger
+ * /api/auth/login:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Login user
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.post('/login', login);
+router.post("/login", login);
 
 /**
- * @route   GET /api/auth/verify-email
- * @desc    Verify user email
- * @access  Public
+ * @swagger
+ * /api/auth/verify-email:
+ *   get:
+ *     tags: [Authentication]
+ *     summary: Verify user email
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.get('/verify-email', verifyEmail);
+router.get("/verify-email", verifyEmail);
 
 /**
- * @route   POST /api/auth/resend-verification
- * @desc    Resend verification email
- * @access  Public
+ * @swagger
+ * /api/auth/resend-verification:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Resend verification email
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.post('/resend-verification', resendVerification);
+router.post("/resend-verification", resendVerification);
 
 /**
- * @route   POST /api/auth/send-otp
- * @desc    Send OTP to email
- * @access  Public
+ * @swagger
+ * /api/auth/send-otp:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Send OTP to email
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.post('/send-otp', sendOTP);
+router.post("/send-otp", sendOTP);
 
 /**
- * @route   POST /api/auth/verify-otp
- * @desc    Verify OTP
- * @access  Public
+ * @swagger
+ * /api/auth/verify-otp:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Verify OTP
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.post('/verify-otp', verifyOTP);
+router.post("/verify-otp", verifyOTP);
 
 /**
- * @route   POST /api/auth/forgot-password
- * @desc    Request password reset
- * @access  Public
+ * @swagger
+ * /api/auth/forgot-password:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Request password reset
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.post('/forgot-password', forgotPassword);
+router.post("/forgot-password", forgotPassword);
 
 /**
- * @route   POST /api/auth/reset-password
- * @desc    Reset password with token
- * @access  Public
+ * @swagger
+ * /api/auth/reset-password:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Reset password with token
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.post('/reset-password', resetPassword);
+router.post("/reset-password", resetPassword);
 
 /**
- * @route   POST /api/auth/refresh-token
- * @desc    Refresh access token
- * @access  Public
+ * @swagger
+ * /api/auth/refresh-token:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Refresh access token
+ *     responses:
+ *       200:
+ *         description: Success
  */
-router.post('/refresh-token', refreshToken);
-
-// Protected routes (require authentication)
-/**
- * @route   GET /api/auth/me
- * @desc    Get current user profile
- * @access  Private
- */
-router.get('/me', protect, getMe);
+router.post("/refresh-token", refreshToken);
 
 /**
- * @route   PUT /api/auth/update-profile
- * @desc    Update user profile
- * @access  Private
+ * @swagger
+ * /api/auth/me:
+ *   get:
+ *     tags: [Authentication]
+ *     summary: Get current user profile
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/me", protect, getMe);
+
+/**
+ * @swagger
+ * /api/auth/update-profile:
+ *   put:
+ *     tags: [Authentication]
+ *     summary: Update user profile
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Success
  */
 router.put(
-  '/update-profile',
+  "/update-profile",
   protect,
   upload.fields([
-    { name: 'avatar', maxCount: 1 },
-    { name: 'profileImage', maxCount: 1 },
+    { name: "avatar", maxCount: 1 },
+    { name: "profileImage", maxCount: 1 },
   ]),
-  updateProfile
+  updateProfile,
 );
 
 /**
@@ -116,16 +206,16 @@ router.put(
  * @desc    Change user password
  * @access  Private
  */
-router.put('/change-password', protect, changePassword);
+router.put("/change-password", protect, changePassword);
 
 /**
  * @route   POST /api/auth/logout
  * @desc    Logout user
  * @access  Private
  */
-router.post('/logout', protect, logout);
-router.post('/google-login', loginWithGoogle);
-router.post('/facebook-login', loginWithFacebook);
-router.post('/set-password', protect, setPassword);
+router.post("/logout", protect, logout);
+router.post("/google-login", loginWithGoogle);
+router.post("/facebook-login", loginWithFacebook);
+router.post("/set-password", protect, setPassword);
 
 export default router;

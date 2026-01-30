@@ -1,5 +1,6 @@
 import Product from "../models/Product.js";
 import Category from "../models/Category.js";
+import User from "../models/User.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { generateSKU } from "../utils/skuGenerator.js";
 
@@ -285,6 +286,10 @@ export const getProductsAdvanced = async (options) => {
     inStock,
     colors, // Array of strings
     sizes, // Array of strings
+    locations, // Array of strings
+    minDiscount, // Number
+    sortBy = "isFeatured",
+    sortOrder = "desc",
   } = options;
 
   const query = { status: "active" };
@@ -341,12 +346,68 @@ export const getProductsAdvanced = async (options) => {
     }
   }
 
+  // Location Filter (Seller's Location)
+  if (locations && locations.length > 0) {
+    const locationMap = {
+      hanoi: "Hà Nội",
+      hcm: "Hồ Chí Minh",
+      danang: "Đà Nẵng",
+      cantho: "Cần Thơ",
+      haiphong: "Hải Phòng",
+    };
+
+    const searchTerms = locations.map((loc) => locationMap[loc] || loc);
+    const locationRegex = searchTerms.map((term) => new RegExp(term, "i"));
+
+    const sellers = await User.find({
+      $or: [
+        { provinceName: { $in: locationRegex } }, // Assuming provinceName stores "Hà Nội", etc.
+        { address: { $in: locationRegex } }, // Fallback to address
+      ],
+    }).select("_id");
+
+    const sellerIds = sellers.map((s) => s._id);
+
+    // If no sellers found for location, return empty immediately or filter by empty list matches nothing
+    if (sellerIds.length === 0) {
+      return {
+        products: [],
+        pagination: { total: 0, page, pages: 0, limit },
+      };
+    }
+
+    query.sellerId = { $in: sellerIds };
+  }
+
+  // Discount Filter
+  if (minDiscount) {
+    // Calculate if any model has price <= originalPrice * (1 - minDiscount/100)
+    // Using $expr to compare fields within the document
+    query.$expr = {
+      $lte: [
+        { $min: "$models.price" }, // Min price of all models
+        {
+          $multiply: ["$originalPrice", (100 - parseFloat(minDiscount)) / 100],
+        },
+      ],
+    };
+  }
+
   const skip = (page - 1) * limit;
+
+  // Map 'price' sort to 'originalPrice' for backend schema compatibility
+  const sortKey = sortBy === "price" ? "originalPrice" : sortBy;
+  const sortOptions = { [sortKey]: sortOrder === "desc" ? -1 : 1 };
+
+  // Ensure we sort by ID/created last to ensure stable pagination
+  if (sortKey !== "createdAt") {
+    sortOptions.createdAt = -1;
+  }
 
   const [products, total] = await Promise.all([
     Product.find(query)
       .populate("categoryId", "name slug")
-      .sort({ isFeatured: -1, createdAt: -1 })
+      .sort(sortOptions)
       .skip(skip)
       .limit(limit)
       .lean(),

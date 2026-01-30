@@ -77,21 +77,28 @@ export const getProducts = asyncHandler(async (req, res, next) => {
  */
 export const getProductsAdvanced = asyncHandler(async (req, res, next) => {
   const {
-    page = 1,
-    limit = 20,
-    categoryId,
-    brand,
-    color,
     size,
     minPrice,
     maxPrice,
     minRating,
     inStock,
+    location,
+    minDiscount,
+    sortBy,
+    sortOrder,
+    page,
+    limit,
+    categoryId,
+    brand,
+    color,
   } = req.query;
 
   const result = await productService.getProductsAdvanced({
-    page: parseInt(page),
-    limit: parseInt(limit),
+    // Fix: Explicitly pass sortBy and sortOrder or undefined to let service handle defaults
+    sortBy: sortBy || "isFeatured",
+    sortOrder: sortOrder || "desc",
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
     categoryId,
     brands: brand ? (Array.isArray(brand) ? brand : [brand]) : [],
     colors: color ? (Array.isArray(color) ? color : [color]) : [],
@@ -100,6 +107,12 @@ export const getProductsAdvanced = asyncHandler(async (req, res, next) => {
     maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
     minRating: minRating ? parseFloat(minRating) : undefined,
     inStock: inStock === "true",
+    locations: location
+      ? Array.isArray(location)
+        ? location
+        : [location]
+      : [],
+    minDiscount: minDiscount ? parseFloat(minDiscount) : undefined,
   });
 
   res.status(200).json({
