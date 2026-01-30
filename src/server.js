@@ -29,6 +29,7 @@ import flashSaleRoutes from "./routes/flashsale.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
+import addressRoutes from "./routes/address.routes.js";
 
 // Load environment variables
 dotenv.config();
@@ -180,6 +181,7 @@ app.use("/api/flash-sales", flashSaleRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/addresses", addressRoutes);
 
 // Error handler
 app.use(errorHandler);
