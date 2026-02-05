@@ -115,7 +115,7 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
 // @route   POST /api/orders
 // @access  Private
 export const createOrder = asyncHandler(async (req, res, next) => {
-  const { shippingAddress, paymentMethod, notes, city } = req.body;
+  const { shippingAddress, paymentMethod, notes, city, quantity } = req.body;
 
   if (!shippingAddress || !paymentMethod) {
     return next(
