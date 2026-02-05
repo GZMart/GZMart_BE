@@ -31,9 +31,37 @@ const inventoryTransactionSchema = new mongoose.Schema(
       required: [true, "Quantity is required"],
       validate: {
         validator: function (val) {
-          return val !== 0;
+          if (val === 0) return false;
+
+          // Business rule: enforce sign based on transaction type
+          if (this.type === "in" && val <= 0) {
+            return false; // "in" must be positive
+          }
+          if (this.type === "out" && val >= 0) {
+            return false; // "out" must be negative
+          }
+          if (this.type === "return" && val <= 0) {
+            return false; // "return" must be positive
+          }
+          // "adjust" and "damage" can be either positive or negative
+
+          return true;
         },
-        message: "Quantity cannot be zero",
+        message: function (props) {
+          if (props.value === 0) {
+            return "Quantity cannot be zero";
+          }
+          if (this.type === "in") {
+            return "Quantity must be positive for 'in' transactions";
+          }
+          if (this.type === "out") {
+            return "Quantity must be negative for 'out' transactions";
+          }
+          if (this.type === "return") {
+            return "Quantity must be positive for 'return' transactions";
+          }
+          return "Invalid quantity for transaction type";
+        },
       },
     },
     stockBefore: {
@@ -90,7 +118,7 @@ const inventoryTransactionSchema = new mongoose.Schema(
   {
     timestamps: true,
     versionKey: false,
-  }
+  },
 );
 
 // Indexes for performance
@@ -109,5 +137,5 @@ inventoryTransactionSchema.pre("save", async function () {
 
 export default mongoose.model(
   "InventoryTransaction",
-  inventoryTransactionSchema
+  inventoryTransactionSchema,
 );

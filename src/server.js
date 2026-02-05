@@ -34,6 +34,7 @@ import comboPromotionRoutes from "./routes/comboPromotion.routes.js";
 import addOnDealRoutes from "./routes/addOnDeal.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import addressRoutes from "./routes/address.routes.js";
+import purchaseOrderRoutes from "./routes/purchaseOrder.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 // Load environment variables
@@ -192,6 +193,7 @@ app.use("/api/seller/combos", comboPromotionRoutes);
 app.use("/api/seller/addons", addOnDealRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/addresses", addressRoutes);
+app.use("/api/purchase-orders", purchaseOrderRoutes);
 
 // Error handler
 app.use(errorHandler);
