@@ -48,52 +48,65 @@ export const register = async (req, res, next) => {
     }
 
     // Check if user exists
-    const userExists = await User.findOne({ email });
-    if (userExists) {
-      return next(new ErrorResponse('User already exists', 400));
-    }
+    let user = await User.findOne({ email });
 
-    // Generate verification token
-    const verificationToken = generateToken({ email }, process.env.JWT_VERIFY_EXPIRES_IN || '1h');
-
-    // Create user - phone và address là optional
-    // Không set phone nếu không có (để tránh validation error)
-    const userData = {
-      fullName,
-      email,
-      password,
-      role: 'buyer',
-      isVerified: false,
-      verificationToken,
-      verificationTokenExpires: new Date(Date.now() + 3600000), // 1 hour
-    };
-
-    // Chỉ thêm phone và address nếu có giá trị hợp lệ
-    if (req.body.phone && /^[0-9]{10,11}$/.test(req.body.phone)) {
-      userData.phone = req.body.phone;
-    }
-    if (req.body.address) {
-      userData.address = req.body.address;
-    }
-
-    let user;
-    try {
-      user = await User.create(userData);
-    } catch (error) {
-      // Handle validation errors
-      if (error.name === 'ValidationError') {
-        const messages = Object.values(error.errors).map(err => err.message).join(', ');
-        logger.error('User validation error:', { error: messages, userData });
-        return next(new ErrorResponse(messages, 400));
+    if (user) {
+      if (user.isVerified) {
+        return next(new ErrorResponse('User already exists', 400));
       }
-      // Handle duplicate key error
-      if (error.code === 11000) {
-        const field = Object.keys(error.keyPattern)[0];
-        logger.error('Duplicate key error:', { field, userData });
-        return next(new ErrorResponse(`${field} already exists`, 400));
+      
+      // Update existing unverified user
+      user.fullName = fullName;
+      user.password = password;
+      
+      const token = generateToken({ email }, process.env.JWT_VERIFY_EXPIRES_IN || '1h');
+      user.verificationToken = token;
+      user.verificationTokenExpires = new Date(Date.now() + 3600000); 
+
+      if (req.body.phone && /^[0-9]{10,11}$/.test(req.body.phone)) {
+        user.phone = req.body.phone;
       }
-      // Re-throw other errors
-      throw error;
+      if (req.body.address) {
+        user.address = req.body.address;
+      }
+
+      await user.save();
+    } else {
+      // Create new user
+      const token = generateToken({ email }, process.env.JWT_VERIFY_EXPIRES_IN || '1h');
+      
+      const userData = {
+        fullName,
+        email,
+        password,
+        role: 'buyer',
+        isVerified: false,
+        verificationToken: token,
+        verificationTokenExpires: new Date(Date.now() + 3600000), 
+      };
+
+      if (req.body.phone && /^[0-9]{10,11}$/.test(req.body.phone)) {
+        userData.phone = req.body.phone;
+      }
+      if (req.body.address) {
+        userData.address = req.body.address;
+      }
+
+      try {
+        user = await User.create(userData);
+      } catch (error) {
+         if (error.name === 'ValidationError') {
+          const messages = Object.values(error.errors).map(err => err.message).join(', ');
+          logger.error('User validation error:', { error: messages, userData });
+          return next(new ErrorResponse(messages, 400));
+        }
+        if (error.code === 11000) {
+           const field = Object.keys(error.keyPattern)[0];
+           logger.error('Duplicate key error:', { field, userData });
+           return next(new ErrorResponse(`${field} already exists`, 400));
+        }
+        throw error;
+      }
     }
 
     // Send OTP for email verification (non-blocking - don't fail registration if email fails)
@@ -1070,6 +1083,26 @@ export const verifyOTP = async (req, res, next) => {
       user.verificationTokenExpires = undefined;
       await user.save();
       logger.info('User verified via OTP', { userId: user._id });
+
+      // Send welcome email if user is a buyer
+      if (user.role === 'buyer') {
+        try {
+          await sendTemplatedEmail({
+            email: user.email,
+            templateType: 'WELCOME',
+            templateData: {
+              name: user.fullName,
+            },
+          });
+          logger.info('Welcome email sent successfully', { userId: user._id });
+        } catch (emailError) {
+          logger.error('Failed to send welcome email', {
+            error: emailError.message,
+            userId: user._id,
+          });
+          // Don't fail the verification if welcome email fails
+        }
+      }
     }
 
     // Generate tokens
