@@ -7,16 +7,28 @@ const dealSchema = new mongoose.Schema(
       ref: "Product",
       required: [true, "Product ID is required"],
     },
+    variantSku: {
+      type: String,
+      trim: true,
+      default: null,
+      comment: "SKU of the specific variant on sale (optional)",
+    },
     type: {
       type: String,
-      enum: ["flash", "daily", "weekend", "special"],
+      enum: [
+        "flash_sale",
+        "daily_deal",
+        "weekly_deal",
+        "limited_time",
+        "clearance",
+      ],
       required: [true, "Deal type is required"],
-      comment: "'flash', 'daily', 'weekend', 'special'",
     },
     title: {
       type: String,
       trim: true,
       default: null,
+      comment: "Also serves as campaignTitle for flash sales",
     },
     description: {
       type: String,
@@ -32,9 +44,18 @@ const dealSchema = new mongoose.Schema(
     },
     discountPercent: {
       type: Number,
-      required: [true, "Discount percent is required"],
       min: 0,
       max: 100,
+      default: 0,
+    },
+    dealPrice: {
+      type: Number,
+      min: 0,
+    },
+    sellerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
     },
     quantityLimit: {
       type: Number,
@@ -46,11 +67,22 @@ const dealSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    purchaseLimitPerOrder: {
+      type: Number,
+      default: 1,
+      min: 1,
+      comment: "Maximum quantity per single order",
+    },
+    purchaseLimitPerUser: {
+      type: Number,
+      default: 1,
+      min: 1,
+      comment: "Maximum total quantity per user across all orders",
+    },
     status: {
       type: String,
       enum: ["pending", "active", "expired", "cancelled"],
       default: "pending",
-      comment: "'pending', 'active', 'expired', 'cancelled'",
     },
     priority: {
       type: Number,
@@ -62,7 +94,7 @@ const dealSchema = new mongoose.Schema(
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  }
+  },
 );
 
 // Indexes
@@ -70,7 +102,6 @@ dealSchema.index({ productId: 1, status: 1 });
 dealSchema.index({ type: 1, status: 1, startDate: -1 });
 dealSchema.index({ startDate: 1, endDate: 1 });
 dealSchema.index({ status: 1, priority: -1 });
-// CRITICAL: Compound index for active deal lookups in batch queries
 dealSchema.index({ productId: 1, status: 1, startDate: 1, endDate: 1 });
 
 // Virtual for remaining quantity
@@ -90,15 +121,15 @@ dealSchema.virtual("isActive").get(function () {
   );
 });
 
-// Virtual for time remaining in seconds
+// Virtual for time remaining in milliseconds (matching FE expectation)
 dealSchema.virtual("timeRemaining").get(function () {
   const now = new Date();
   if (this.endDate < now) return 0;
-  return Math.floor((this.endDate - now) / 1000);
+  return Math.max(0, this.endDate.getTime() - now.getTime());
 });
 
 // Pre-save middleware to update status based on dates
-dealSchema.pre("save", function (next) {
+dealSchema.pre("save", async function () {
   const now = new Date();
 
   if (this.startDate > now) {
@@ -110,8 +141,6 @@ dealSchema.pre("save", function (next) {
   } else if (this.status === "pending" || this.status === "active") {
     this.status = "active";
   }
-
-  next();
 });
 
 export default mongoose.model("Deal", dealSchema);

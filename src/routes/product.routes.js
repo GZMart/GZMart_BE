@@ -18,6 +18,7 @@ import {
   getMyProducts,
 } from "../controllers/product.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
+import upload from "../middlewares/upload.middleware.js";
 import { protect } from "../middlewares/auth.middleware.js";
 import { requireRoles } from "../middlewares/role.middleware.js";
 
@@ -147,6 +148,7 @@ router.post(
   "/",
   protect,
   requireRoles("seller", "admin"),
+  upload.any(), // Accept all files (sizeChart, images, variantImages[...])
   asyncHandler(createProduct),
 );
 
@@ -228,6 +230,7 @@ router.put(
   "/:id",
   protect,
   requireRoles("seller", "admin"),
+  upload.any(), // Accept all files (sizeChart, images, variantImages[...])
   asyncHandler(updateProduct),
 );
 router.delete(
