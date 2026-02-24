@@ -143,6 +143,80 @@ router.get("/filters", asyncHandler(getAvailableFilters));
 // Get all products (base route)
 router.get("/", asyncHandler(getProducts));
 
+/**
+ * @swagger
+ * /api/products:
+ *   post:
+ *     tags: [Products]
+ *     summary: Create a new product
+ *     description: Create a product with images and variant information. Supports both JSON and FormData.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - categoryId
+ *               - models
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 description: Product name
+ *               categoryId:
+ *                 type: string
+ *                 description: Category ID
+ *               originalPrice:
+ *                 type: number
+ *                 description: Original price
+ *               description:
+ *                 type: string
+ *                 description: Product description
+ *               tags:
+ *                 type: string
+ *                 description: JSON stringified array of tags
+ *                 example: '["tag1", "tag2"]'
+ *               attributes:
+ *                 type: string
+ *                 description: JSON stringified array of attributes with slug, label, value, type
+ *                 example: '[{"slug":"material","label":"Chất liệu","value":"Cotton","type":"select"}]'
+ *               tiers:
+ *                 type: string
+ *                 description: JSON stringified array of tiers (Color, Size, etc.)
+ *                 example: '[{"name":"Color","options":["Red","Blue"]}]'
+ *               models:
+ *                 type: string
+ *                 description: JSON stringified array of product variants/models
+ *                 example: '[{"tierIndex":[0],"price":150000,"stock":50,"sku":"SP001-RED"}]'
+ *               images:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                   format: binary
+ *                 description: Product images (multiple files)
+ *               sizeChart:
+ *                 type: string
+ *                 format: binary
+ *                 description: Size chart image
+ *               variantImages[0]:
+ *                 type: string
+ *                 format: binary
+ *                 description: Image for variant with tierIndex [0]
+ *               variantImages[0-1]:
+ *                 type: string
+ *                 format: binary
+ *                 description: Image for variant with tierIndex [0,1]
+ *     responses:
+ *       201:
+ *         description: Product created successfully
+ *       400:
+ *         description: Invalid input
+ *       401:
+ *         description: Unauthorized
+ */
 // Create product (Seller/Admin only)
 router.post(
   "/",
@@ -179,6 +253,7 @@ router.get(
  *   put:
  *     tags: [Products]
  *     summary: Update product
+ *     description: Update product details. Supports both JSON and FormData for file uploads.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -187,9 +262,90 @@ router.get(
  *         required: true
  *         schema:
  *           type: string
+ *     requestBody:
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               categoryId:
+ *                 type: string
+ *               originalPrice:
+ *                 type: number
+ *               description:
+ *                 type: string
+ *               tags:
+ *                 type: string
+ *                 description: JSON stringified array
+ *               attributes:
+ *                 type: string
+ *                 description: JSON stringified array with slug field
+ *                 example: '[{"slug":"material","label":"Chất liệu","value":"Cotton","type":"select"}]'
+ *               tiers:
+ *                 type: string
+ *                 description: JSON stringified array
+ *               models:
+ *                 type: string
+ *                 description: JSON stringified array of variants
+ *               images:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                   format: binary
+ *               sizeChart:
+ *                 type: string
+ *                 format: binary
+ *               variantImages[0]:
+ *                 type: string
+ *                 format: binary
+ *                 description: Variant image mapped by tierIndex
+ *               status:
+ *                 type: string
+ *                 enum: [draft, active, inactive]
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               categoryId:
+ *                 type: string
+ *               originalPrice:
+ *                 type: number
+ *               tags:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               attributes:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     slug:
+ *                       type: string
+ *                     label:
+ *                       type: string
+ *                     value:
+ *                       type: string
+ *                     type:
+ *                       type: string
+ *               models:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *               status:
+ *                 type: string
  *     responses:
  *       200:
- *         description: Success
+ *         description: Product updated successfully
+ *       400:
+ *         description: Invalid input
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Product not found
  *   delete:
  *     tags: [Products]
  *     summary: Delete product
