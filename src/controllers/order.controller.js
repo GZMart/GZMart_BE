@@ -3,12 +3,16 @@ import OrderItem from "../models/OrderItem.js";
 import Cart from "../models/Cart.js";
 import CartItem from "../models/CartItem.js";
 import Product from "../models/Product.js";
+import InventoryItem from "../models/InventoryItem.js";
 import InventoryTransaction from "../models/InventoryTransaction.js";
+import FlashSaleProduct from "../models/FlashSaleProduct.js";
+import Voucher from "../models/Voucher.js";
 import Deal from "../models/Deal.js";
 import User from "../models/User.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import * as flashSaleService from "../services/flashsale.service.js";
+import { validateAndCalculateVouchers } from "../utils/voucherValidator.js";
 
 // @desc    Get checkout info (user details)
 // @route   GET /api/orders/checkout-info
@@ -54,14 +58,10 @@ const generateOrderNumber = () => {
   return "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
 };
 
-// Helper to check stock (reused logic, kept simple)
+// Helper to check stock via InventoryItem (source of truth)
 const checkStock = async (productId, sku, qty, modelStock = 0) => {
-  const latestTx = await InventoryTransaction.findOne({ productId, sku })
-    .sort({ createdAt: -1 })
-    .lean();
-
-  // Fallback to model.stock if no transaction exists (initial stock from product creation)
-  const currentStock = latestTx ? latestTx.stockAfter : modelStock;
+  const inventoryItem = await InventoryItem.findOne({ productId, sku }).lean();
+  const currentStock = inventoryItem ? inventoryItem.quantity : modelStock;
   return { available: currentStock >= qty, currentStock };
 };
 
@@ -69,7 +69,7 @@ const checkStock = async (productId, sku, qty, modelStock = 0) => {
 // @route   POST /api/orders/preview
 // @access  Private
 export const previewOrder = asyncHandler(async (req, res, next) => {
-  const { city } = req.body;
+  const { city, voucherIds } = req.body;
 
   // 1. Get Cart
   const cart = await Cart.findOne({ userId: req.user._id });
@@ -92,10 +92,21 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
     }
   }
 
-  // 3. Calculate Fees
+  // 3. Calculate Voucher Discount
+  const {
+    totalDiscount,
+    validVouchers,
+    errors: voucherErrors,
+  } = await validateAndCalculateVouchers(
+    voucherIds || [],
+    cartItems,
+    req.user._id,
+  );
+  const discount = totalDiscount;
+
+  // 4. Calculate Fees
   const shippingCost = calculateShippingFee(subtotal, city);
   const tax = 0;
-  const discount = 0; // Future: Calculate based on coupon
   const total = subtotal + shippingCost + tax - discount;
 
   res.status(200).json({
@@ -107,6 +118,8 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
       discount,
       total,
       itemCount: cartItems.length,
+      appliedVouchers: validVouchers,
+      voucherErrors,
     },
   });
 });
@@ -115,7 +128,8 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
 // @route   POST /api/orders
 // @access  Private
 export const createOrder = asyncHandler(async (req, res, next) => {
-  const { shippingAddress, paymentMethod, notes, city, quantity } = req.body;
+  const { shippingAddress, paymentMethod, notes, city, quantity, voucherIds } =
+    req.body;
 
   if (!shippingAddress || !paymentMethod) {
     return next(
@@ -213,13 +227,31 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     });
   }
 
-  // 3. Calculate Totals
+  // 3. Validate Vouchers & Calculate Discount
+  const {
+    totalDiscount,
+    validVouchers,
+    errors: voucherErrors,
+  } = await validateAndCalculateVouchers(
+    voucherIds || [],
+    cartItems,
+    req.user._id,
+  );
+
+  if (voucherErrors.length > 0 && (voucherIds || []).length > 0) {
+    // Only fail if user tried to apply vouchers but they're invalid
+    return next(new ErrorResponse(voucherErrors.join(", "), 400));
+  }
+
+  const discount = totalDiscount;
+
+  // 4. Calculate Totals
   const shippingCost = calculateShippingFee(subtotal, city || shippingAddress);
-  const tax = 0; // Simple for now
-  const discount = 0; // Implement coupons later
+  const tax = 0;
   const totalPrice = subtotal + shippingCost + tax - discount;
 
-  // 4. Create Order
+  // 5. Create Order
+  const appliedCodes = validVouchers.map((v) => v.code).join(", ");
   const order = await Order.create({
     userId: req.user._id,
     orderNumber: generateOrderNumber(),
@@ -230,9 +262,19 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     shippingCost,
     paymentMethod,
     notes,
+    discount,
+    discountAmount: discount,
+    discountCode: appliedCodes || undefined,
     isActive: true,
     items: [],
   });
+
+  // Increment voucher usage counts
+  for (const v of validVouchers) {
+    await Voucher.findByIdAndUpdate(v.voucherId, {
+      $inc: { usageCount: 1 },
+    });
+  }
 
   // 5. Create Order Items & Deduct Inventory
   const orderItemIds = [];
@@ -263,20 +305,26 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       });
     }
 
-    // Deduct Inventory
-    // Requires fetching latest stock AGAIN to be safe (simple optimistic lock)
-    const latestTx = await InventoryTransaction.findOne({
+    // Deduct Inventory from InventoryItem (source of truth)
+    const inventoryItem = await InventoryItem.findOne({
       productId: product._id,
       sku: model.sku,
-    }).sort({ createdAt: -1 });
-    const currentStock = latestTx ? latestTx.stockAfter : model.stock;
+    });
+    const currentStock = inventoryItem ? inventoryItem.quantity : model.stock;
 
+    // Update InventoryItem
+    if (inventoryItem) {
+      inventoryItem.reduceStock(cartItem.quantity);
+      await inventoryItem.save();
+    }
+
+    // Create transaction log
     await InventoryTransaction.create({
       productId: product._id,
       modelId: model._id,
       sku: model.sku,
       type: "out",
-      quantity: cartItem.quantity, // Sold quantity (positive number)
+      quantity: -cartItem.quantity,
       stockBefore: currentStock,
       stockAfter: currentStock - cartItem.quantity,
       referenceType: "order",
@@ -558,17 +606,25 @@ export const cancelOrder = asyncHandler(async (req, res, next) => {
     });
 
     if (model) {
-      const latestTx = await InventoryTransaction.findOne({
+      // Restock InventoryItem (source of truth)
+      const inventoryItem = await InventoryItem.findOne({
         productId: product._id,
         sku: model.sku,
-      }).sort({ createdAt: -1 });
-      const currentStock = latestTx ? latestTx.stockAfter : model.stock;
+      });
+      const currentStock = inventoryItem ? inventoryItem.quantity : model.stock;
 
+      // Update InventoryItem
+      if (inventoryItem) {
+        inventoryItem.addStock(item.quantity, inventoryItem.costPrice);
+        await inventoryItem.save();
+      }
+
+      // Create return transaction log
       await InventoryTransaction.create({
         productId: product._id,
         modelId: model._id,
         sku: model.sku,
-        type: "in", // Return means IN
+        type: "in",
         quantity: item.quantity,
         stockBefore: currentStock,
         stockAfter: currentStock + item.quantity,
