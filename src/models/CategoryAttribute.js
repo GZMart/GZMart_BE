@@ -25,6 +25,12 @@ const categoryAttributeSchema = new mongoose.Schema(
       trim: true,
       maxlength: [500, "Description cannot exceed 500 characters"],
     },
+    type: {
+      type: String,
+      enum: ["text", "number", "date", "select"],
+      default: "select",
+      comment: "Attribute input type",
+    },
     options: {
       type: [String],
       required: [true, "Options are required for select type"],
@@ -74,7 +80,7 @@ const categoryAttributeSchema = new mongoose.Schema(
   {
     timestamps: true,
     versionKey: false,
-  }
+  },
 );
 
 // Indexes
