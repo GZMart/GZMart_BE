@@ -1,76 +1,116 @@
 import Deal from "../models/Deal.js";
-import Product from "../models/Product.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
+
+// Full populate config matching FE spec fields
+const PRODUCT_POPULATE = {
+  path: "productId",
+  select:
+    "name description images price originalPrice isNewArrival rating reviewCount sold brand categoryId models tiers sku status",
+  match: { status: { $ne: "inactive" } },
+  populate: {
+    path: "categoryId",
+    select: "name _id",
+  },
+};
+
+/**
+ * Enrich a deal (lean object) with computed price fields and FE-compatible shape.
+ */
+function enrichDeal(deal) {
+  if (!deal.productId) return deal;
+
+  const product = deal.productId;
+  const discount = deal.discountPercent || 0;
+
+  // Map category: categoryId → category
+  if (product.categoryId) {
+    product.category = product.categoryId;
+    delete product.categoryId;
+  }
+
+  // Map isNewArrival → isNew
+  product.isNew = product.isNewArrival ?? false;
+
+  // Map tiers → tier_variations
+  product.tier_variations = product.tiers || [];
+
+  const models = product.models || [];
+
+  if (models.length > 0) {
+    const activePrices = models
+      .filter((m) => m.isActive !== false)
+      .map((m) => m.price)
+      .filter((p) => typeof p === "number");
+
+    if (activePrices.length > 0) {
+      const minPrice = Math.min(...activePrices);
+      const maxPrice = Math.max(...activePrices);
+
+      if (deal.dealPrice != null) {
+        deal.discountedMinPrice = deal.dealPrice;
+        deal.discountedMaxPrice = deal.dealPrice;
+        deal.discountedPrice = deal.dealPrice;
+        deal.discountPercent = Math.round(((minPrice - deal.dealPrice) / minPrice) * 100);
+      } else {
+        deal.dealPrice = Math.round(minPrice * (1 - discount / 100));
+        deal.discountedMinPrice = deal.dealPrice;
+        deal.discountedMaxPrice = Math.round(maxPrice * (1 - discount / 100));
+        deal.discountedPrice = deal.dealPrice;
+      }
+    }
+  } else {
+    // Single-model or price on product itself
+    const basePrice = product.originalPrice || product.price || 0;
+    if (deal.dealPrice != null) {
+        deal.discountedPrice = deal.dealPrice;
+        deal.discountedMinPrice = deal.dealPrice;
+        deal.discountPercent = Math.round(((basePrice - deal.dealPrice) / basePrice) * 100);
+    } else {
+        deal.dealPrice = Math.round(basePrice * (1 - discount / 100));
+        deal.discountedPrice = deal.dealPrice;
+        deal.discountedMinPrice = deal.dealPrice;
+    }
+  }
+
+  return deal;
+}
 
 class DealService {
   /**
-   * Get active deals by type
+   * Build the base active-deal query
    */
-  async getDealsByType(type, options = {}) {
-    const { limit = 20, page = 1 } = options;
+  _activeQuery(extra = {}) {
     const now = new Date();
-
-    const query = {
-      type,
+    return {
       status: "active",
       startDate: { $lte: now },
       endDate: { $gte: now },
+      ...extra,
     };
+  }
 
-    // Filter out deals that reached quantity limit
+  /**
+   * Fetch, filter and enrich deals
+   */
+  async _fetchDeals(query, { page = 1, limit = 20 } = {}) {
     const deals = await Deal.find(query)
-      .populate({
-        path: "productId",
-        match: { isAvailable: true },
-        populate: {
-          path: "categoryId",
-          select: "name slug",
-        },
-      })
+      .populate(PRODUCT_POPULATE)
       .sort("-priority -createdAt")
       .skip((page - 1) * limit)
       .limit(limit)
       .lean();
 
-    // Filter out deals with null products (inactive products)
-    const activeDeals = deals.filter((deal) => deal.productId !== null);
-
-    // Check quantity limits
-    const validDeals = activeDeals.filter((deal) => {
-      if (!deal.quantityLimit) return true;
-      return deal.soldCount < deal.quantityLimit;
+    const valid = deals.filter((d) => {
+      if (!d.productId) return false;
+      if (d.quantityLimit && d.soldCount >= d.quantityLimit) return false;
+      return true;
     });
 
-    // Enrich with price info
-    const enrichedDeals = await Promise.all(
-      validDeals.map(async (deal) => {
-        // Models are embedded in product document
-        const models = deal.productId.models || [];
-
-        if (models.length > 0) {
-          const prices = models.map((m) => m.price);
-          deal.productId.minPrice = Math.min(...prices);
-          deal.productId.maxPrice = Math.max(...prices);
-          deal.productId.totalStock = models.reduce(
-            (sum, m) => sum + m.stock,
-            0
-          );
-
-          // Calculate discounted price
-          deal.discountedMinPrice =
-            deal.productId.minPrice * (1 - deal.discountPercent / 100);
-          deal.discountedMaxPrice =
-            deal.productId.maxPrice * (1 - deal.discountPercent / 100);
-        }
-
-        return deal;
-      })
-    );
-
+    const enriched = valid.map(enrichDeal);
     const total = await Deal.countDocuments(query);
 
     return {
-      deals: enrichedDeals,
+      deals: enriched,
       pagination: {
         page,
         limit,
@@ -82,30 +122,27 @@ class DealService {
     };
   }
 
-  /**
-   * Get flash sales
-   */
+  /** GET /api/deals — all active deals */
+  async getAllActiveDeals(options = {}) {
+    return this._fetchDeals(this._activeQuery(), options);
+  }
+
+  /** GET /api/deals/flash-sales */
   async getFlashSales(options = {}) {
-    return await this.getDealsByType("flash", options);
+    return this._fetchDeals(this._activeQuery({ type: "flash_sale" }), options);
   }
 
-  /**
-   * Get daily deals
-   */
+  /** GET /api/deals/daily-deals */
   async getDailyDeals(options = {}) {
-    return await this.getDealsByType("daily", options);
+    return this._fetchDeals(this._activeQuery({ type: "daily_deal" }), options);
   }
 
-  /**
-   * Get weekend deals
-   */
+  /** GET /api/deals/weekend-deals */
   async getWeekendDeals(options = {}) {
-    return await this.getDealsByType("weekend", options);
+    return this._fetchDeals(this._activeQuery({ type: "weekly_deal" }), options);
   }
 
-  /**
-   * Get deal by product ID
-   */
+  /** GET /api/deals/product/:productId */
   async getActiveDealByProduct(productId) {
     const now = new Date();
 
@@ -114,134 +151,70 @@ class DealService {
       status: "active",
       startDate: { $lte: now },
       endDate: { $gte: now },
-    }).lean();
-
-    if (!deal) {
-      return null;
-    }
-
-    // Check quantity limit
-    if (deal.quantityLimit && deal.soldCount >= deal.quantityLimit) {
-      return null;
-    }
-
-    return deal;
-  }
-
-  /**
-   * Get all active deals
-   */
-  async getAllActiveDeals(options = {}) {
-    const { limit = 20, page = 1 } = options;
-    const now = new Date();
-
-    const query = {
-      status: "active",
-      startDate: { $lte: now },
-      endDate: { $gte: now },
-    };
-
-    const deals = await Deal.find(query)
-      .populate({
-        path: "productId",
-        match: { isAvailable: true },
-        populate: {
-          path: "categoryId",
-          select: "name slug",
-        },
-      })
-      .sort("-priority -createdAt")
-      .skip((page - 1) * limit)
-      .limit(limit)
+    })
+      .populate(PRODUCT_POPULATE)
       .lean();
 
-    // Filter and enrich
-    const activeDeals = deals.filter((deal) => {
-      if (!deal.productId) return false;
-      if (deal.quantityLimit && deal.soldCount >= deal.quantityLimit)
-        return false;
-      return true;
-    });
+    if (!deal || !deal.productId) return null;
+    if (deal.quantityLimit && deal.soldCount >= deal.quantityLimit) return null;
 
-    const enrichedDeals = await Promise.all(
-      activeDeals.map(async (deal) => {
-        // Models are embedded in product document
-        const models = deal.productId.models || [];
+    return enrichDeal(deal);
+  }
 
-        if (models.length > 0) {
-          const prices = models.map((m) => m.price);
-          deal.productId.minPrice = Math.min(...prices);
-          deal.productId.maxPrice = Math.max(...prices);
-          deal.productId.totalStock = models.reduce(
-            (sum, m) => sum + m.stock,
-            0
-          );
+  /** GET /api/deals/:dealId */
+  async getDealById(dealId) {
+    const deal = await Deal.findById(dealId)
+      .populate(PRODUCT_POPULATE)
+      .lean();
 
-          deal.discountedMinPrice =
-            deal.productId.minPrice * (1 - deal.discountPercent / 100);
-          deal.discountedMaxPrice =
-            deal.productId.maxPrice * (1 - deal.discountPercent / 100);
-        }
+    if (!deal) {
+      throw new ErrorResponse("Deal not found", 404);
+    }
 
-        return deal;
-      })
-    );
-
-    const total = await Deal.countDocuments(query);
-
-    return {
-      deals: enrichedDeals,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-        hasNextPage: page < Math.ceil(total / limit),
-        hasPrevPage: page > 1,
-      },
-    };
+    return enrichDeal(deal);
   }
 
   /**
-   * Update deal status (cron job can call this)
+   * GET /api/deals/my-deals (authenticated)
+   * Currently returns stub — extend once user-deal participation is tracked.
    */
+  async getMyDeals(userId) {
+    // Future: query a UserDeal collection for pending/approved deals
+    return {
+      pendingDeals: [],
+      approvedDeals: [],
+    };
+  }
+
+  /** Cron: update deal statuses */
   async updateDealStatuses() {
     const now = new Date();
 
-    // Expire deals that passed end date
     await Deal.updateMany(
-      {
-        status: "active",
-        endDate: { $lt: now },
-      },
-      {
-        $set: { status: "expired" },
-      }
+      { status: "active", endDate: { $lt: now } },
+      { $set: { status: "expired" } }
     );
 
-    // Activate deals that reached start date
     await Deal.updateMany(
-      {
-        status: "pending",
-        startDate: { $lte: now },
-        endDate: { $gte: now },
-      },
-      {
-        $set: { status: "active" },
-      }
+      { status: "pending", startDate: { $lte: now }, endDate: { $gte: now } },
+      { $set: { status: "active" } }
     );
 
-    // Expire deals that reached quantity limit
-    const deals = await Deal.find({
+    // Expire quantity-exhausted deals
+    const quantityDeals = await Deal.find({
       status: "active",
       quantityLimit: { $ne: null },
-    });
+    }).select("soldCount quantityLimit");
 
-    for (const deal of deals) {
-      if (deal.soldCount >= deal.quantityLimit) {
-        deal.status = "expired";
-        await deal.save();
-      }
+    const toExpire = quantityDeals
+      .filter((d) => d.soldCount >= d.quantityLimit)
+      .map((d) => d._id);
+
+    if (toExpire.length > 0) {
+      await Deal.updateMany(
+        { _id: { $in: toExpire } },
+        { $set: { status: "expired" } }
+      );
     }
   }
 }

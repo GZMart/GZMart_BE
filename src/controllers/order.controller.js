@@ -4,7 +4,7 @@ import Cart from "../models/Cart.js";
 import CartItem from "../models/CartItem.js";
 import Product from "../models/Product.js";
 import InventoryTransaction from "../models/InventoryTransaction.js";
-import FlashSaleProduct from "../models/FlashSaleProduct.js";
+import Deal from "../models/Deal.js";
 import User from "../models/User.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
@@ -258,8 +258,8 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 
     // Update flash sale sold quantity if applicable
     if (flashSaleInfo.isFlashSale && flashSaleInfo.flashSaleId) {
-      await FlashSaleProduct.findByIdAndUpdate(flashSaleInfo.flashSaleId, {
-        $inc: { soldQuantity: cartItem.quantity },
+      await Deal.findByIdAndUpdate(flashSaleInfo.flashSaleId, {
+        $inc: { soldCount: cartItem.quantity },
       });
     }
 
@@ -580,13 +580,13 @@ export const cancelOrder = asyncHandler(async (req, res, next) => {
 
       // Revert flash sale sold quantity if it was a flash sale
       if (item.isFlashSale) {
-        const flashSale = await FlashSaleProduct.findOne({
+        const flashSale = await Deal.findOne({
           productId: product._id,
           status: "active",
         });
         if (flashSale) {
-          await FlashSaleProduct.findByIdAndUpdate(flashSale._id, {
-            $inc: { soldQuantity: -item.quantity },
+          await Deal.findByIdAndUpdate(flashSale._id, {
+            $inc: { soldCount: -item.quantity },
           });
         }
       }
