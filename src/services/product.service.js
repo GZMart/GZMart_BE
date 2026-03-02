@@ -1,8 +1,55 @@
 import Product from "../models/Product.js";
 import Category from "../models/Category.js";
 import User from "../models/User.js";
+import Deal from "../models/Deal.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { generateSKU } from "../utils/skuGenerator.js";
+
+/**
+ * Fetch the currently active flash sale for a product, shaped for the FE.
+ * Returns null when there is no active flash sale.
+ */
+const getActiveFlashSaleForProduct = async (productId, originalPrice = 0) => {
+  const now = new Date();
+  const deal = await Deal.findOne({
+    productId,
+    type: "flash_sale",
+    status: "active",
+    startDate: { $lte: now },
+    endDate: { $gt: now },
+  }).lean();
+
+  if (!deal) return null;
+
+  const salePrice = deal.dealPrice ?? originalPrice;
+  const discount =
+    originalPrice > 0
+      ? Math.round(((originalPrice - salePrice) / originalPrice) * 10000) / 100
+      : 0;
+
+  return {
+    flashSaleId: deal._id,
+    salePrice,
+    originalPrice,
+    discountPercent: discount,
+    discountAmount: Math.max(0, originalPrice - salePrice),
+    totalQuantity: deal.quantityLimit || 0,
+    soldQuantity: deal.soldCount || 0,
+    remainingQuantity: Math.max(
+      0,
+      (deal.quantityLimit || 0) - (deal.soldCount || 0),
+    ),
+    startAt: deal.startDate,
+    endAt: deal.endDate,
+    timeRemaining: Math.max(
+      0,
+      new Date(deal.endDate).getTime() - now.getTime(),
+    ),
+    campaignTitle: deal.title || null,
+    purchaseLimitPerOrder: deal.purchaseLimitPerOrder,
+    purchaseLimitPerUser: deal.purchaseLimitPerUser,
+  };
+};
 
 /**
  * Generate URL-friendly slug
@@ -190,7 +237,14 @@ export const getProductById = async (productId) => {
   product.viewCount = (product.viewCount || 0) + 1;
   await product.save({ validateBeforeSave: false });
 
-  return product;
+  const flashSale = await getActiveFlashSaleForProduct(
+    product._id,
+    product.originalPrice,
+  );
+
+  const result = product.toObject();
+  result.flashSale = flashSale;
+  return result;
 };
 
 /**
@@ -209,7 +263,14 @@ export const getProductBySlug = async (slug) => {
   product.viewCount = (product.viewCount || 0) + 1;
   await product.save({ validateBeforeSave: false });
 
-  return product;
+  const flashSale = await getActiveFlashSaleForProduct(
+    product._id,
+    product.originalPrice,
+  );
+
+  const result = product.toObject();
+  result.flashSale = flashSale;
+  return result;
 };
 
 /**
