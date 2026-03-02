@@ -1,21 +1,20 @@
-import Cart from '../models/Cart.js';
-import CartItem from '../models/CartItem.js';
-import Product from '../models/Product.js';
-import InventoryTransaction from '../models/InventoryTransaction.js';
-import { asyncHandler } from '../middlewares/async.middleware.js';
-import { ErrorResponse } from '../utils/errorResponse.js';
+import Cart from "../models/Cart.js";
+import CartItem from "../models/CartItem.js";
+import Product from "../models/Product.js";
+import InventoryItem from "../models/InventoryItem.js";
+import { asyncHandler } from "../middlewares/async.middleware.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
 
-// Helper to check stock via InventoryTransaction with fallback to model.stock
-const checkStockAvailability = async (productId, modelId, sku, requestedQty, modelStock = 0) => {
-  const latestTransaction = await InventoryTransaction.findOne({
-    productId,
-    sku,
-  })
-    .sort({ createdAt: -1 })
-    .lean();
-
-  // Fallback to model.stock if no transaction exists (initial stock from product creation)
-  const currentStock = latestTransaction ? latestTransaction.stockAfter : modelStock;
+// Helper to check stock via InventoryItem (source of truth) with fallback to model.stock
+const checkStockAvailability = async (
+  productId,
+  modelId,
+  sku,
+  requestedQty,
+  modelStock = 0,
+) => {
+  const inventoryItem = await InventoryItem.findOne({ productId, sku }).lean();
+  const currentStock = inventoryItem ? inventoryItem.quantity : modelStock;
   return { available: currentStock >= requestedQty, currentStock };
 };
 
@@ -24,18 +23,26 @@ const findProductModel = (product, color, size) => {
   if (!product.tiers || product.tiers.length === 0) return null;
 
   // Identify tier indices
-  const colorTierIndex = product.tiers.findIndex((t) => t.name.toLowerCase() === 'color' || t.name.toLowerCase() === 'màu sắc');
-  const sizeTierIndex = product.tiers.findIndex((t) => t.name.toLowerCase() === 'size' || t.name.toLowerCase() === 'kích thước');
+  const colorTierIndex = product.tiers.findIndex(
+    (t) =>
+      t.name.toLowerCase() === "color" || t.name.toLowerCase() === "màu sắc",
+  );
+  const sizeTierIndex = product.tiers.findIndex(
+    (t) =>
+      t.name.toLowerCase() === "size" || t.name.toLowerCase() === "kích thước",
+  );
 
   if (!product.models) return null;
 
   return product.models.find((model) => {
     const colorMatch =
       colorTierIndex === -1 ||
-      product.tiers[colorTierIndex].options[model.tierIndex[colorTierIndex]] === color;
+      product.tiers[colorTierIndex].options[model.tierIndex[colorTierIndex]] ===
+        color;
     const sizeMatch =
       sizeTierIndex === -1 ||
-      product.tiers[sizeTierIndex].options[model.tierIndex[sizeTierIndex]] === size;
+      product.tiers[sizeTierIndex].options[model.tierIndex[sizeTierIndex]] ===
+        size;
     return colorMatch && sizeMatch;
   });
 };
@@ -53,8 +60,8 @@ export const getCart = asyncHandler(async (req, res, next) => {
 
   // Populate items
   await cart.populate({
-    path: 'items',
-    populate: { path: 'productId', select: 'name slug tiers models' },
+    path: "items",
+    populate: { path: "productId", select: "name slug tiers models" },
   });
 
   const cartItems = cart.items || [];
@@ -70,26 +77,32 @@ export const getCart = asyncHandler(async (req, res, next) => {
     let stockInfo = { available: false, currentStock: 0 };
 
     if (model) {
-      stockInfo = await checkStockAvailability(product._id, model._id, model.sku, item.quantity, model.stock);
+      stockInfo = await checkStockAvailability(
+        product._id,
+        model._id,
+        model.sku,
+        item.quantity,
+        model.stock,
+      );
     }
-    
+
     total += item.price * item.quantity;
 
     enrichedItems.push({
       ...item.toObject(),
       productId: {
-          _id: product._id,
-          name: product.name,
-          slug: product.slug,
-          images: product.images, // Top level images
-          // Remove tiers, models, etc from response
+        _id: product._id,
+        name: product.name,
+        slug: product.slug,
+        images: product.images, // Top level images
+        // Remove tiers, models, etc from response
       },
       stockAvailable: stockInfo.currentStock,
       isAvailable: stockInfo.available,
-      exceedsStock: item.quantity > stockInfo.currentStock
+      exceedsStock: item.quantity > stockInfo.currentStock,
     });
   }
-  
+
   // Update total price if different (optional, strictly speaking we update on modify)
   if (Math.abs(cart.totalPrice - total) > 0.01) {
     cart.totalPrice = total;
@@ -114,18 +127,25 @@ export const addToCart = asyncHandler(async (req, res, next) => {
   const { productId, quantity, color, size } = req.body;
 
   if (!productId || !quantity || !color || !size) {
-    return next(new ErrorResponse('Please provide productId, quantity, color, and size', 400));
+    return next(
+      new ErrorResponse(
+        "Please provide productId, quantity, color, and size",
+        400,
+      ),
+    );
   }
 
   const product = await Product.findById(productId);
   if (!product) {
-    return next(new ErrorResponse('Product not found', 404));
+    return next(new ErrorResponse("Product not found", 404));
   }
 
   // Find specific variant (model)
   const model = findProductModel(product, color, size);
   if (!model) {
-    return next(new ErrorResponse('Selected variant (color/size) not available', 400));
+    return next(
+      new ErrorResponse("Selected variant (color/size) not available", 400),
+    );
   }
 
   // Find or create cart
@@ -142,7 +162,9 @@ export const addToCart = asyncHandler(async (req, res, next) => {
     size,
   });
 
-  const newQuantity = existingItem ? existingItem.quantity + quantity : quantity;
+  const newQuantity = existingItem
+    ? existingItem.quantity + quantity
+    : quantity;
 
   // Realtime Stock Check
   const { available, currentStock } = await checkStockAvailability(
@@ -150,23 +172,23 @@ export const addToCart = asyncHandler(async (req, res, next) => {
     model._id,
     model.sku,
     newQuantity,
-    model.stock
+    model.stock,
   );
 
   if (!available) {
     return next(
       new ErrorResponse(
         `Insufficient stock. Available: ${currentStock}, Requested: ${newQuantity}`,
-        400
-      )
+        400,
+      ),
     );
   }
 
   if (existingItem) {
     existingItem.quantity = newQuantity;
-    // Update price in case product price changed? Usually we keep cart price unless re-fetched, 
+    // Update price in case product price changed? Usually we keep cart price unless re-fetched,
     // but for e-commerce, it's safer to update to current price.
-    existingItem.price = model.price; 
+    existingItem.price = model.price;
     existingItem.image = model.image || product.images[0];
     await existingItem.save();
   } else {
@@ -183,12 +205,15 @@ export const addToCart = asyncHandler(async (req, res, next) => {
 
   // Recalculate Total
   const allItems = await CartItem.find({ cartId: cart._id });
-  cart.totalPrice = allItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  cart.totalPrice = allItems.reduce(
+    (sum, item) => sum + item.price * item.quantity,
+    0,
+  );
   await cart.save();
 
   res.status(200).json({
     success: true,
-    message: 'Item added to cart',
+    message: "Item added to cart",
     cartTotal: cart.totalPrice,
   });
 });
@@ -201,25 +226,25 @@ export const updateCartItem = asyncHandler(async (req, res, next) => {
   const { itemId } = req.params;
 
   if (!quantity || quantity < 1) {
-    return next(new ErrorResponse('Quantity must be at least 1', 400));
+    return next(new ErrorResponse("Quantity must be at least 1", 400));
   }
 
-  const item = await CartItem.findById(itemId).populate('productId');
+  const item = await CartItem.findById(itemId).populate("productId");
   if (!item) {
-    return next(new ErrorResponse('Cart item not found', 404));
+    return next(new ErrorResponse("Cart item not found", 404));
   }
-  
+
   // Verify ownership via cart
   const cart = await Cart.findOne({ _id: item.cartId, userId: req.user._id });
   if (!cart) {
-    return next(new ErrorResponse('Not authorized', 401));
+    return next(new ErrorResponse("Not authorized", 401));
   }
 
   const product = item.productId;
   const model = findProductModel(product, item.color, item.size);
 
   if (!model) {
-     return next(new ErrorResponse('Product variant info unavailable', 400));
+    return next(new ErrorResponse("Product variant info unavailable", 400));
   }
 
   // Realtime check
@@ -228,15 +253,15 @@ export const updateCartItem = asyncHandler(async (req, res, next) => {
     model._id,
     model.sku,
     quantity,
-    model.stock
+    model.stock,
   );
 
   if (!available) {
     return next(
       new ErrorResponse(
         `Insufficient stock. Available: ${currentStock}, Requested: ${quantity}`,
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -263,12 +288,12 @@ export const removeFromCart = asyncHandler(async (req, res, next) => {
 
   const item = await CartItem.findById(itemId);
   if (!item) {
-    return next(new ErrorResponse('Cart item not found', 404));
+    return next(new ErrorResponse("Cart item not found", 404));
   }
 
   const cart = await Cart.findOne({ _id: item.cartId, userId: req.user._id });
   if (!cart) {
-    return next(new ErrorResponse('Not authorized', 401));
+    return next(new ErrorResponse("Not authorized", 401));
   }
 
   await item.deleteOne();
@@ -280,7 +305,7 @@ export const removeFromCart = asyncHandler(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    message: 'Item removed from cart',
+    message: "Item removed from cart",
     cartTotal: cart.totalPrice,
   });
 });

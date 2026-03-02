@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const productAttributeSchema = new mongoose.Schema(
   {
+    slug: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      comment: "Attribute slug/key from CategoryAttribute",
+    },
     label: {
       type: String,
       required: [true, "Attribute label is required"],
@@ -20,7 +26,7 @@ const productAttributeSchema = new mongoose.Schema(
       default: "text",
     },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const tierSchema = new mongoose.Schema(
@@ -46,7 +52,7 @@ const tierSchema = new mongoose.Schema(
       default: [],
     },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const modelSchema = new mongoose.Schema(
@@ -92,7 +98,7 @@ const modelSchema = new mongoose.Schema(
       default: true,
     },
   },
-  { _id: true }
+  { _id: true },
 );
 
 const productSchema = new mongoose.Schema(
@@ -230,7 +236,7 @@ const productSchema = new mongoose.Schema(
     versionKey: false,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  }
+  },
 );
 
 productSchema.index({ name: "text", description: "text" });
@@ -248,6 +254,11 @@ productSchema.index({ isNewArrival: 1, status: 1 });
 productSchema.virtual("totalStock").get(function () {
   if (!this.models) return 0;
   return this.models.reduce((sum, model) => sum + model.stock, 0);
+});
+
+productSchema.virtual("sku").get(function () {
+  if (!this.models || this.models.length === 0) return null;
+  return this.models[0].sku;
 });
 
 productSchema.pre("save", function (next) {

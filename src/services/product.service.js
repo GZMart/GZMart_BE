@@ -623,6 +623,7 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
 
   const [products, total] = await Promise.all([
     Product.find({ sellerId })
+      .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -642,6 +643,7 @@ export const getProductsByCategory = async (categoryId, options = {}) => {
 
   const [products, total] = await Promise.all([
     Product.find({ categoryId, status: "active" })
+      .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
