@@ -189,7 +189,41 @@ export const getProductById = async (productId) => {
   product.viewCount = (product.viewCount || 0) + 1;
   await product.save({ validateBeforeSave: false });
 
-  return product;
+  // Convert to object so we can attach computed seller fields
+  const productObj = product.toObject();
+
+  if (productObj.sellerId && productObj.sellerId._id) {
+    const sellerId = productObj.sellerId._id;
+    // Import dynamically or ensure imported at file top
+    // Try doing parallel promises to fetch shop details
+    const [shopStats, productCount, followerCount, followingCount] = await Promise.all([
+      import('../models/ShopStatistic.js').then(m => m.default.findOne({ sellerId })),
+      Product.countDocuments({ sellerId, status: "active" }),
+      import('../models/Follow.js').then(m => m.default.countDocuments({ followingId: sellerId })),
+      import('../models/Follow.js').then(m => m.default.countDocuments({ followerId: sellerId }))
+    ]);
+
+    productObj.sellerId.productCount = productCount;
+    productObj.sellerId.followerCount = followerCount;
+    productObj.sellerId.followingCount = followingCount;
+    
+    if (shopStats) {
+      productObj.sellerId.isPreferred = shopStats.isPreferred;
+      productObj.sellerId.rating = shopStats.ratingAverage;
+      productObj.sellerId.ratingCount = shopStats.ratingCount;
+      productObj.sellerId.chatResponseRate = shopStats.chatResponseRate;
+      productObj.sellerId.cancelDutyRate = shopStats.cancelDutyRate;
+    } else {
+      // Default fallback
+      productObj.sellerId.isPreferred = false;
+      productObj.sellerId.rating = 0;
+      productObj.sellerId.ratingCount = 0;
+      productObj.sellerId.chatResponseRate = 100;
+      productObj.sellerId.cancelDutyRate = 0;
+    }
+  }
+
+  console.log('RETURNING', JSON.stringify(productObj.sellerId)); return productObj;
 };
 
 /**
@@ -207,7 +241,38 @@ export const getProductBySlug = async (slug) => {
   product.viewCount = (product.viewCount || 0) + 1;
   await product.save({ validateBeforeSave: false });
 
-  return product;
+  // Convert to object so we can attach computed seller fields
+  const productObj = product.toObject();
+
+  if (productObj.sellerId && productObj.sellerId._id) {
+    const sellerId = productObj.sellerId._id;
+    const [shopStats, productCount, followerCount, followingCount] = await Promise.all([
+      import('../models/ShopStatistic.js').then(m => m.default.findOne({ sellerId })),
+      Product.countDocuments({ sellerId, status: "active" }),
+      import('../models/Follow.js').then(m => m.default.countDocuments({ followingId: sellerId })),
+      import('../models/Follow.js').then(m => m.default.countDocuments({ followerId: sellerId }))
+    ]);
+
+    productObj.sellerId.productCount = productCount;
+    productObj.sellerId.followerCount = followerCount;
+    productObj.sellerId.followingCount = followingCount;
+    
+    if (shopStats) {
+      productObj.sellerId.isPreferred = shopStats.isPreferred;
+      productObj.sellerId.rating = shopStats.ratingAverage;
+      productObj.sellerId.ratingCount = shopStats.ratingCount;
+      productObj.sellerId.chatResponseRate = shopStats.chatResponseRate;
+      productObj.sellerId.cancelDutyRate = shopStats.cancelDutyRate;
+    } else {
+      productObj.sellerId.isPreferred = false;
+      productObj.sellerId.rating = 0;
+      productObj.sellerId.ratingCount = 0;
+      productObj.sellerId.chatResponseRate = 100;
+      productObj.sellerId.cancelDutyRate = 0;
+    }
+  }
+
+  return productObj;
 };
 
 /**
