@@ -29,6 +29,7 @@
     "morgan": "^1.10.0",
     "multer": "^2.0.2",
     "multer-storage-cloudinary": "^4.0.0",
+    "node-cron": "^4.2.1",
     "nodemailer": "^7.0.12",
     "socket.io": "^4.8.3",
     "swagger-jsdoc": "^6.2.8",

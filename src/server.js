@@ -39,6 +39,7 @@ import chatRoutes from "./routes/chat.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
+import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 // Load environment variables
 dotenv.config();
 
@@ -259,6 +260,8 @@ app.use("/api/ai", aiRoutes); // Register AI routes
 
 server.listen(PORT, HOST, () => {
   logger.info(`Server is running on port ${PORT}`);
+  // Initialize cron jobs
+  initShopStatisticJobs();
 });
 
 export default app;

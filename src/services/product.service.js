@@ -691,7 +691,9 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     throw new ErrorResponse("Seller not found", 404);
   }
 
-  const [products, total] = await Promise.all([
+  const sellerObj = seller.toObject();
+
+  const [products, total, shopStats, productCount, followerCount, followingCount] = await Promise.all([
     Product.find({ sellerId, status: "active" })
       .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
@@ -699,9 +701,31 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
       .limit(limit)
       .lean(),
     Product.countDocuments({ sellerId, status: "active" }),
+    import('../models/ShopStatistic.js').then(m => m.default.findOne({ sellerId })),
+    Product.countDocuments({ sellerId, status: "active" }),
+    import('../models/Follow.js').then(m => m.default.countDocuments({ followingId: sellerId })),
+    import('../models/Follow.js').then(m => m.default.countDocuments({ followerId: sellerId }))
   ]);
 
-  return { seller, products, total, page, pages: Math.ceil(total / limit) };
+  sellerObj.productCount = productCount;
+  sellerObj.followerCount = followerCount;
+  sellerObj.followingCount = followingCount;
+  
+  if (shopStats) {
+    sellerObj.isPreferred = shopStats.isPreferred;
+    sellerObj.rating = shopStats.ratingAverage;
+    sellerObj.ratingCount = shopStats.ratingCount;
+    sellerObj.chatResponseRate = shopStats.chatResponseRate;
+    sellerObj.cancelDutyRate = shopStats.cancelDutyRate;
+  } else {
+    sellerObj.isPreferred = false;
+    sellerObj.rating = 0;
+    sellerObj.ratingCount = 0;
+    sellerObj.chatResponseRate = 100;
+    sellerObj.cancelDutyRate = 0;
+  }
+
+  return { seller: sellerObj, products, total, page, pages: Math.ceil(total / limit) };
 };
 
 /**
