@@ -17,6 +17,65 @@ import { requireRoles } from "../middlewares/role.middleware.js";
 
 const router = express.Router();
 
+/**
+ * @swagger
+ * /api/attributes/category/{categoryId}:
+ *   get:
+ *     tags: [Attributes]
+ *     summary: Get attributes by category
+ *     description: Fetch all active attributes for a specific category
+ *     parameters:
+ *       - in: path
+ *         name: categoryId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Category ID
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 count:
+ *                   type: integer
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                       slug:
+ *                         type: string
+ *                         example: "material"
+ *                       name:
+ *                         type: string
+ *                         example: "Chất liệu"
+ *                       type:
+ *                         type: string
+ *                         enum: [text, number, date, select]
+ *                         example: "select"
+ *                       options:
+ *                         type: array
+ *                         items:
+ *                           type: string
+ *                         example: ["Cotton", "Polyester", "Linen"]
+ *                       isRequired:
+ *                         type: boolean
+ *                         example: false
+ *                       displayOrder:
+ *                         type: integer
+ *                         example: 1
+ *       404:
+ *         description: Category not found
+ */
+
 // Public routes
 router.get("/", getAttributes);
 router.get("/category/:categoryId", getAttributesByCategory);

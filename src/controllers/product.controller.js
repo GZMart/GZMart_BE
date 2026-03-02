@@ -10,6 +10,19 @@ import { asyncHandler } from "../middlewares/async.middleware.js";
 export const createProduct = asyncHandler(async (req, res, next) => {
   const sellerId = req.user?._id;
 
+  // Parse JSON fields from FormData
+  const parseJsonField = (field) => {
+    if (!field) return field;
+    return typeof field === "string" ? JSON.parse(field) : field;
+  };
+
+  // Parse stringified JSON fields from FormData
+  if (req.body.models) req.body.models = parseJsonField(req.body.models);
+  if (req.body.tiers) req.body.tiers = parseJsonField(req.body.tiers);
+  if (req.body.tags) req.body.tags = parseJsonField(req.body.tags);
+  if (req.body.attributes)
+    req.body.attributes = parseJsonField(req.body.attributes);
+
   const { name, categoryId, models } = req.body;
 
   if (!name || !categoryId || !models || models.length === 0) {
@@ -21,7 +34,53 @@ export const createProduct = asyncHandler(async (req, res, next) => {
     );
   }
 
-  const product = await productService.createProduct(req.body, sellerId);
+  // Extract uploaded files from req.files (upload.any() returns array)
+  const uploadedImages = [];
+  let uploadedSizeChart = null;
+  const variantImagesMap = {};
+
+  if (req.files && Array.isArray(req.files)) {
+    req.files.forEach((file) => {
+      const fieldname = file.fieldname;
+
+      if (fieldname === "images") {
+        uploadedImages.push(file.path);
+      } else if (fieldname === "sizeChart") {
+        uploadedSizeChart = file.path;
+      } else if (fieldname.startsWith("variantImages[")) {
+        // Extract tierIndex from fieldname: "variantImages[0-1]" -> "0-1"
+        const match = fieldname.match(/variantImages\[([^\]]+)\]/);
+        if (match) {
+          const tierIndexKey = match[1]; // "0-1"
+          variantImagesMap[tierIndexKey] = file.path; // Cloudinary URL
+        }
+      }
+    });
+  }
+
+  // Map variant images to models based on tierIndex
+  if (models && models.length > 0 && Object.keys(variantImagesMap).length > 0) {
+    models.forEach((model) => {
+      if (model.tierIndex && Array.isArray(model.tierIndex)) {
+        const tierIndexKey = model.tierIndex.join("-"); // [0, 1] -> "0-1"
+        if (variantImagesMap[tierIndexKey]) {
+          model.image = variantImagesMap[tierIndexKey];
+        }
+      }
+    });
+  }
+
+  // Merge uploaded images and sizeChart with any existing data from body
+  const productData = {
+    ...req.body,
+    images: uploadedImages.length > 0 ? uploadedImages : req.body.images || [],
+  };
+
+  if (uploadedSizeChart) {
+    productData.sizeChart = uploadedSizeChart;
+  }
+
+  const product = await productService.createProduct(productData, sellerId);
 
   res.status(201).json({
     success: true,
@@ -157,9 +216,73 @@ export const updateProduct = asyncHandler(async (req, res, next) => {
   ];
   restrictedFields.forEach((field) => delete req.body[field]);
 
+  // Parse JSON fields from FormData
+  const parseJsonField = (field) => {
+    if (!field) return field;
+    return typeof field === "string" ? JSON.parse(field) : field;
+  };
+
+  // Parse stringified JSON fields from FormData
+  if (req.body.models) req.body.models = parseJsonField(req.body.models);
+  if (req.body.tiers) req.body.tiers = parseJsonField(req.body.tiers);
+  if (req.body.tags) req.body.tags = parseJsonField(req.body.tags);
+  if (req.body.attributes)
+    req.body.attributes = parseJsonField(req.body.attributes);
+  if (req.body.images) req.body.images = parseJsonField(req.body.images);
+
+  // Extract uploaded files from req.files (upload.any() returns array)
+  const uploadedImages = [];
+  let uploadedSizeChart = null;
+  const variantImagesMap = {};
+
+  if (req.files && Array.isArray(req.files)) {
+    req.files.forEach((file) => {
+      const fieldname = file.fieldname;
+
+      if (fieldname === "images") {
+        uploadedImages.push(file.path);
+      } else if (fieldname === "sizeChart") {
+        uploadedSizeChart = file.path;
+      } else if (fieldname.startsWith("variantImages[")) {
+        // Extract tierIndex from fieldname: "variantImages[0-1]" -> "0-1"
+        const match = fieldname.match(/variantImages\[([^\]]+)\]/);
+        if (match) {
+          const tierIndexKey = match[1]; // "0-1"
+          variantImagesMap[tierIndexKey] = file.path; // Cloudinary URL
+        }
+      }
+    });
+  }
+
+  // Map variant images to models based on tierIndex
+  const models = req.body.models;
+  if (models && models.length > 0 && Object.keys(variantImagesMap).length > 0) {
+    models.forEach((model) => {
+      if (model.tierIndex && Array.isArray(model.tierIndex)) {
+        const tierIndexKey = model.tierIndex.join("-"); // [0, 1] -> "0-1"
+        if (variantImagesMap[tierIndexKey]) {
+          model.image = variantImagesMap[tierIndexKey];
+        }
+      }
+    });
+  }
+
+  // Merge uploaded images with existing images
+  const updateData = { ...req.body };
+
+  if (uploadedImages.length > 0) {
+    // If new images uploaded, merge with existing or replace
+    const existingImages = req.body.images || [];
+    updateData.images = [...existingImages, ...uploadedImages];
+  }
+
+  if (uploadedSizeChart) {
+    updateData.sizeChart = uploadedSizeChart;
+  }
+
   const product = await productService.updateProduct(
     productId,
-    req.body,
+    updateData,
     sellerId,
   );
 
