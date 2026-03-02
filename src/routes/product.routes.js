@@ -16,6 +16,7 @@ import {
   updateProduct,
   deleteProduct,
   getMyProducts,
+  getProductsBySeller,
 } from "../controllers/product.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import upload from "../middlewares/upload.middleware.js";
