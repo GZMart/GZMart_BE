@@ -177,10 +177,9 @@ export const createProduct = async (productData, sellerId) => {
  * (Merged: Dev logic + GZM-13 view increment)
  */
 export const getProductById = async (productId) => {
-  const product = await Product.findById(productId).populate(
-    "categoryId",
-    "name slug",
-  );
+  const product = await Product.findById(productId)
+    .populate("categoryId", "name slug")
+    .populate("sellerId", "fullName avatar email provinceName createdAt aboutMe");
 
   if (!product) {
     throw new ErrorResponse("Product not found", 404);
@@ -197,10 +196,9 @@ export const getProductById = async (productId) => {
  * Get product by Slug
  */
 export const getProductBySlug = async (slug) => {
-  const product = await Product.findOne({ slug }).populate(
-    "categoryId",
-    "name slug",
-  );
+  const product = await Product.findOne({ slug })
+    .populate("categoryId", "name slug")
+    .populate("sellerId", "fullName avatar email provinceName createdAt aboutMe");
 
   if (!product) {
     throw new ErrorResponse("Product not found", 404);
@@ -407,6 +405,7 @@ export const getProductsAdvanced = async (options) => {
   const [products, total] = await Promise.all([
     Product.find(query)
       .populate("categoryId", "name slug")
+      .populate("sellerId", "fullName avatar email provinceName createdAt aboutMe")
       .sort(sortOptions)
       .skip(skip)
       .limit(limit)
@@ -621,17 +620,23 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
   const { page = 1, limit = 20 } = options;
   const skip = (page - 1) * limit;
 
+  // Validate Seller exists
+  const seller = await User.findById(sellerId).select("fullName avatar provinceName createdAt aboutMe role");
+  if (!seller) {
+    throw new ErrorResponse("Seller not found", 404);
+  }
+
   const [products, total] = await Promise.all([
-    Product.find({ sellerId })
+    Product.find({ sellerId, status: "active" })
       .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-    Product.countDocuments({ sellerId }),
+    Product.countDocuments({ sellerId, status: "active" }),
   ]);
 
-  return { products, total, page, pages: Math.ceil(total / limit) };
+  return { seller, products, total, page, pages: Math.ceil(total / limit) };
 };
 
 /**

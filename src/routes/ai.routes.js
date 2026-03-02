@@ -44,15 +44,15 @@ Hãy tư vấn một cách thân thiện, chuyên nghiệp và hữu ích. Nếu
 
 Câu hỏi của khách hàng: ${message}`;
 
-    console.log(`Calling Gemini SDK with model: ${MODEL_NAME}`);
-    
-    // Generate stream
-    const result = await model.generateContentStream(systemPrompt);
-
     // Set headers
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+
+    console.log(`Calling Gemini SDK with model: ${MODEL_NAME}`);
+    
+    // Generate stream
+    const result = await model.generateContentStream(systemPrompt);
 
     let fullText = '';
 

@@ -453,6 +453,7 @@ export const getMyProducts = asyncHandler(async (req, res, next) => {
 
 /**
  * @desc    Get products by seller (Public)
+ */
 export const getProductsBySeller = asyncHandler(async (req, res, next) => {
   const { sellerId } = req.params;
   const { page, limit } = req.query;
@@ -470,7 +471,10 @@ export const getProductsBySeller = asyncHandler(async (req, res, next) => {
       page: result.page,
       pages: result.pages,
     },
-    data: result.products,
+    data: {
+      seller: result.seller,
+      products: result.products
+    },
   });
 });
 
