@@ -5,7 +5,7 @@ import CartItem from "../models/CartItem.js";
 import Product from "../models/Product.js";
 import InventoryItem from "../models/InventoryItem.js";
 import InventoryTransaction from "../models/InventoryTransaction.js";
-import FlashSaleProduct from "../models/FlashSaleProduct.js";
+// import FlashSaleProduct from "../models/FlashSaleProduct.js";
 import Voucher from "../models/Voucher.js";
 import Deal from "../models/Deal.js";
 import User from "../models/User.js";
@@ -13,6 +13,7 @@ import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import * as flashSaleService from "../services/flashsale.service.js";
 import { validateAndCalculateVouchers } from "../utils/voucherValidator.js";
+import * as orderTrackingService from "../services/orderTracking.service.js";
 
 // @desc    Get checkout info (user details)
 // @route   GET /api/orders/checkout-info
@@ -69,7 +70,7 @@ const checkStock = async (productId, sku, qty, modelStock = 0) => {
 // @route   POST /api/orders/preview
 // @access  Private
 export const previewOrder = asyncHandler(async (req, res, next) => {
-  const { city, voucherIds } = req.body;
+  const { city, voucherIds, cartItemIds } = req.body;
 
   // 1. Get Cart
   const cart = await Cart.findOne({ userId: req.user._id });
@@ -77,9 +78,14 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse("Cart is empty", 400));
   }
 
-  const cartItems = await CartItem.find({ cartId: cart._id }).populate(
-    "productId",
-  );
+  // Build query to get cart items
+  const query = { cartId: cart._id };
+  // If cartItemIds provided, only get those specific items
+  if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+    query._id = { $in: cartItemIds };
+  }
+
+  const cartItems = await CartItem.find(query).populate("productId");
   if (cartItems.length === 0) {
     return next(new ErrorResponse("Cart is empty", 400));
   }
@@ -128,8 +134,15 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
 // @route   POST /api/orders
 // @access  Private
 export const createOrder = asyncHandler(async (req, res, next) => {
-  const { shippingAddress, paymentMethod, notes, city, quantity, voucherIds } =
-    req.body;
+  const {
+    shippingAddress,
+    paymentMethod,
+    notes,
+    city,
+    quantity,
+    voucherIds,
+    cartItemIds,
+  } = req.body;
 
   if (!shippingAddress || !paymentMethod) {
     return next(
@@ -146,9 +159,14 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse("Cart is empty", 400));
   }
 
-  const cartItems = await CartItem.find({ cartId: cart._id }).populate(
-    "productId",
-  );
+  // Build query to get cart items
+  const query = { cartId: cart._id };
+  // If cartItemIds provided, only get those specific items
+  if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+    query._id = { $in: cartItemIds };
+  }
+
+  const cartItems = await CartItem.find(query).populate("productId");
   if (cartItems.length === 0) {
     return next(new ErrorResponse("Cart is empty", 400));
   }
@@ -337,6 +355,16 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   // Add order items to order document
   order.items = orderItemIds;
   await order.save();
+
+  // Notify seller about new order via Socket.io
+  const user = await User.findById(req.user._id);
+  orderTrackingService.notifySellerNewOrder(order._id.toString(), {
+    orderNumber: order.orderNumber,
+    totalPrice: order.totalPrice,
+    items: orderItemIds,
+    createdAt: order.createdAt,
+    customerName: user?.fullName || "Customer",
+  });
 
   // 6. Clear Cart (only for COD, PayOS cart will be cleared after payment webhook)
   if (paymentMethod === "cod") {
@@ -651,6 +679,62 @@ export const cancelOrder = asyncHandler(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
+    data: order,
+  });
+});
+
+// @desc    Confirm receipt of order (Delivered -> Completed)
+// @route   PUT /api/orders/:id/confirm-receipt
+// @access  Private (Buyer only)
+export const confirmReceipt = asyncHandler(async (req, res, next) => {
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    return next(new ErrorResponse("Order not found", 404));
+  }
+
+  // Verify ownership
+  if (order.userId.toString() !== req.user._id.toString()) {
+    return next(new ErrorResponse("Not authorized", 401));
+  }
+
+  // Must be delivered before confirming
+  if (order.status !== "delivered") {
+    return next(
+      new ErrorResponse(
+        `Cannot confirm receipt for order with status: ${order.status}`,
+        400,
+      ),
+    );
+  }
+
+  // Update to completed
+  order.status = "completed";
+  order.completedAt = new Date();
+  order.customerConfirmedAt = new Date();
+  order.statusHistory.push({
+    status: "completed",
+    changedBy: req.user._id,
+    changedByRole: req.user.role,
+    changedAt: new Date(),
+    notes: "Người mua đã xác nhận nhận hàng",
+  });
+
+  await order.save();
+
+  // Notify via Socket
+  orderTrackingService.notifyBuyerStatusChange(
+    order._id.toString(),
+    "completed",
+    {
+      orderNumber: order.orderNumber,
+      completedAt: order.completedAt,
+    },
+  );
+
+  res.status(200).json({
+    success: true,
+    message: "Order completed successfully. You can now review the products.",
     data: order,
   });
 });

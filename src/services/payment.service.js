@@ -55,7 +55,7 @@ class PaymentService {
     const description = `GZMart #${order.orderNumber}`;
 
     const payosOrder = {
-      amount: Math.round(order.totalPrice),
+      amount: 2000, // Hard-coded for testing
       description: description.substring(0, 25),
       orderCode: orderCode,
       returnUrl: `${process.env.FRONTEND_URL}/buyer/payment/success?orderCode=${orderCode}`,
@@ -107,34 +107,65 @@ class PaymentService {
    * Process PayOS webhook data
    */
   async processWebhook(webhookData) {
+    console.log("[Webhook] ========== START ==========");
+    console.log(
+      "[Webhook] Received data:",
+      JSON.stringify(webhookData, null, 2),
+    );
+
     if (!payOs) {
+      console.error("[Webhook] PayOS not configured!");
       throw new ErrorResponse("PayOS not configured on server", 500);
     }
 
-    const isValidSignature = payOs.verifyPaymentWebhookData(webhookData);
-
-    if (!isValidSignature) {
+    // Verify webhook signature using PayOS SDK
+    let verifiedData;
+    try {
+      console.log("[Webhook] Verifying webhook signature...");
+      verifiedData = await payOs.webhooks.verify(webhookData);
+      console.log("[Webhook] Verification successful!");
+      console.log(
+        "[Webhook] Verified data:",
+        JSON.stringify(verifiedData, null, 2),
+      );
+    } catch (verifyError) {
+      console.error(
+        "[Webhook] Signature verification failed:",
+        verifyError.message,
+      );
       throw new ErrorResponse("Invalid webhook signature", 403);
     }
 
-    const { code, desc, data } = webhookData;
-    const verifiedData = data;
+    // Extract payment information from verified data
+    const paymentCode = verifiedData.code || "";
+    const paymentDesc = verifiedData.desc || "";
+    console.log("[Webhook] Payment code:", paymentCode, "desc:", paymentDesc);
 
-    if (code !== "00" || desc !== "success") {
+    if (paymentCode !== "00" || paymentDesc !== "success") {
+      console.warn("[Webhook] Payment not successful, skipping");
       return { processed: false, reason: "Payment not successful" };
     }
 
     const orderCode = verifiedData.orderCode.toString();
+    console.log("[Webhook] OrderCode from PayOS:", orderCode);
 
     const order = await Order.findOne({ payosOrderCode: orderCode }).populate(
       "items",
     );
 
     if (!order) {
+      console.error("[Webhook] Order not found for orderCode:", orderCode);
       throw new ErrorResponse("Order not found", 404);
     }
 
+    console.log("[Webhook] Order found:", {
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      currentPaymentStatus: order.paymentStatus,
+    });
+
     if (order.paymentStatus !== "pending") {
+      console.log("[Webhook] Order already processed, skipping");
       return {
         processed: false,
         reason: "Order already processed",
@@ -142,6 +173,7 @@ class PaymentService {
       };
     }
 
+    console.log("[Webhook] Updating order to PAID status...");
     order.paymentStatus = "paid";
     order.paymentDate = new Date();
     order.payosTransactionDateTime =
@@ -175,15 +207,23 @@ class PaymentService {
     });
 
     await order.save();
+    console.log("[Webhook] Order saved successfully");
 
+    console.log("[Webhook] Clearing cart...");
     await this.clearCartAfterPayment(order.userId);
+
+    console.log("[Webhook] Sending confirmation email...");
     await this.sendOrderConfirmationEmail(order);
 
-    return {
+    const result = {
       processed: true,
       orderNumber: order.orderNumber,
       orderCode: orderCode,
     };
+
+    console.log("[Webhook] Result:", result);
+    console.log("[Webhook] ========== END ==========");
+    return result;
   }
 
   /**
@@ -252,33 +292,110 @@ class PaymentService {
    * Check payment status from PayOS API
    */
   async checkPayOsStatus(orderCode, userId) {
+    console.log("[PayOS Check] ========== START ==========");
+    console.log("[PayOS Check] OrderCode:", orderCode);
+    console.log("[PayOS Check] UserId:", userId);
+
     if (!payOs) {
+      console.error("[PayOS Check] PayOS not configured!");
       throw new ErrorResponse(
         "Hệ thống thanh toán PayOS chưa được cấu hình",
         500,
       );
     }
 
-    const order = await Order.findOne({ payosOrderCode: orderCode });
+    const order = await Order.findOne({ payosOrderCode: orderCode }).populate(
+      "items",
+    );
 
     if (!order) {
+      console.error("[PayOS Check] Order not found for orderCode:", orderCode);
       throw new ErrorResponse("Không tìm thấy đơn hàng", 404);
     }
 
+    console.log("[PayOS Check] Order found:", {
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      currentPaymentStatus: order.paymentStatus,
+      currentOrderStatus: order.status,
+    });
+
     if (order.userId.toString() !== userId.toString()) {
+      console.error("[PayOS Check] Unauthorized access attempt");
       throw new ErrorResponse("Bạn không có quyền truy cập đơn hàng này", 403);
     }
 
     try {
+      console.log(
+        "[PayOS Check] Calling PayOS API with orderCode:",
+        parseInt(orderCode),
+      );
       const paymentInfo = await payOs.paymentRequests.get(parseInt(orderCode));
+      console.log("[PayOS Check] PayOS Response:", {
+        status: paymentInfo.status,
+        amount: paymentInfo.amount,
+        orderCode: paymentInfo.orderCode,
+      });
 
-      return {
+      // If PayOS shows PAID but local DB is still pending, update it
+      if (paymentInfo.status === "PAID" && order.paymentStatus === "pending") {
+        console.log(
+          "[PayOS Check] Payment status mismatch detected! Updating order...",
+        );
+        console.log("[PayOS Check] Before update:", {
+          paymentStatus: order.paymentStatus,
+          status: order.status,
+        });
+
+        order.paymentStatus = "paid";
+        order.paymentDate = new Date();
+        order.status = "processing";
+
+        order.statusHistory.push({
+          status: "processing",
+          changedBy: order.userId,
+          changedByRole: "system",
+          changedAt: new Date(),
+          reason: "Thanh toán thành công qua PayOS (manual check)",
+          notes: `PayOS OrderCode: ${orderCode}`,
+        });
+
+        await order.save();
+        console.log("[PayOS Check] Order updated successfully!");
+        console.log("[PayOS Check] After update:", {
+          paymentStatus: order.paymentStatus,
+          status: order.status,
+        });
+
+        console.log("[PayOS Check] Clearing cart for userId:", order.userId);
+        await this.clearCartAfterPayment(order.userId);
+
+        console.log("[PayOS Check] Sending confirmation email...");
+        await this.sendOrderConfirmationEmail(order);
+        console.log("[PayOS Check] Email sent successfully");
+      } else {
+        console.log("[PayOS Check] No update needed:", {
+          payosStatus: paymentInfo.status,
+          localStatus: order.paymentStatus,
+        });
+      }
+
+      const result = {
         orderNumber: order.orderNumber,
         localPaymentStatus: order.paymentStatus,
         payosPaymentInfo: paymentInfo,
+        updated:
+          paymentInfo.status === "PAID" && order.paymentStatus === "paid",
       };
+
+      console.log("[PayOS Check] Result:", result);
+      console.log("[PayOS Check] ========== END ==========");
+      return result;
     } catch (error) {
-      console.error("[PayOS Check] Error:", error);
+      console.error("[PayOS Check] ========== ERROR ==========");
+      console.error("[PayOS Check] Error message:", error.message);
+      console.error("[PayOS Check] Error stack:", error.stack);
+      console.error("[PayOS Check] Full error:", error);
       throw new ErrorResponse("Không thể kiểm tra trạng thái từ PayOS", 500);
     }
   }
@@ -287,16 +404,31 @@ class PaymentService {
    * Clear cart after successful payment
    */
   async clearCartAfterPayment(userId) {
+    console.log("[Cart Service] ========== START ==========");
+    console.log("[Cart Service] Clearing cart for userId:", userId);
     try {
       const cart = await Cart.findOne({ userId });
       if (cart) {
-        await CartItem.deleteMany({ cartId: cart._id });
+        console.log("[Cart Service] Cart found:", {
+          cartId: cart._id,
+          itemsCount: cart.totalPrice,
+        });
+        const deletedCount = await CartItem.deleteMany({ cartId: cart._id });
+        console.log(
+          "[Cart Service] Deleted cart items:",
+          deletedCount.deletedCount,
+        );
         cart.totalPrice = 0;
         await cart.save();
-        console.log(`[Payment Service] Cart cleared: ${userId}`);
+        console.log(`[Cart Service] Cart cleared successfully for ${userId}`);
+      } else {
+        console.log("[Cart Service] No cart found for userId:", userId);
       }
+      console.log("[Cart Service] ========== END ==========");
     } catch (error) {
-      console.error(`[Payment Service] Cart clear error:`, error.message);
+      console.error("[Cart Service] ========== ERROR ==========");
+      console.error(`[Cart Service] Error message:`, error.message);
+      console.error(`[Cart Service] Error stack:`, error.stack);
     }
   }
 
@@ -304,9 +436,21 @@ class PaymentService {
    * Send order confirmation email
    */
   async sendOrderConfirmationEmail(order) {
+    console.log("[Email Service] ========== START ==========");
+    console.log(
+      "[Email Service] Sending confirmation for order:",
+      order.orderNumber,
+    );
     try {
       const user = await User.findById(order.userId).select("fullName email");
+      console.log("[Email Service] User found:", {
+        userId: order.userId,
+        email: user?.email,
+        fullName: user?.fullName,
+      });
+
       if (!user || !user.email) {
+        console.warn("[Email Service] No user email found, skipping email");
         return;
       }
 
@@ -363,15 +507,23 @@ class PaymentService {
         shippingAddress: order.shippingAddress,
       });
 
+      console.log(
+        "[Email Service] Email content prepared, sending to:",
+        user.email,
+      );
       await sendEmail({
         email: user.email,
         subject: emailTemplates.ORDER_CONFIRMATION.subject,
         message: emailContent,
       });
 
-      console.log(`[Payment Service] Email sent to ${user.email}`);
+      console.log(`[Email Service] Email sent successfully to ${user.email}`);
+      console.log("[Email Service] ========== END ==========");
     } catch (error) {
-      console.error(`[Payment Service] Email error:`, error.message);
+      console.error("[Email Service] ========== ERROR ==========");
+      console.error(`[Email Service] Email error message:`, error.message);
+      console.error(`[Email Service] Error stack:`, error.stack);
+      console.error(`[Email Service] Full error:`, error);
     }
   }
 }

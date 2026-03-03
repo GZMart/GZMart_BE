@@ -1,10 +1,10 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const orderSchema = new mongoose.Schema(
   {
     userId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      ref: "User",
       required: true,
     },
     orderNumber: {
@@ -15,18 +15,21 @@ const orderSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: [
-        'pending',
-        'processing',
-        'shipped',
-        'delivered',
-        'delivered_pending_confirmation',
-        'completed',
-        'cancelled',
-        'refunded',
-        'refund_pending',
-        'under_investigation',
+        "pending",
+        "confirmed",
+        "packing",
+        "shipping",
+        "delivered",
+        "completed",
+        "processing",
+        "shipped",
+        "delivered_pending_confirmation",
+        "cancelled",
+        "refunded",
+        "refund_pending",
+        "under_investigation",
       ],
-      default: 'pending',
+      default: "pending",
     },
     totalPrice: {
       type: Number,
@@ -58,8 +61,9 @@ const orderSchema = new mongoose.Schema(
     discountAmount: {
       type: Number,
       default: 0,
-      min: [0, 'Discount amount must be non-negative'],
-      description: 'Total discount value from flash sales and coupons in currency units',
+      min: [0, "Discount amount must be non-negative"],
+      description:
+        "Total discount value from flash sales and coupons in currency units",
     },
     discountCode: {
       type: String,
@@ -67,12 +71,12 @@ const orderSchema = new mongoose.Schema(
     paymentMethod: {
       type: String,
       required: true,
-      enum: ['vnpay', 'cash_on_delivery', 'payos'],
+      enum: ["vnpay", "cash_on_delivery", "payos"],
     },
     paymentStatus: {
       type: String,
-      enum: ['pending', 'paid', 'failed', 'refunded', 'refund_pending'],
-      default: 'pending',
+      enum: ["pending", "paid", "failed", "refunded", "refund_pending"],
+      default: "pending",
     },
     paymentDate: {
       type: Date,
@@ -90,6 +94,22 @@ const orderSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // ===== Order Tracking (Demo 60s) =====
+    trackingCoordinates: {
+      seller: {
+        lat: Number,
+        lng: Number,
+        address: String,
+      },
+      buyer: {
+        lat: Number,
+        lng: Number,
+        address: String,
+      },
+    },
+    shippingStartedAt: Date,
+    shippingEstimatedArrival: Date,
+    deliveryTimerId: String, // Store setTimeout ID for cleanup if needed
     // ===== VNPay specific =====
     transactionId: String,
     vnpResponseCode: String,
@@ -136,18 +156,44 @@ const orderSchema = new mongoose.Schema(
     // ===== Delivery / Shipper =====
     shipperId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User', // Assuming shipper is a User
+      ref: "User", // Assuming shipper is a User
     },
     assignedAt: Date,
     autoCompleteDueAt: Date,
     completedAt: Date,
     customerConfirmedAt: Date,
-    
+
+    // ===== GHN (Giao Hàng Nhanh) Integration =====
+    ghnOrderCode: String, // GHN order code
+    ghnSortingCode: String, // GHN sorting code
+    ghnStatus: String, // Current GHN status
+    ghnExpectedDeliveryTime: Date, // Expected delivery time from GHN
+    ghnLeadTime: Date, // Lead time from GHN
+    ghnShippingFee: Number, // Shipping fee from GHN
+    ghnOrderInfo: {
+      // Store full GHN order response
+      type: mongoose.Schema.Types.Mixed,
+    },
+    ghnLastUpdate: Date, // Last update from GHN webhook
+    ghnLogs: [
+      // Track all GHN status changes
+      {
+        status: String,
+        description: String,
+        updatedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        location: String,
+        reason: String,
+      },
+    ],
+
     // ===== Order Items & History =====
     items: [
       {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'OrderItem',
+        ref: "OrderItem",
       },
     ],
     statusHistory: [
@@ -155,7 +201,7 @@ const orderSchema = new mongoose.Schema(
         status: String,
         changedBy: {
           type: mongoose.Schema.Types.ObjectId,
-          ref: 'User',
+          ref: "User",
         },
         changedByRole: String,
         changedAt: {
@@ -170,7 +216,7 @@ const orderSchema = new mongoose.Schema(
   {
     timestamps: true,
     versionKey: false,
-  }
+  },
 );
 
-export default mongoose.model('Order', orderSchema);
+export default mongoose.model("Order", orderSchema);

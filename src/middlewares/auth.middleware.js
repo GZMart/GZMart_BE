@@ -1,9 +1,9 @@
-import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
-import TokenBlacklist from '../models/TokenBlacklist.js';
-import { ErrorResponse } from '../utils/errorResponse.js';
-import logger from '../utils/logger.js';
-import { ROLES } from './role.middleware.js';
+import jwt from "jsonwebtoken";
+import User from "../models/User.js";
+import TokenBlacklist from "../models/TokenBlacklist.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
+import logger from "../utils/logger.js";
+import { ROLES } from "./role.middleware.js";
 
 /**
  * Protect routes - Check if user is authenticated
@@ -15,63 +15,77 @@ export const protect = async (req, res, next) => {
     // Get token from header
     const authHeader = req.headers.authorization;
 
-    console.log('Auth middleware - Headers:', {
-      authHeader: authHeader ? 'exists' : 'missing',
-      contentType: req.headers['content-type'],
-      path: req.path,
-      method: req.method,
-    });
+    // console.log('Auth middleware - Headers:', {
+    //   authHeader: authHeader ? 'exists' : 'missing',
+    //   contentType: req.headers['content-type'],
+    //   path: req.path,
+    //   method: req.method,
+    // });
 
-    if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-      token = authHeader.split(' ')[1];
-      console.log(
-        'Token extracted from header:',
-        token ? `${token.substring(0, 15)}...` : 'invalid token'
-      );
+    if (
+      authHeader &&
+      typeof authHeader === "string" &&
+      authHeader.startsWith("Bearer ")
+    ) {
+      token = authHeader.split(" ")[1];
+      // console.log(
+      //   'Token extracted from header:',
+      //   token ? `${token.substring(0, 15)}...` : 'invalid token'
+      // );
     }
 
-    if (!token || token === 'undefined' || token === 'null' || token.trim() === '') {
-      console.log('No valid token provided');
-      return next(new ErrorResponse('No valid token provided', 401));
+    if (
+      !token ||
+      token === "undefined" ||
+      token === "null" ||
+      token.trim() === ""
+    ) {
+      console.log("No valid token provided");
+      return next(new ErrorResponse("No valid token provided", 401));
     }
 
     try {
       // Check if token is blacklisted
       const blacklistedToken = await TokenBlacklist.findOne({ token });
       if (blacklistedToken) {
-        console.log('Token is blacklisted');
-        return next(new ErrorResponse('Token has been invalidated', 401));
+        console.log("Token is blacklisted");
+        return next(new ErrorResponse("Token has been invalidated", 401));
       }
 
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      console.log('Token decoded successfully:', { id: decoded.id, userId: decoded.userId });
+      // console.log('Token decoded successfully:', { id: decoded.id, userId: decoded.userId });
 
       const userId = decoded.id || decoded.userId;
       // Get user from token
       const user = await User.findById(decoded.id);
 
-      console.log('User found from token:', user ? `${user._id} (${user.email})` : 'No user found');
+      // console.log('User found from token:', user ? `${user._id} (${user.email})` : 'No user found');
 
       if (!user) {
-        console.log('User not found with ID:', decoded.id);
-        return next(new ErrorResponse('User not found', 404));
+        console.log("User not found with ID:", decoded.id);
+        return next(new ErrorResponse("User not found", 404));
       }
 
       // Check if user is verified
       if (!user.isVerified) {
-        console.log('User not verified:', user._id);
-        return next(new ErrorResponse('Please verify your email before accessing this route', 401));
+        console.log("User not verified:", user._id);
+        return next(
+          new ErrorResponse(
+            "Please verify your email before accessing this route",
+            401,
+          ),
+        );
       }
 
       // Check if user is banned
       if (!user.status) {
-        console.log('User is banned:', user._id);
+        console.log("User is banned:", user._id);
         return next(
           new ErrorResponse(
-            'Your account has been deactivated. Please contact support for assistance.',
-            403
-          )
+            "Your account has been deactivated. Please contact support for assistance.",
+            403,
+          ),
         );
       }
 
@@ -79,20 +93,22 @@ export const protect = async (req, res, next) => {
       req.user = user;
       next();
     } catch (error) {
-      logger.error('Token verification failed', {
+      logger.error("Token verification failed", {
         error: error.message,
         stack: error.stack,
-        token: token ? `${token.substring(0, 15)}...` : 'invalid token',
+        token: token ? `${token.substring(0, 15)}...` : "invalid token",
       });
-      console.error('Token verification failed:', error.message);
-      return next(new ErrorResponse('Not authorized to access this route', 401));
+      console.error("Token verification failed:", error.message);
+      return next(
+        new ErrorResponse("Not authorized to access this route", 401),
+      );
     }
   } catch (error) {
-    logger.error('Auth middleware error', {
+    logger.error("Auth middleware error", {
       error: error.message,
       stack: error.stack,
     });
-    console.error('Auth middleware general error:', error.message);
+    console.error("Auth middleware general error:", error.message);
     next(error);
   }
 };
@@ -105,8 +121,11 @@ export const optionalAuth = async (req, res, next) => {
   try {
     let token;
 
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-      token = req.headers.authorization.split(' ')[1];
+    if (
+      req.headers.authorization &&
+      req.headers.authorization.startsWith("Bearer")
+    ) {
+      token = req.headers.authorization.split(" ")[1];
     }
 
     if (!token) {
@@ -126,8 +145,8 @@ export const optionalAuth = async (req, res, next) => {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const user = await User.findById(decoded.id);
       // Trong protect
-      console.log('Decoded token:', decoded);
-      console.log('User found:', user);
+      console.log("Decoded token:", decoded);
+      console.log("User found:", user);
 
       // Trong requireRoles hoặc authorize
 
@@ -144,7 +163,7 @@ export const optionalAuth = async (req, res, next) => {
       next();
     }
   } catch (error) {
-    logger.error('Optional auth middleware error', {
+    logger.error("Optional auth middleware error", {
       error: error.message,
       stack: error.stack,
     });
@@ -160,10 +179,13 @@ export const authorize = (...roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
       return next(
-        new ErrorResponse(`User role ${req.user.role} is not authorized to access this route`, 403)
+        new ErrorResponse(
+          `User role ${req.user.role} is not authorized to access this route`,
+          403,
+        ),
       );
     }
-    console.log('User role:', req.user.role);
+    console.log("User role:", req.user.role);
 
     next();
   };
@@ -173,8 +195,13 @@ export const authorize = (...roles) => {
  * Middleware kiểm tra quyền admin
  */
 export const requireAdmin = (req, res, next) => {
-  if (req.user && (req.user.role === 'admin' || req.user.role === 'superadmin')) {
+  if (
+    req.user &&
+    (req.user.role === "admin" || req.user.role === "superadmin")
+  ) {
     return next();
   }
-  return res.status(403).json({ success: false, message: 'Admin access required' });
+  return res
+    .status(403)
+    .json({ success: false, message: "Admin access required" });
 };
