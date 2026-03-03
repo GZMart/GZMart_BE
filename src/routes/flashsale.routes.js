@@ -1,6 +1,7 @@
 import express from "express";
 import {
   createFlashSale,
+  createBatchFlashSale,
   getFlashSales,
   getFlashSaleDetail,
   getActiveFlashSales,
@@ -238,6 +239,13 @@ router.post(
 );
 
 // ============= SPECIFIC ROUTES BEFORE PARAMETERIZED ROUTES =============
+
+router.post(
+  "/batch",
+  protect,
+  authorize("seller", "admin"),
+  asyncHandler(createBatchFlashSale),
+);
 
 /**
  * @swagger

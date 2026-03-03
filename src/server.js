@@ -26,6 +26,7 @@ import cartRoutes from "./routes/cart.routes.js";
 import orderRoutes from "./routes/order.routes.js";
 import orderSellerRoutes from "./routes/orderSeller.routes.js";
 import flashSaleRoutes from "./routes/flashsale.routes.js";
+import { syncDealStatuses } from "./services/flashsale.service.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
 import voucherRoutes from "./routes/voucher.routes.js";
@@ -263,6 +264,16 @@ server.listen(PORT, HOST, () => {
   // Initialize cron jobs
   initShopStatisticJobs();
 });
+
+// Sync flash-sale / deal statuses on boot then every 60 s
+syncDealStatuses().catch((err) =>
+  logger.error("syncDealStatuses (boot):", err),
+);
+setInterval(() => {
+  syncDealStatuses().catch((err) =>
+    logger.error("syncDealStatuses (interval):", err),
+  );
+}, 60_000);
 
 export default app;
 export { io, server };
