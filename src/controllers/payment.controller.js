@@ -122,14 +122,22 @@ export const cancelPayment = asyncHandler(async (req, res, next) => {
  * @access  Private
  */
 export const checkPaymentFromPayOS = asyncHandler(async (req, res, next) => {
+  console.log("[Payment Controller] checkPaymentFromPayOS - Request received");
   const { orderCode } = req.params;
   const userId = req.user._id;
+  console.log("[Payment Controller] OrderCode:", orderCode);
+  console.log("[Payment Controller] UserId:", userId);
 
   if (!orderCode) {
+    console.error("[Payment Controller] Missing orderCode");
     return next(new ErrorResponse("Vui lòng cung cấp mã đơn hàng", 400));
   }
 
+  console.log(
+    "[Payment Controller] Calling paymentService.checkPayOsStatus...",
+  );
   const result = await paymentService.checkPayOsStatus(orderCode, userId);
+  console.log("[Payment Controller] Result:", result);
 
   res.status(200).json({
     success: true,

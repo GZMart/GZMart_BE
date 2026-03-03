@@ -1,6 +1,39 @@
-import * as flashSaleService from '../services/flashsale.service.js';
-import { ErrorResponse } from '../utils/errorResponse.js';
-import { asyncHandler } from '../middlewares/async.middleware.js';
+import * as flashSaleService from "../services/flashsale.service.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
+import { asyncHandler } from "../middlewares/async.middleware.js";
+
+/**
+ * @desc    Create multiple flash-sale deals for one product in a single request
+ * @route   POST /api/flash-sales/batch
+ * @access  Private (Seller, Admin)
+ */
+export const createBatchFlashSale = asyncHandler(async (req, res) => {
+  const { productId, startAt, endAt, variants } = req.body;
+
+  if (
+    !productId ||
+    !startAt ||
+    !endAt ||
+    !Array.isArray(variants) ||
+    variants.length === 0
+  ) {
+    throw new ErrorResponse(
+      "Please provide productId, startAt, endAt, and at least one variant",
+      400,
+    );
+  }
+
+  const flashSales = await flashSaleService.createBatchFlashSale({
+    ...req.body,
+    sellerId: req.user?._id,
+  });
+
+  res.status(201).json({
+    success: true,
+    message: `${flashSales.length} flash sale(s) created successfully`,
+    data: flashSales,
+  });
+});
 
 /**
  * @desc    Create a new flash sale for a product
@@ -11,15 +44,24 @@ export const createFlashSale = asyncHandler(async (req, res) => {
   const { productId, salePrice, totalQuantity, startAt, endAt } = req.body;
 
   // Validation
-  if (!productId || salePrice === undefined || !totalQuantity || !startAt || !endAt) {
-    throw new ErrorResponse('Please provide productId, salePrice, totalQuantity, startAt, and endAt', 400);
+  if (
+    !productId ||
+    salePrice === undefined ||
+    !totalQuantity ||
+    !startAt ||
+    !endAt
+  ) {
+    throw new ErrorResponse(
+      "Please provide productId, salePrice, totalQuantity, startAt, and endAt",
+      400,
+    );
   }
 
   const flashSale = await flashSaleService.createFlashSale(req.body);
 
   res.status(201).json({
     success: true,
-    message: 'Flash sale created successfully',
+    message: "Flash sale created successfully",
     data: flashSale,
   });
 });
@@ -36,7 +78,7 @@ export const getFlashSales = asyncHandler(async (req, res, next) => {
     page: Number(page) || 1,
     limit: Number(limit) || 10,
     status,
-    sortBy: sortBy || 'createdAt',
+    sortBy: sortBy || "createdAt",
   });
 
   res.status(200).json({
@@ -51,7 +93,9 @@ export const getFlashSales = asyncHandler(async (req, res, next) => {
  * @access  Public
  */
 export const getFlashSaleDetail = asyncHandler(async (req, res, next) => {
-  const data = await flashSaleService.getFlashSaleDetail(req.params.flashSaleId);
+  const data = await flashSaleService.getFlashSaleDetail(
+    req.params.flashSaleId,
+  );
 
   res.status(200).json({
     success: true,
@@ -83,12 +127,12 @@ export const addProductsToFlashSale = asyncHandler(async (req, res, next) => {
   const { products } = req.body;
 
   if (!products || !Array.isArray(products)) {
-    return next(new ErrorResponse('Please provide products array', 400));
+    return next(new ErrorResponse("Please provide products array", 400));
   }
 
   const createdProducts = await flashSaleService.addProductsToFlashSale(
     req.params.flashSaleId,
-    products
+    products,
   );
 
   res.status(201).json({
@@ -106,10 +150,13 @@ export const addProductsToFlashSale = asyncHandler(async (req, res, next) => {
 export const getFlashSaleProducts = asyncHandler(async (req, res, next) => {
   const { page, limit } = req.query;
 
-  const result = await flashSaleService.getFlashSaleProducts(req.params.flashSaleId, {
-    page: Number(page) || 1,
-    limit: Number(limit) || 10,
-  });
+  const result = await flashSaleService.getFlashSaleProducts(
+    req.params.flashSaleId,
+    {
+      page: Number(page) || 1,
+      limit: Number(limit) || 10,
+    },
+  );
 
   res.status(200).json({
     success: true,
@@ -123,7 +170,9 @@ export const getFlashSaleProducts = asyncHandler(async (req, res, next) => {
  * @access  Public
  */
 export const getFlashSaleProduct = asyncHandler(async (req, res, next) => {
-  const product = await flashSaleService.getFlashSaleProduct(req.params.flashSaleId);
+  const product = await flashSaleService.getFlashSaleProduct(
+    req.params.flashSaleId,
+  );
 
   res.status(200).json({
     success: true,
@@ -137,7 +186,7 @@ export const getFlashSaleProduct = asyncHandler(async (req, res, next) => {
  * @access  Private (Seller, Admin)
  */
 export const updateFlashSale = asyncHandler(async (req, res, next) => {
-  const allowedFields = ['salePrice', 'totalQuantity', 'startAt', 'endAt'];
+  const allowedFields = ["salePrice", "totalQuantity", "startAt", "endAt"];
   const updateData = {};
 
   allowedFields.forEach((field) => {
@@ -146,11 +195,14 @@ export const updateFlashSale = asyncHandler(async (req, res, next) => {
     }
   });
 
-  const flashSale = await flashSaleService.updateFlashSale(req.params.flashSaleId, updateData);
+  const flashSale = await flashSaleService.updateFlashSale(
+    req.params.flashSaleId,
+    updateData,
+  );
 
   res.status(200).json({
     success: true,
-    message: 'Flash sale updated successfully',
+    message: "Flash sale updated successfully",
     data: flashSale,
   });
 });
@@ -161,7 +213,7 @@ export const updateFlashSale = asyncHandler(async (req, res, next) => {
  * @access  Private (Seller, Admin)
  */
 export const updateFlashSaleProduct = asyncHandler(async (req, res, next) => {
-  const allowedFields = ['salePrice', 'totalQuantity'];
+  const allowedFields = ["salePrice", "totalQuantity"];
   const updateData = {};
 
   allowedFields.forEach((field) => {
@@ -172,12 +224,12 @@ export const updateFlashSaleProduct = asyncHandler(async (req, res, next) => {
 
   const product = await flashSaleService.updateFlashSaleProduct(
     req.params.flashSaleId,
-    updateData
+    updateData,
   );
 
   res.status(200).json({
     success: true,
-    message: 'Flash sale updated successfully',
+    message: "Flash sale updated successfully",
     data: product,
   });
 });
@@ -187,15 +239,19 @@ export const updateFlashSaleProduct = asyncHandler(async (req, res, next) => {
  * @route   DELETE /api/flash-sales/:flashSaleId
  * @access  Private (Seller, Admin)
  */
-export const removeProductFromFlashSale = asyncHandler(async (req, res, next) => {
-  const flashSale = await flashSaleService.removeProductFromFlashSale(req.params.flashSaleId);
+export const removeProductFromFlashSale = asyncHandler(
+  async (req, res, next) => {
+    const flashSale = await flashSaleService.removeProductFromFlashSale(
+      req.params.flashSaleId,
+    );
 
-  res.status(200).json({
-    success: true,
-    message: 'Flash sale removed successfully',
-    data: flashSale,
-  });
-});
+    res.status(200).json({
+      success: true,
+      message: "Flash sale removed successfully",
+      data: flashSale,
+    });
+  },
+);
 
 /**
  * @desc    Delete flash sale
@@ -207,7 +263,7 @@ export const deleteFlashSale = asyncHandler(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    message: 'Flash sale deleted successfully',
+    message: "Flash sale deleted successfully",
     data: {},
   });
 });
@@ -218,7 +274,9 @@ export const deleteFlashSale = asyncHandler(async (req, res, next) => {
  * @access  Private (Seller, Admin)
  */
 export const getFlashSaleStats = asyncHandler(async (req, res, next) => {
-  const stats = await flashSaleService.getFlashSaleStats(req.params.flashSaleId);
+  const stats = await flashSaleService.getFlashSaleStats(
+    req.params.flashSaleId,
+  );
 
   res.status(200).json({
     success: true,
@@ -235,7 +293,7 @@ export const searchFlashSaleProducts = asyncHandler(async (req, res, next) => {
   const { q, page, limit } = req.query;
 
   if (!q) {
-    return next(new ErrorResponse('Please provide search query', 400));
+    return next(new ErrorResponse("Please provide search query", 400));
   }
 
   const result = await flashSaleService.searchFlashSaleProducts(
@@ -244,7 +302,7 @@ export const searchFlashSaleProducts = asyncHandler(async (req, res, next) => {
     {
       page: Number(page) || 1,
       limit: Number(limit) || 10,
-    }
+    },
   );
 
   res.status(200).json({

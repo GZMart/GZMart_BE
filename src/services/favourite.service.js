@@ -77,6 +77,9 @@ class FavouriteService {
         userId,
         products: [productId],
       });
+      // Increment product's wishlistCount
+      await Product.findByIdAndUpdate(productId, { $inc: { wishlistCount: 1 } });
+
       console.log("Created new favourite:", favourite);
       return {
         message: "Product added to favourites successfully",
@@ -98,6 +101,10 @@ class FavouriteService {
 
       favourite.products.push(productId);
       await favourite.save();
+      
+      // Increment product's wishlistCount
+      await Product.findByIdAndUpdate(productId, { $inc: { wishlistCount: 1 } });
+      
       console.log("Updated favourite:", favourite);
       return {
         message: "Product added to favourites successfully",
@@ -126,6 +133,9 @@ class FavouriteService {
 
     favourite.products.splice(productIndex, 1);
     await favourite.save();
+
+    // Decrement product's wishlistCount
+    await Product.findByIdAndUpdate(productId, { $inc: { wishlistCount: -1 } });
 
     return { message: "Product removed from favourites successfully" };
   }

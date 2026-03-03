@@ -16,6 +16,7 @@ import {
   updateProduct,
   deleteProduct,
   getMyProducts,
+  getProductsBySeller,
 } from "../controllers/product.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import upload from "../middlewares/upload.middleware.js";
@@ -361,6 +362,9 @@ router.get(
  *       200:
  *         description: Success
  */
+// Get products by seller (Public)
+router.get("/seller/:sellerId", asyncHandler(getProductsBySeller));
+
 router.get("/:id", asyncHandler(getProduct));
 
 /**
@@ -381,6 +385,30 @@ router.get("/:id", asyncHandler(getProduct));
  */
 router.get("/:id/related", asyncHandler(getRelatedProducts));
 
+/**
+ * @swagger
+ * /api/products/seller/{sellerId}:
+ *   get:
+ *     tags: [Products]
+ *     summary: Get products by seller ID
+ *     parameters:
+ *       - in: path
+ *         name: sellerId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 // Update & Delete product (Seller/Admin only)
 router.put(
   "/:id",

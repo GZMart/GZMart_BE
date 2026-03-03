@@ -2,6 +2,7 @@ import Voucher from "../models/Voucher.js";
 import Cart from "../models/Cart.js";
 import CartItem from "../models/CartItem.js";
 import User from "../models/User.js";
+import Order from "../models/Order.js";
 import { ErrorResponse as ApiError } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 
@@ -241,81 +242,89 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
       (sellerSubtotals[sid] || 0) + item.price * item.quantity;
   }
 
-  const applicableVouchers = vouchers
-    .map((voucher) => {
-      const shopId = voucher.shopId?.toString();
-      const shopSubtotal = sellerSubtotals[shopId] || 0;
+  const applicableVouchers = [];
+  for (const voucher of vouchers) {
+    const shopId = voucher.shopId?.toString();
+    const shopSubtotal = sellerSubtotals[shopId] || 0;
 
-      // Filter product vouchers with specific appliedProducts
-      let applicableProductNames = [];
-      if (voucher.type === "product" && voucher.applyTo === "specific") {
-        const appliedSet = new Set(
-          (voucher.appliedProducts || []).map((p) => (p._id || p).toString()),
-        );
-        const matchingProducts = cartItems.filter((item) =>
-          appliedSet.has(item.productId?._id?.toString()),
-        );
-        if (matchingProducts.length === 0) return null;
-        applicableProductNames = matchingProducts.map(
-          (item) => item.productId.name,
-        );
+    // Filter product vouchers with specific appliedProducts
+    let applicableProductNames = [];
+    if (voucher.type === "product" && voucher.applyTo === "specific") {
+      const appliedSet = new Set(
+        (voucher.appliedProducts || []).map((p) => (p._id || p).toString()),
+      );
+      const matchingProducts = cartItems.filter((item) =>
+        appliedSet.has(item.productId?._id?.toString()),
+      );
+      if (matchingProducts.length === 0) continue;
+      applicableProductNames = matchingProducts.map(
+        (item) => item.productId.name,
+      );
+    }
+
+    // Calculate estimated saving
+    let estimatedSaving = 0;
+    const applicableSubtotal =
+      voucher.type === "product" && voucher.applyTo === "specific"
+        ? cartItems
+            .filter((item) => {
+              const appliedSet = new Set(
+                (voucher.appliedProducts || []).map((p) =>
+                  (p._id || p).toString(),
+                ),
+              );
+              return appliedSet.has(item.productId?._id?.toString());
+            })
+            .reduce((sum, item) => sum + item.price * item.quantity, 0)
+        : shopSubtotal;
+
+    if (voucher.discountType === "amount") {
+      estimatedSaving = Math.min(voucher.discountValue, applicableSubtotal);
+    } else if (voucher.discountType === "percent") {
+      estimatedSaving = Math.round(
+        applicableSubtotal * (voucher.discountValue / 100),
+      );
+      if (voucher.maxDiscountAmount) {
+        estimatedSaving = Math.min(estimatedSaving, voucher.maxDiscountAmount);
       }
+    }
 
-      // Calculate estimated saving
-      let estimatedSaving = 0;
-      const applicableSubtotal =
-        voucher.type === "product" && voucher.applyTo === "specific"
-          ? cartItems
-              .filter((item) => {
-                const appliedSet = new Set(
-                  (voucher.appliedProducts || []).map((p) =>
-                    (p._id || p).toString(),
-                  ),
-                );
-                return appliedSet.has(item.productId?._id?.toString());
-              })
-              .reduce((sum, item) => sum + item.price * item.quantity, 0)
-          : shopSubtotal;
+    // Check minBasketPrice eligibility
+    const meetsMinBasket =
+      !voucher.minBasketPrice || applicableSubtotal >= voucher.minBasketPrice;
 
-      if (voucher.discountType === "amount") {
-        estimatedSaving = Math.min(voucher.discountValue, applicableSubtotal);
-      } else if (voucher.discountType === "percent") {
-        estimatedSaving = Math.round(
-          applicableSubtotal * (voucher.discountValue / 100),
-        );
-        if (voucher.maxDiscountAmount) {
-          estimatedSaving = Math.min(
-            estimatedSaving,
-            voucher.maxDiscountAmount,
-          );
-        }
+    // Hide voucher entirely if buyer exceeded maxPerBuyer
+    if (voucher.maxPerBuyer) {
+      const buyerUsageCount = await Order.countDocuments({
+        userId: req.user._id,
+        discountCode: { $regex: voucher.code, $options: "i" },
+        status: { $nin: ["cancelled", "refunded"] },
+      });
+      if (buyerUsageCount >= voucher.maxPerBuyer) {
+        continue;
       }
+    }
 
-      // Check minBasketPrice eligibility
-      const meetsMinBasket =
-        !voucher.minBasketPrice || applicableSubtotal >= voucher.minBasketPrice;
-
-      return {
-        _id: voucher._id,
-        code: voucher.code,
-        name: voucher.name,
-        type: voucher.type,
-        discountType: voucher.discountType,
-        discountValue: voucher.discountValue,
-        maxDiscountAmount: voucher.maxDiscountAmount || null,
-        minBasketPrice: voucher.minBasketPrice || 0,
-        shopName: sellerNames[shopId] || "Shop",
-        shopId,
-        endTime: voucher.endTime,
-        applicableProductNames,
-        estimatedSaving,
-        eligible: meetsMinBasket,
-        ineligibleReason: !meetsMinBasket
-          ? `Minimum order ${voucher.minBasketPrice?.toLocaleString()}₫`
-          : null,
-      };
-    })
-    .filter(Boolean);
+    applicableVouchers.push({
+      _id: voucher._id,
+      code: voucher.code,
+      name: voucher.name,
+      type: voucher.type,
+      discountType: voucher.discountType,
+      discountValue: voucher.discountValue,
+      maxDiscountAmount: voucher.maxDiscountAmount || null,
+      minBasketPrice: voucher.minBasketPrice || 0,
+      shopName: sellerNames[shopId] || "Shop",
+      shopId,
+      endTime: voucher.endTime,
+      applicableProductNames,
+      estimatedSaving,
+      eligible: meetsMinBasket,
+      ineligibleReason: !meetsMinBasket
+        ? `Minimum order ${voucher.minBasketPrice?.toLocaleString()}₫`
+        : null,
+    });
+  }
 
   res.status(200).json({ success: true, data: applicableVouchers });
 });
@@ -336,7 +345,7 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
     status: "active",
     startTime: { $lte: now },
     endTime: { $gte: now },
-    type: { $in: ["shop", "product"] },
+    type: { $in: ["shop", "product", "private"] },
   })
     .populate("appliedProducts", "name")
     .lean();
@@ -374,7 +383,16 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
     );
   }
 
+  // Calculate subtotal for the voucher's shop
+  const shopSubtotal = shopItems.reduce(
+    (sum, item) => sum + item.price * item.quantity,
+    0,
+  );
+
   // For product-specific vouchers, check appliedProducts
+  let applicableProductNames = [];
+  let applicableSubtotal = shopSubtotal;
+
   if (voucher.type === "product" && voucher.applyTo === "specific") {
     const appliedSet = new Set(
       (voucher.appliedProducts || []).map((p) => (p._id || p).toString()),
@@ -388,7 +406,29 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
         400,
       );
     }
+    applicableSubtotal = matching.reduce(
+      (sum, item) => sum + item.price * item.quantity,
+      0,
+    );
+    applicableProductNames = matching.map((item) => item.productId.name);
   }
+
+  // Calculate estimated saving
+  let estimatedSaving = 0;
+  if (voucher.discountType === "amount") {
+    estimatedSaving = Math.min(voucher.discountValue, applicableSubtotal);
+  } else if (voucher.discountType === "percent") {
+    estimatedSaving = Math.round(
+      applicableSubtotal * (voucher.discountValue / 100),
+    );
+    if (voucher.maxDiscountAmount) {
+      estimatedSaving = Math.min(estimatedSaving, voucher.maxDiscountAmount);
+    }
+  }
+
+  // Check minBasketPrice eligibility
+  const meetsMinBasket =
+    !voucher.minBasketPrice || applicableSubtotal >= voucher.minBasketPrice;
 
   // Get shop name
   const seller = await User.findById(
@@ -410,7 +450,12 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
       shopName: seller?.shopName || seller?.fullName || "Shop",
       shopId: voucher.shopId,
       endTime: voucher.endTime,
-      eligible: true,
+      applicableProductNames,
+      estimatedSaving,
+      eligible: meetsMinBasket,
+      ineligibleReason: !meetsMinBasket
+        ? `Minimum order ${voucher.minBasketPrice?.toLocaleString()}₫`
+        : null,
     },
   });
 });

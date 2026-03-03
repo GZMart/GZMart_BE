@@ -47,11 +47,15 @@ export const validateAndCalculateVouchers = async (
   }
 
   // Enforce max 1 shop + 1 product rule
-  const shopVouchers = vouchers.filter((v) => v.type === "shop");
+  // Enforce max 1 shop + 1 product rule
+  // 'private' vouchers are typically shop-level but hidden, treat them as shop vouchers for the limit
+  const shopVouchers = vouchers.filter(
+    (v) => v.type === "shop" || v.type === "private",
+  );
   const productVouchers = vouchers.filter((v) => v.type === "product");
 
   if (shopVouchers.length > 1) {
-    errors.push("Only 1 shop voucher allowed");
+    errors.push("Only 1 shop/private voucher allowed");
     return { totalDiscount: 0, validVouchers: [], errors };
   }
   if (productVouchers.length > 1) {
@@ -111,8 +115,8 @@ export const validateAndCalculateVouchers = async (
     // 5. Check applicability based on type
     let applicableSubtotal = 0;
 
-    if (voucher.type === "shop") {
-      // Shop voucher: check if cart has products from this shop
+    if (voucher.type === "shop" || voucher.type === "private") {
+      // Treat private as shop voucher (applicable to all products of the shop)
       const shopItems = cartItems.filter(
         (item) =>
           item.productId?.sellerId?.toString() === voucher.shopId?.toString(),
@@ -123,10 +127,32 @@ export const validateAndCalculateVouchers = async (
         );
         continue;
       }
-      applicableSubtotal = shopItems.reduce(
-        (sum, item) => sum + item.price * item.quantity,
-        0,
-      );
+
+      if (voucher.applyTo === "specific") {
+        const appliedProductIdSet = new Set(
+          (voucher.appliedProducts || []).map((id) => id.toString()),
+        );
+        const matchingItems = shopItems.filter((item) => {
+          const pid =
+            item.productId?._id?.toString() || item.productId?.toString();
+          return appliedProductIdSet.has(pid);
+        });
+        if (matchingItems.length === 0) {
+          errors.push(
+            `Voucher ${voucher.code} is not applicable to any product in your cart`,
+          );
+          continue;
+        }
+        applicableSubtotal = matchingItems.reduce(
+          (sum, item) => sum + item.price * item.quantity,
+          0,
+        );
+      } else {
+        applicableSubtotal = shopItems.reduce(
+          (sum, item) => sum + item.price * item.quantity,
+          0,
+        );
+      }
     } else if (voucher.type === "product") {
       if (voucher.applyTo === "specific") {
         // Only apply to products in appliedProducts list

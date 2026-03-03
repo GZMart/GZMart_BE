@@ -26,6 +26,7 @@ import cartRoutes from "./routes/cart.routes.js";
 import orderRoutes from "./routes/order.routes.js";
 import orderSellerRoutes from "./routes/orderSeller.routes.js";
 import flashSaleRoutes from "./routes/flashsale.routes.js";
+import { syncDealStatuses } from "./services/flashsale.service.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
 import voucherRoutes from "./routes/voucher.routes.js";
@@ -35,9 +36,13 @@ import addOnDealRoutes from "./routes/addOnDeal.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import addressRoutes from "./routes/address.routes.js";
 import purchaseOrderRoutes from "./routes/purchaseOrder.routes.js";
+import ghnRoutes from "./routes/ghn.routes.js";
+import chatRoutes from "./routes/chat.routes.js";
+import aiRoutes from "./routes/ai.routes.js";
 import reviewRoutes from "./routes/review.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
+import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 // Load environment variables
 dotenv.config();
 
@@ -195,6 +200,7 @@ app.use("/api/seller/addons", addOnDealRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
+app.use("/api/ghn", ghnRoutes);
 app.use("/api/reviews", reviewRoutes);
 
 // Error handler
@@ -250,9 +256,28 @@ import { setSocketIO } from "./utils/socketIO.js";
 // Make io instance globally accessible for controllers
 setSocketIO(io);
 
+import setupSocketHandlers from './socket.js';
+// Setup socket handlers
+setupSocketHandlers(io);
+
+app.use("/api/chat", chatRoutes); // Register chat routes
+app.use("/api/ai", aiRoutes); // Register AI routes
+
 server.listen(PORT, HOST, () => {
   logger.info(`Server is running on port ${PORT}`);
+  // Initialize cron jobs
+  initShopStatisticJobs();
 });
+
+// Sync flash-sale / deal statuses on boot then every 60 s
+syncDealStatuses().catch((err) =>
+  logger.error("syncDealStatuses (boot):", err),
+);
+setInterval(() => {
+  syncDealStatuses().catch((err) =>
+    logger.error("syncDealStatuses (interval):", err),
+  );
+}, 60_000);
 
 export default app;
 export { io, server };
