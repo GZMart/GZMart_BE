@@ -7,6 +7,7 @@ import {
   getCheckoutInfo,
   previewOrder,
   generateInvoice,
+  confirmReceipt,
 } from "../controllers/order.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 
@@ -123,5 +124,25 @@ router.get("/:id/invoice", generateInvoice);
  *         description: Success
  */
 router.route("/:id/cancel").put(cancelOrder);
+
+/**
+ * @swagger
+ * /api/orders/{id}/confirm-receipt:
+ *   put:
+ *     tags: [Orders]
+ *     summary: Confirm receipt of delivered order (Phase 4 - Delivered -> Completed)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.route("/:id/confirm-receipt").put(confirmReceipt);
 
 export default router;

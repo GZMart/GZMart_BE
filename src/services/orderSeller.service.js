@@ -1,8 +1,11 @@
-import mongoose from 'mongoose';
-import Order from '../models/Order.js';
-import OrderItem from '../models/OrderItem.js';
-import Product from '../models/Product.js';
-import { ErrorResponse } from '../utils/errorResponse.js';
+import mongoose from "mongoose";
+import Order from "../models/Order.js";
+import OrderItem from "../models/OrderItem.js";
+import Product from "../models/Product.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
+import ghnService from "./ghn.service.js";
+import User from "../models/User.js";
+import { simulateGHNWebhook } from "../utils/simulateGHNWebhook.js";
 
 /**
  * Create a new order
@@ -16,18 +19,24 @@ export const createOrder = async (orderData) => {
     discount = 0,
     totalPrice,
     shippingAddress,
-    shippingMethod = 'standard',
-    paymentMethod = 'cash_on_delivery',
+    shippingMethod = "standard",
+    paymentMethod = "cash_on_delivery",
     discountCode,
     notes,
     items = [],
   } = orderData;
 
   // Validation
-  if (!userId || !subtotal || !totalPrice || !shippingAddress || !paymentMethod) {
+  if (
+    !userId ||
+    !subtotal ||
+    !totalPrice ||
+    !shippingAddress ||
+    !paymentMethod
+  ) {
     throw new ErrorResponse(
-      'Missing required fields: userId, subtotal, totalPrice, shippingAddress, paymentMethod',
-      400
+      "Missing required fields: userId, subtotal, totalPrice, shippingAddress, paymentMethod",
+      400,
     );
   }
 
@@ -35,7 +44,7 @@ export const createOrder = async (orderData) => {
   if (!mongoose.Types.ObjectId.isValid(userId)) {
     throw new ErrorResponse(
       `Invalid userId format. Must be a valid MongoDB ObjectId. Received: ${userId}`,
-      400
+      400,
     );
   }
 
@@ -52,8 +61,8 @@ export const createOrder = async (orderData) => {
     paymentMethod,
     discountCode,
     notes,
-    status: 'pending',
-    paymentStatus: 'pending',
+    status: "pending",
+    paymentStatus: "pending",
   });
 
   await order.save();
@@ -73,8 +82,8 @@ export const createOrder = async (orderData) => {
           subtotal: item.subtotal || item.quantity * item.price,
           originalPrice: item.originalPrice,
           isFlashSale: item.isFlashSale || false,
-        })
-      )
+        }),
+      ),
     );
 
     order.items = orderItems.map((item) => item._id);
@@ -82,7 +91,7 @@ export const createOrder = async (orderData) => {
   }
 
   // Populate and return
-  const populatedOrder = await Order.findById(order._id).populate('items');
+  const populatedOrder = await Order.findById(order._id).populate("items");
 
   return populatedOrder;
 };
@@ -92,16 +101,16 @@ export const createOrder = async (orderData) => {
  * Returns orders that contain products from the seller
  */
 export const getSellerOrders = async (filters = {}, sellerId) => {
-  const { page = 1, limit = 10, status, sortBy = 'createdAt' } = filters;
+  const { page = 1, limit = 10, status, sortBy = "createdAt" } = filters;
   const skip = (page - 1) * limit;
 
   if (!sellerId) {
-    throw new ErrorResponse('Seller ID is required', 400);
+    throw new ErrorResponse("Seller ID is required", 400);
   }
 
   // Find all products belonging to this seller
-  const sellerProducts = await Product.find({ sellerId }).select('_id');
-  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProducts = await Product.find({ sellerId }).select("_id");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
 
   if (sellerProductIds.length === 0) {
     return {
@@ -114,10 +123,12 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
   }
 
   // Find OrderItems containing seller's products
-  const orderItems = await OrderItem.find({ productId: { $in: sellerProductIds } }).select('orderId');
-  const orderIds = [...new Set(orderItems.map(item => item.orderId.toString()))].map(
-    id => new mongoose.Types.ObjectId(id)
-  );
+  const orderItems = await OrderItem.find({
+    productId: { $in: sellerProductIds },
+  }).select("orderId");
+  const orderIds = [
+    ...new Set(orderItems.map((item) => item.orderId.toString())),
+  ].map((id) => new mongoose.Types.ObjectId(id));
 
   if (orderIds.length === 0) {
     return {
@@ -138,15 +149,15 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
   // Sort options
   const sortOptions = {
     createdAt: { createdAt: -1 },
-    'newest-first': { createdAt: -1 },
-    'oldest-first': { createdAt: 1 },
-    'total-high': { totalPrice: -1 },
-    'total-low': { totalPrice: 1 },
+    "newest-first": { createdAt: -1 },
+    "oldest-first": { createdAt: 1 },
+    "total-high": { totalPrice: -1 },
+    "total-low": { totalPrice: 1 },
   };
 
   const orders = await Order.find(filterQuery)
-    .populate('userId', 'fullName email phone')
-    .populate('items')
+    .populate("userId", "fullName email phone")
+    .populate("items")
     .sort(sortOptions[sortBy] || { createdAt: -1 })
     .skip(skip)
     .limit(Number(limit))
@@ -171,30 +182,30 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
   const skip = (page - 1) * limit;
 
   const validStatuses = [
-    'pending',
-    'processing',
-    'shipped',
-    'delivered',
-    'delivered_pending_confirmation',
-    'completed',
-    'cancelled',
-    'refunded',
-    'refund_pending',
-    'under_investigation',
+    "pending",
+    "processing",
+    "shipped",
+    "delivered",
+    "delivered_pending_confirmation",
+    "completed",
+    "cancelled",
+    "refunded",
+    "refund_pending",
+    "under_investigation",
   ];
 
   if (!validStatuses.includes(status)) {
     throw new ErrorResponse(
-      `Invalid status. Valid statuses: ${validStatuses.join(', ')}`,
-      400
+      `Invalid status. Valid statuses: ${validStatuses.join(", ")}`,
+      400,
     );
   }
 
   const filter = { status };
 
   const orders = await Order.find(filter)
-    .populate('userId', 'fullName email phone')
-    .populate('items')
+    .populate("userId", "fullName email phone")
+    .populate("items")
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(Number(limit))
@@ -203,7 +214,7 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
   const total = await Order.countDocuments(filter);
 
   const statusCounts = await Order.aggregate([
-    { $group: { _id: '$status', count: { $sum: 1 } } },
+    { $group: { _id: "$status", count: { $sum: 1 } } },
   ]);
 
   return {
@@ -224,17 +235,19 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
  */
 export const getOrderStatusHistory = async (orderId) => {
   const order = await Order.findById(orderId)
-    .select('orderNumber status statusHistory')
-    .populate('statusHistory.changedBy', 'fullName email role');
+    .select("orderNumber status statusHistory")
+    .populate("statusHistory.changedBy", "fullName email role");
 
   if (!order) {
-    throw new ErrorResponse('Order not found', 404);
+    throw new ErrorResponse("Order not found", 404);
   }
 
   return {
     orderNumber: order.orderNumber,
     currentStatus: order.status,
-    history: order.statusHistory.sort((a, b) => new Date(b.changedAt) - new Date(a.changedAt)),
+    history: order.statusHistory.sort(
+      (a, b) => new Date(b.changedAt) - new Date(a.changedAt),
+    ),
   };
 };
 
@@ -243,12 +256,12 @@ export const getOrderStatusHistory = async (orderId) => {
  */
 export const getOrderDetail = async (orderId) => {
   const order = await Order.findById(orderId)
-    .populate('userId')
-    .populate('items')
-    .populate('shipperId', 'fullName phone');
+    .populate("userId")
+    .populate("items")
+    .populate("shipperId", "fullName phone");
 
   if (!order) {
-    throw new ErrorResponse('Order not found', 404);
+    throw new ErrorResponse("Order not found", 404);
   }
 
   return order;
@@ -258,33 +271,34 @@ export const getOrderDetail = async (orderId) => {
  * Update order status with validation
  */
 export const updateOrderStatus = async (orderId, updateData, userData) => {
-  const { newStatus, trackingNumber, estimatedDelivery, notes, reason } = updateData;
+  const { newStatus, trackingNumber, estimatedDelivery, notes, reason } =
+    updateData;
   const { userId, userRole } = userData;
 
   const order = await Order.findById(orderId);
 
   if (!order) {
-    throw new ErrorResponse('Order not found', 404);
+    throw new ErrorResponse("Order not found", 404);
   }
 
   // Validate status transition
   const validTransitions = {
-    pending: ['processing', 'cancelled'],
-    processing: ['shipped', 'cancelled'],
-    shipped: ['delivered', 'refund_pending'],
-    delivered: ['delivered_pending_confirmation'],
-    delivered_pending_confirmation: ['completed', 'refund_pending'],
+    pending: ["processing", "cancelled"],
+    processing: ["shipped", "cancelled"],
+    shipped: ["delivered", "refund_pending"],
+    delivered: ["delivered_pending_confirmation"],
+    delivered_pending_confirmation: ["completed", "refund_pending"],
     completed: [],
     cancelled: [],
-    refund_pending: ['refunded', 'under_investigation'],
+    refund_pending: ["refunded", "under_investigation"],
     refunded: [],
-    under_investigation: ['completed', 'refunded'],
+    under_investigation: ["completed", "refunded"],
   };
 
   if (!validTransitions[order.status]?.includes(newStatus)) {
     throw new ErrorResponse(
       `Cannot transition from '${order.status}' to '${newStatus}'`,
-      400
+      400,
     );
   }
 
@@ -309,12 +323,122 @@ export const updateOrderStatus = async (orderId, updateData, userData) => {
     notes: notes || undefined,
   });
 
+  // Auto-create GHN shipping order when status changes to 'processing'
+  if (newStatus === "processing" && !order.ghnOrderCode) {
+    console.log("[Order Service] Creating GHN shipping order...");
+
+    try {
+      // Populate order items and user info
+      await order.populate("items");
+      await order.populate("userId", "fullName phone email");
+
+      // Parse shipping address (basic implementation)
+      // In production, you should have structured address with district/ward IDs
+      const customerInfo = {
+        to_name: order.userId.fullName || "Customer",
+        to_phone: order.userId.phone || "0901234567",
+        to_address: order.shippingAddress,
+        to_district_id: 1542, // Default: Quận 10, TP.HCM (should get from address data)
+        to_ward_code: "21211", // Default: Phường 14 (should get from address data)
+      };
+
+      // Prepare items for GHN
+      const ghnItems = order.items.map((item) => ({
+        name: item.name || "Product",
+        quantity: item.quantity,
+        price: item.price,
+      }));
+
+      // Calculate package weight based on items (estimate)
+      const totalWeight = order.items.reduce(
+        (sum, item) => sum + item.quantity * 200,
+        0,
+      ); // 200g per item
+
+      const ghnOrderData = {
+        client_order_code: order.orderNumber,
+        to_name: customerInfo.to_name,
+        to_phone: customerInfo.to_phone,
+        to_address: customerInfo.to_address,
+        to_district_id: customerInfo.to_district_id,
+        to_ward_code: customerInfo.to_ward_code,
+        cod_amount:
+          order.paymentMethod === "cash_on_delivery"
+            ? Math.round(order.totalPrice)
+            : 0,
+        weight: totalWeight || 500,
+        items: ghnItems,
+        note: order.notes || `Đơn hàng ${order.orderNumber}`,
+        insurance_value: Math.round(order.totalPrice),
+      };
+
+      const ghnResponse = await ghnService.createShippingOrder(ghnOrderData);
+
+      if (ghnResponse.success) {
+        console.log("[Order Service] GHN order created:", ghnResponse.data);
+
+        // Update order with GHN information
+        order.ghnOrderCode = ghnResponse.data.order_code;
+        order.ghnSortingCode = ghnResponse.data.sort_code;
+        order.trackingNumber = ghnResponse.data.order_code; // Use GHN order code as tracking number
+        order.ghnExpectedDeliveryTime = ghnResponse.data.expected_delivery_time
+          ? new Date(ghnResponse.data.expected_delivery_time)
+          : null;
+        order.ghnShippingFee = ghnResponse.data.total_fee || 0;
+        order.ghnOrderInfo = ghnResponse.data;
+        order.ghnStatus = "ready_to_pick";
+
+        // Add GHN log
+        order.ghnLogs.push({
+          status: "ready_to_pick",
+          description: "Đơn hàng đã được tạo trên GHN, chờ shipper đến lấy",
+          updatedAt: new Date(),
+        });
+
+        // Update estimated delivery if available
+        if (ghnResponse.data.expected_delivery_time) {
+          order.estimatedDelivery = new Date(
+            ghnResponse.data.expected_delivery_time,
+          );
+        }
+
+        console.log("[Order Service] ✅ GHN order created successfully");
+        console.log("[Order Service] Tracking number:", order.trackingNumber);
+
+        // 🎬 Demo: tự động giả lập cập nhật trạng thái giao hàng
+        // Step 1 (+10s): GHN "picking"   → system "shipped"
+        // Step 2 (+20s): GHN "delivered" → system "completed"
+        simulateGHNWebhook(order.ghnOrderCode, order.orderNumber);
+      } else {
+        console.error(
+          "[Order Service] ❌ Failed to create GHN order:",
+          ghnResponse.error,
+        );
+        // Don't throw error, just log it - order status update should still proceed
+        order.statusHistory.push({
+          status: newStatus,
+          changedBy: userId,
+          changedByRole: "system",
+          changedAt: new Date(),
+          reason: "GHN order creation failed",
+          notes: `Error: ${ghnResponse.error?.message || "Unknown error"}`,
+        });
+      }
+    } catch (ghnError) {
+      console.error(
+        "[Order Service] Exception while creating GHN order:",
+        ghnError,
+      );
+      // Don't throw - allow status update to proceed
+    }
+  }
+
   await order.save();
 
   const updatedOrder = await Order.findById(orderId)
-    .populate('userId', 'fullName email phone')
-    .populate('items')
-    .populate('statusHistory.changedBy', 'fullName email role');
+    .populate("userId", "fullName email phone")
+    .populate("items")
+    .populate("statusHistory.changedBy", "fullName email role");
 
   return updatedOrder;
 };
@@ -326,26 +450,26 @@ export const cancelOrder = async (orderId, cancellationReason) => {
   const order = await Order.findById(orderId);
 
   if (!order) {
-    throw new ErrorResponse('Order not found', 404);
+    throw new ErrorResponse("Order not found", 404);
   }
 
   // Can only cancel pending or processing orders
-  if (!['pending', 'processing'].includes(order.status)) {
+  if (!["pending", "processing"].includes(order.status)) {
     throw new ErrorResponse(
       `Cannot cancel order with status '${order.status}'`,
-      400
+      400,
     );
   }
 
-  order.status = 'cancelled';
+  order.status = "cancelled";
   order.cancelledAt = new Date();
-  order.cancellationReason = cancellationReason || 'Cancelled';
+  order.cancellationReason = cancellationReason || "Cancelled";
 
   await order.save();
 
   const updatedOrder = await Order.findById(orderId)
-    .populate('userId', 'fullName email phone')
-    .populate('items');
+    .populate("userId", "fullName email phone")
+    .populate("items");
 
   return updatedOrder;
 };
@@ -355,11 +479,11 @@ export const cancelOrder = async (orderId, cancellationReason) => {
  */
 export const generateDeliveryNote = async (orderId) => {
   const order = await Order.findById(orderId)
-    .populate('userId')
-    .populate('items');
+    .populate("userId")
+    .populate("items");
 
   if (!order) {
-    throw new ErrorResponse('Order not found', 404);
+    throw new ErrorResponse("Order not found", 404);
   }
 
   const html = generateDeliveryNoteHTML(order);
@@ -376,9 +500,10 @@ export const generateDeliveryNote = async (orderId) => {
 function generateDeliveryNoteHTML(order) {
   const itemsHTML = order.items
     .map((item) => {
-      const tierSelectionsStr = Array.from(item.tierSelections || [])
-        .map(([tier, selection]) => `${tier}: ${selection}`)
-        .join(', ') || 'N/A';
+      const tierSelectionsStr =
+        Array.from(item.tierSelections || [])
+          .map(([tier, selection]) => `${tier}: ${selection}`)
+          .join(", ") || "N/A";
 
       return `
     <tr>
@@ -389,7 +514,7 @@ function generateDeliveryNoteHTML(order) {
     </tr>
   `;
     })
-    .join('');
+    .join("");
 
   return `
     <!DOCTYPE html>
@@ -418,18 +543,18 @@ function generateDeliveryNoteHTML(order) {
       <div class="header">
         <h1>📦 PHIẾU GIAO HÀNG</h1>
         <p>Order #${order.orderNumber}</p>
-        <p>Ngày tạo: ${new Date(order.createdAt).toLocaleDateString('vi-VN')}</p>
+        <p>Ngày tạo: ${new Date(order.createdAt).toLocaleDateString("vi-VN")}</p>
       </div>
 
       <div class="info-section">
         <h3>Thông Tin Người Nhận</h3>
         <div class="info-row">
           <span class="info-label">Họ tên:</span>
-          <span class="info-value">${order.userId?.fullName || 'N/A'}</span>
+          <span class="info-value">${order.userId?.fullName || "N/A"}</span>
         </div>
         <div class="info-row">
           <span class="info-label">Điện thoại:</span>
-          <span class="info-value">${order.userId?.phone || 'N/A'}</span>
+          <span class="info-value">${order.userId?.phone || "N/A"}</span>
         </div>
         <div class="info-row">
           <span class="info-label">Địa chỉ:</span>
@@ -461,12 +586,12 @@ function generateDeliveryNoteHTML(order) {
       <div class="info-section">
         <h3>Ghi Chú</h3>
         <div class="info-row">
-          <span class="info-value">${order.notes || 'Không có ghi chú'}</span>
+          <span class="info-value">${order.notes || "Không có ghi chú"}</span>
         </div>
       </div>
 
       <div class="footer">
-        <p>Phiếu này được in từ hệ thống GZMart - ${new Date().toLocaleDateString('vi-VN')}</p>
+        <p>Phiếu này được in từ hệ thống GZMart - ${new Date().toLocaleDateString("vi-VN")}</p>
       </div>
     </body>
     </html>

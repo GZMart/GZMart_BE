@@ -1,11 +1,11 @@
-import User from '../models/User.js';
-import TokenBlacklist from '../models/TokenBlacklist.js';
-import { asyncHandler } from '../middlewares/async.middleware.js';
-import { ErrorResponse } from '../utils/errorResponse.js';
-import jwt from 'jsonwebtoken';
-import { sendTemplatedEmail } from '../utils/sendEmail.js';
-import logger from '../utils/logger.js';
-import { generateToken } from '../utils/jwt.js';
+import User from "../models/User.js";
+import TokenBlacklist from "../models/TokenBlacklist.js";
+import { asyncHandler } from "../middlewares/async.middleware.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
+import jwt from "jsonwebtoken";
+import { sendTemplatedEmail } from "../utils/sendEmail.js";
+import logger from "../utils/logger.js";
+import { generateToken } from "../utils/jwt.js";
 
 // OTP Store: Map<email, { otp: string, expiresAt: Date, attempts: number }>
 const otpStore = new Map();
@@ -40,10 +40,7 @@ export const register = async (req, res, next) => {
     // Check required fields - chỉ cần 3 trường
     if (!fullName || !email || !password) {
       return next(
-        new ErrorResponse(
-          'Please provide full name, email and password',
-          400
-        )
+        new ErrorResponse("Please provide full name, email and password", 400),
       );
     }
 
@@ -52,16 +49,19 @@ export const register = async (req, res, next) => {
 
     if (user) {
       if (user.isVerified) {
-        return next(new ErrorResponse('User already exists', 400));
+        return next(new ErrorResponse("User already exists", 400));
       }
-      
+
       // Update existing unverified user
       user.fullName = fullName;
       user.password = password;
-      
-      const token = generateToken({ email }, process.env.JWT_VERIFY_EXPIRES_IN || '1h');
+
+      const token = generateToken(
+        { email },
+        process.env.JWT_VERIFY_EXPIRES_IN || "1h",
+      );
       user.verificationToken = token;
-      user.verificationTokenExpires = new Date(Date.now() + 3600000); 
+      user.verificationTokenExpires = new Date(Date.now() + 3600000);
 
       if (req.body.phone && /^[0-9]{10,11}$/.test(req.body.phone)) {
         user.phone = req.body.phone;
@@ -73,16 +73,19 @@ export const register = async (req, res, next) => {
       await user.save();
     } else {
       // Create new user
-      const token = generateToken({ email }, process.env.JWT_VERIFY_EXPIRES_IN || '1h');
-      
+      const token = generateToken(
+        { email },
+        process.env.JWT_VERIFY_EXPIRES_IN || "1h",
+      );
+
       const userData = {
         fullName,
         email,
         password,
-        role: 'buyer',
+        role: "buyer",
         isVerified: false,
         verificationToken: token,
-        verificationTokenExpires: new Date(Date.now() + 3600000), 
+        verificationTokenExpires: new Date(Date.now() + 3600000),
       };
 
       if (req.body.phone && /^[0-9]{10,11}$/.test(req.body.phone)) {
@@ -95,15 +98,17 @@ export const register = async (req, res, next) => {
       try {
         user = await User.create(userData);
       } catch (error) {
-         if (error.name === 'ValidationError') {
-          const messages = Object.values(error.errors).map(err => err.message).join(', ');
-          logger.error('User validation error:', { error: messages, userData });
+        if (error.name === "ValidationError") {
+          const messages = Object.values(error.errors)
+            .map((err) => err.message)
+            .join(", ");
+          logger.error("User validation error:", { error: messages, userData });
           return next(new ErrorResponse(messages, 400));
         }
         if (error.code === 11000) {
-           const field = Object.keys(error.keyPattern)[0];
-           logger.error('Duplicate key error:', { field, userData });
-           return next(new ErrorResponse(`${field} already exists`, 400));
+          const field = Object.keys(error.keyPattern)[0];
+          logger.error("Duplicate key error:", { field, userData });
+          return next(new ErrorResponse(`${field} already exists`, 400));
         }
         throw error;
       }
@@ -122,40 +127,45 @@ export const register = async (req, res, next) => {
       });
 
       // Always log OTP in development (before trying to send email)
-      if (process.env.NODE_ENV !== 'production') {
-        console.log('\n========================================');
+      if (process.env.NODE_ENV !== "production") {
+        console.log("\n========================================");
         console.log(`📧 REGISTRATION OTP for ${user.email}`);
         console.log(`🔐 OTP Code: ${otp}`);
         console.log(`⏰ Expires in: 5 minutes`);
-        console.log('========================================\n');
+        console.log("========================================\n");
       }
 
       try {
         await sendTemplatedEmail({
           email: user.email,
-          templateType: 'OTP',
+          templateType: "OTP",
           templateData: {
             name: user.fullName,
             otp,
-            expiresIn: '5 minutes',
+            expiresIn: "5 minutes",
           },
         });
-        logger.info('OTP sent successfully for registration', { userId: user._id, email: user.email });
+        logger.info("OTP sent successfully for registration", {
+          userId: user._id,
+          email: user.email,
+        });
       } catch (emailError) {
         // Log error but don't fail registration
-        logger.error('Failed to send OTP email', {
+        logger.error("Failed to send OTP email", {
           error: emailError.message,
           userId: user._id,
           email: user.email,
         });
         // In development, OTP is already logged above
-        if (process.env.NODE_ENV !== 'production') {
-          logger.warn('Email service not configured. OTP is logged in console above.');
+        if (process.env.NODE_ENV !== "production") {
+          logger.warn(
+            "Email service not configured. OTP is logged in console above.",
+          );
         }
       }
     } catch (otpError) {
       // If OTP generation/store fails, log but don't fail registration
-      logger.error('Failed to generate/store OTP', {
+      logger.error("Failed to generate/store OTP", {
         error: otpError.message,
         userId: user._id,
         email: user.email,
@@ -167,13 +177,17 @@ export const register = async (req, res, next) => {
     user.verificationToken = undefined;
     user.verificationTokenExpires = undefined;
 
-    logger.info('User registered successfully, OTP sent', { userId: user._id, email: user.email });
+    logger.info("User registered successfully, OTP sent", {
+      userId: user._id,
+      email: user.email,
+    });
 
     // Get OTP for development mode (to return in response)
     const storedOTP = otpStore.get(user.email);
     const responseData = {
       success: true,
-      message: 'Registration successful. Please check your email for OTP verification code.',
+      message:
+        "Registration successful. Please check your email for OTP verification code.",
       data: {
         user: {
           _id: user._id,
@@ -185,22 +199,22 @@ export const register = async (req, res, next) => {
     };
 
     // In development, include OTP in response for testing
-    if (process.env.NODE_ENV !== 'production' && storedOTP) {
+    if (process.env.NODE_ENV !== "production" && storedOTP) {
       responseData.data.otp = storedOTP.otp; // Only in development
-      responseData.message += ' (Check console or response for OTP in development)';
+      responseData.message +=
+        " (Check console or response for OTP in development)";
     }
 
     // Don't return tokens yet - user needs to verify OTP first
     res.status(201).json(responseData);
   } catch (error) {
-    logger.error('Error in register controller', {
+    logger.error("Error in register controller", {
       error: error.message,
       stack: error.stack,
     });
     next(error);
   }
 };
-
 
 /**
  * @desc    Login user
@@ -216,17 +230,17 @@ export const login = async (req, res, next) => {
     const { email, password, rememberMe } = req.body;
 
     if (!email || !password) {
-      return next(new ErrorResponse('Please provide email and password', 400));
+      return next(new ErrorResponse("Please provide email and password", 400));
     }
 
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email }).select("+password");
 
     if (!user) {
       return next(
         new ErrorResponse(
-          'Email not found. Please check your email or register a new account.',
-          401
-        )
+          "Email not found. Please check your email or register a new account.",
+          401,
+        ),
       );
     }
 
@@ -235,39 +249,43 @@ export const login = async (req, res, next) => {
       return next(
         new ErrorResponse(
           "Incorrect password. Please try again or use 'Forgot Password' if you don't remember.",
-          401
-        )
+          401,
+        ),
       );
     }
 
     if (!user.isVerified) {
       return next(
         new ErrorResponse(
-          'Please verify your email before logging in. Check your inbox for the verification link.',
-          401
-        )
+          "Please verify your email before logging in. Check your inbox for the verification link.",
+          401,
+        ),
       );
     }
 
     if (!user.status) {
       return next(
         new ErrorResponse(
-          'Your account has been deactivated. Please contact support for assistance.',
-          401
-        )
+          "Your account has been deactivated. Please contact support for assistance.",
+          401,
+        ),
       );
     }
 
     // Generate tokens with different expiration based on rememberMe
-    const accessTokenExpiry = rememberMe ? '30d' : process.env.JWT_EXPIRES_IN || '1d';
-    const refreshTokenExpiry = rememberMe ? '90d' : process.env.JWT_REFRESH_EXPIRES_IN || '7d';
+    const accessTokenExpiry = rememberMe
+      ? "30d"
+      : process.env.JWT_EXPIRES_IN || "1d";
+    const refreshTokenExpiry = rememberMe
+      ? "90d"
+      : process.env.JWT_REFRESH_EXPIRES_IN || "7d";
 
     const accessToken = generateToken({ id: user._id }, accessTokenExpiry);
     const refreshToken = generateToken({ id: user._id }, refreshTokenExpiry);
 
     user.password = undefined;
 
-    logger.info('User logged in successfully', { userId: user._id });
+    logger.info("User logged in successfully", { userId: user._id });
 
     res.status(200).json({
       success: true,
@@ -280,7 +298,7 @@ export const login = async (req, res, next) => {
       },
     });
   } catch (error) {
-    logger.error('Error in login controller', {
+    logger.error("Error in login controller", {
       error: error.message,
       stack: error.stack,
     });
@@ -297,15 +315,19 @@ export const login = async (req, res, next) => {
  * @returns {Object} Response with success message
  */
 const createTokens = (userId, rememberMe = false) => {
-  const accessTokenExpiry = rememberMe ? '30d' : '1h';
-  const refreshTokenExpiry = rememberMe ? '90d' : '7d';
+  const accessTokenExpiry = rememberMe ? "30d" : "1h";
+  const refreshTokenExpiry = rememberMe ? "90d" : "7d";
 
   const token = jwt.sign({ id: userId }, process.env.JWT_SECRET, {
     expiresIn: accessTokenExpiry,
   });
-  const refreshToken = jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET, {
-    expiresIn: refreshTokenExpiry,
-  });
+  const refreshToken = jwt.sign(
+    { id: userId },
+    process.env.JWT_REFRESH_SECRET,
+    {
+      expiresIn: refreshTokenExpiry,
+    },
+  );
   return { token, refreshToken };
 };
 
@@ -320,9 +342,15 @@ const createTokens = (userId, rememberMe = false) => {
 export const loginWithGoogle = async (req, res) => {
   try {
     const { email, name, picture, rememberMe } = req.body;
-    console.log('Google login data received:', { email, name, picture, rememberMe }); // Debug log
+    console.log("Google login data received:", {
+      email,
+      name,
+      picture,
+      rememberMe,
+    }); // Debug log
 
-    if (!email) return res.status(400).json({ message: 'Missing email from Google' });
+    if (!email)
+      return res.status(400).json({ message: "Missing email from Google" });
 
     let user = await User.findOne({ email });
     let isNewUser = false;
@@ -332,19 +360,19 @@ export const loginWithGoogle = async (req, res) => {
       const fakePassword = Math.random().toString(36).slice(-8);
 
       user = new User({
-        fullName: name || 'Google User',
+        fullName: name || "Google User",
         email,
         password: fakePassword,
-        avatar: picture || '', // Ensure avatar is set
+        avatar: picture || "", // Ensure avatar is set
         isVerified: true,
-        role: 'buyer',
-        address: '',
-        phone: '',
+        role: "buyer",
+        address: "",
+        phone: "",
         reward_point: 0,
-        gender: 'other',
+        gender: "other",
       });
       await user.save();
-      console.log('New Google user created:', { avatar: user.avatar, picture });
+      console.log("New Google user created:", { avatar: user.avatar, picture });
     } else {
       const DEFAULT_AVATAR = 'https://static.vecteezy.com/system/resources/previews/019/896/008/original/male-user-avatar-icon-in-flat-design-style-person-signs-illustration-png.png';
       
@@ -358,6 +386,10 @@ export const loginWithGoogle = async (req, res) => {
       if (picture && (!user.avatar || user.avatar === DEFAULT_AVATAR)) {
         user.avatar = picture;
         await user.save();
+        console.log("Existing Google user avatar updated:", {
+          oldAvatar: user.avatar,
+          newPicture: picture,
+        });
         console.log('Google user avatar updated (was empty or default).');
       } else {
         console.log('Skipping avatar update (custom avatar exists).');
@@ -372,16 +404,16 @@ export const loginWithGoogle = async (req, res) => {
     res.status(200).json({
       success: true,
       message: isNewUser
-        ? 'Create account & login Google successfully'
-        : 'Login Google successfully',
+        ? "Create account & login Google successfully"
+        : "Login Google successfully",
       user: userObj,
       token,
       refreshToken,
       isNewUser,
     });
   } catch (error) {
-    console.error('Google login error:', error);
-    res.status(500).json({ success: false, message: 'Login Google failed' });
+    console.error("Google login error:", error);
+    res.status(500).json({ success: false, message: "Login Google failed" });
   }
 };
 
@@ -398,7 +430,7 @@ export const loginWithFacebook = async (req, res) => {
     const { email, name, picture, rememberMe } = req.body;
 
     if (!email) {
-      return res.status(400).json({ message: 'Missing email from Facebook' });
+      return res.status(400).json({ message: "Missing email from Facebook" });
     }
 
     let user = await User.findOne({ email });
@@ -410,16 +442,16 @@ export const loginWithFacebook = async (req, res) => {
       const fakePassword = Math.random().toString(36).slice(-8);
 
       user = new User({
-        fullName: name || 'Facebook User',
+        fullName: name || "Facebook User",
         email,
         password: fakePassword,
         avatar: picture,
         isVerified: true,
-        role: 'buyer',
-        address: '',
-        phone: '',
+        role: "buyer",
+        address: "",
+        phone: "",
         reward_point: 0,
-        gender: 'other',
+        gender: "other",
       });
 
       await user.save();
@@ -438,16 +470,18 @@ export const loginWithFacebook = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: isNewUser
-        ? 'Create account & login Facebook successfully'
-        : 'Login Facebook successfully',
+        ? "Create account & login Facebook successfully"
+        : "Login Facebook successfully",
       user: userObj,
       token,
       refreshToken,
       isNewUser,
     });
   } catch (error) {
-    console.error('Facebook login error:', error);
-    return res.status(500).json({ success: false, message: 'Login Facebook failed' });
+    console.error("Facebook login error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Login Facebook failed" });
   }
 };
 
@@ -465,17 +499,17 @@ export const getMe = async (req, res, next) => {
     const user = await User.findById(req.user.id);
 
     if (!user) {
-      return next(new ErrorResponse('User not found', 404));
+      return next(new ErrorResponse("User not found", 404));
     }
 
-    logger.info('User profile retrieved successfully', { userId: user._id });
+    logger.info("User profile retrieved successfully", { userId: user._id });
 
     res.status(200).json({
       success: true,
       data: user,
     });
   } catch (error) {
-    logger.error('Error in getMe controller', {
+    logger.error("Error in getMe controller", {
       error: error.message,
       stack: error.stack,
     });
@@ -506,9 +540,10 @@ export const updateProfile = async (req, res, next) => {
       dateOfBirth,
       gender,
       aboutMe,
+      location, // GPS coordinates { lat, lng, address }
     } = req.body;
 
-    logger.info('Profile update - raw req.body:', {
+    logger.info("Profile update - raw req.body:", {
       body: req.body,
       keys: Object.keys(req.body),
       hasFiles: !!req.files,
@@ -529,7 +564,23 @@ export const updateProfile = async (req, res, next) => {
     if (gender) updateFields.gender = gender;
     if (aboutMe) updateFields.aboutMe = aboutMe;
 
-    logger.info('Profile update - updateFields:', { updateFields });
+    // Handle GPS location update
+    if (location) {
+      const parsedLocation =
+        typeof location === "string" ? JSON.parse(location) : location;
+      if (
+        parsedLocation.lat !== undefined &&
+        parsedLocation.lng !== undefined
+      ) {
+        updateFields.location = {
+          lat: parseFloat(parsedLocation.lat),
+          lng: parseFloat(parsedLocation.lng),
+          address: parsedLocation.address || address || "",
+        };
+      }
+    }
+
+    logger.info("Profile update - updateFields:", { updateFields });
 
     // Handle files from multer.fields
     if (req.files && req.files.avatar && req.files.avatar[0]) {
@@ -545,14 +596,14 @@ export const updateProfile = async (req, res, next) => {
       {
         new: true,
         runValidators: true,
-      }
+      },
     );
 
     if (!user) {
-      return next(new ErrorResponse('User not found', 404));
+      return next(new ErrorResponse("User not found", 404));
     }
 
-    logger.info('User profile updated successfully', {
+    logger.info("User profile updated successfully", {
       userId: user._id,
       provinceCode: user.provinceCode,
       wardCode: user.wardCode,
@@ -565,7 +616,7 @@ export const updateProfile = async (req, res, next) => {
       data: user,
     });
   } catch (error) {
-    logger.error('Error in updateProfile controller', {
+    logger.error("Error in updateProfile controller", {
       error: error.message,
       stack: error.stack,
     });
@@ -585,36 +636,41 @@ export const updateProfile = async (req, res, next) => {
 export const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    logger.info('Change password request', req.body);
+    logger.info("Change password request", req.body);
 
     if (!currentPassword || !newPassword) {
-      return next(new ErrorResponse('Please provide current password and new password', 400));
+      return next(
+        new ErrorResponse(
+          "Please provide current password and new password",
+          400,
+        ),
+      );
     }
 
-    const user = await User.findById(req.user.id).select('+password');
+    const user = await User.findById(req.user.id).select("+password");
 
     if (!user) {
-      return next(new ErrorResponse('User not found', 404));
+      return next(new ErrorResponse("User not found", 404));
     }
 
     // Check current password
     const isMatch = await user.matchPassword(currentPassword);
     if (!isMatch) {
-      return next(new ErrorResponse('Current password is incorrect', 400));
+      return next(new ErrorResponse("Current password is incorrect", 401));
     }
 
     // Update password
     user.password = newPassword;
     await user.save();
 
-    logger.info('User password changed successfully', { userId: user._id });
+    logger.info("User password changed successfully", { userId: user._id });
 
     res.status(200).json({
       success: true,
-      message: 'Password changed successfully',
+      message: "Password changed successfully",
     });
   } catch (error) {
-    logger.error('Error in changePassword controller', {
+    logger.error("Error in changePassword controller", {
       error: error.message,
       stack: error.stack,
     });
@@ -636,36 +692,39 @@ export const forgotPassword = async (req, res, next) => {
     const { email } = req.body;
 
     if (!email) {
-      return next(new ErrorResponse('Please provide an email', 400));
+      return next(new ErrorResponse("Please provide an email", 400));
     }
 
     const user = await User.findOne({ email });
 
     if (!user) {
-      return next(new ErrorResponse('User not found', 404));
+      return next(new ErrorResponse("User not found", 404));
     }
 
     // Generate reset token
-    const resetToken = generateToken({ id: user._id }, process.env.JWT_RESET_EXPIRES_IN || '1h');
+    const resetToken = generateToken(
+      { id: user._id },
+      process.env.JWT_RESET_EXPIRES_IN || "1h",
+    );
 
     // Send reset email
     await sendTemplatedEmail({
       email: user.email,
-      templateType: 'PASSWORD_RESET',
+      templateType: "PASSWORD_RESET",
       templateData: {
         name: user.fullName,
         resetLink: `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`,
       },
     });
 
-    logger.info('Password reset email sent successfully', { userId: user._id });
+    logger.info("Password reset email sent successfully", { userId: user._id });
 
     res.status(200).json({
       success: true,
-      message: 'Password reset email sent',
+      message: "Password reset email sent",
     });
   } catch (error) {
-    logger.error('Error in forgotPassword controller', {
+    logger.error("Error in forgotPassword controller", {
       error: error.message,
       stack: error.stack,
     });
@@ -687,7 +746,9 @@ export const resetPassword = async (req, res, next) => {
     const { token, newPassword } = req.body;
 
     if (!token || !newPassword) {
-      return next(new ErrorResponse('Please provide token and new password', 400));
+      return next(
+        new ErrorResponse("Please provide token and new password", 400),
+      );
     }
 
     // Verify token
@@ -697,21 +758,21 @@ export const resetPassword = async (req, res, next) => {
     console.log(newPassword);
 
     if (!user) {
-      return next(new ErrorResponse('User not found', 404));
+      return next(new ErrorResponse("User not found", 404));
     }
 
     // Update password
     user.password = newPassword;
     await user.save();
 
-    logger.info('Password reset successfully', { userId: user._id });
+    logger.info("Password reset successfully", { userId: user._id });
 
     res.status(200).json({
       success: true,
-      message: 'Password reset successfully',
+      message: "Password reset successfully",
     });
   } catch (error) {
-    logger.error('Error in resetPassword controller', {
+    logger.error("Error in resetPassword controller", {
       error: error.message,
       stack: error.stack,
     });
@@ -723,17 +784,21 @@ export const setPassword = async (req, res) => {
   try {
     const { password } = req.body;
     if (!password || password.length < 6) {
-      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+      return res
+        .status(400)
+        .json({ message: "Password must be at least 6 characters" });
     }
 
     const user = req.user;
     user.password = password;
     await user.save();
 
-    res.status(200).json({ success: true, message: 'Set password successfully' });
+    res
+      .status(200)
+      .json({ success: true, message: "Set password successfully" });
   } catch (error) {
-    console.error('Set password error:', error);
-    res.status(500).json({ message: 'Set password failed' });
+    console.error("Set password error:", error);
+    res.status(500).json({ message: "Set password failed" });
   }
 };
 
@@ -747,7 +812,7 @@ export const setPassword = async (req, res) => {
  * @returns {Object} Response with success message
  */
 export const logout = asyncHandler(async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
+  const token = req.headers.authorization?.split(" ")[1];
 
   if (token) {
     // Add token to blacklist
@@ -779,7 +844,7 @@ export const verifyEmail = async (req, res, next) => {
 
     if (!token) {
       return res.redirect(
-        `${process.env.FRONTEND_URL}/email-verification-failed?error=Verification token is required`
+        `${process.env.FRONTEND_URL}/email-verification-failed?error=Verification token is required`,
       );
     }
 
@@ -793,7 +858,7 @@ export const verifyEmail = async (req, res, next) => {
 
     if (!user) {
       return res.redirect(
-        `${process.env.FRONTEND_URL}/email-verification-failed?error=Invalid or expired verification token`
+        `${process.env.FRONTEND_URL}/email-verification-failed?error=Invalid or expired verification token`,
       );
     }
 
@@ -803,21 +868,21 @@ export const verifyEmail = async (req, res, next) => {
     user.verificationTokenExpires = undefined;
     await user.save();
 
-    logger.info('Email verified successfully', { userId: user._id });
+    logger.info("Email verified successfully", { userId: user._id });
 
     // Redirect to success page
     return res.redirect(
-      `${process.env.FRONTEND_URL}/email-verified?email=${encodeURIComponent(user.email)}`
+      `${process.env.FRONTEND_URL}/email-verified?email=${encodeURIComponent(user.email)}`,
     );
   } catch (error) {
-    logger.error('Error in verifyEmail controller', {
+    logger.error("Error in verifyEmail controller", {
       error: error.message,
       stack: error.stack,
     });
     return res.redirect(
       `${
         process.env.FRONTEND_URL
-      }/email-verification-failed?error=${encodeURIComponent(error.message)}`
+      }/email-verification-failed?error=${encodeURIComponent(error.message)}`,
     );
   }
 };
@@ -836,23 +901,23 @@ export const resendVerification = async (req, res, next) => {
     const { email } = req.body;
 
     if (!email) {
-      return next(new ErrorResponse('Email is required', 400));
+      return next(new ErrorResponse("Email is required", 400));
     }
 
     const user = await User.findOne({ email });
 
     if (!user) {
-      return next(new ErrorResponse('User not found', 404));
+      return next(new ErrorResponse("User not found", 404));
     }
 
     if (user.isVerified) {
-      return next(new ErrorResponse('Email is already verified', 400));
+      return next(new ErrorResponse("Email is already verified", 400));
     }
 
     // Generate new verification token
     const verificationToken = generateToken(
       { email: user.email },
-      process.env.JWT_VERIFY_EXPIRES_IN || '1h'
+      process.env.JWT_VERIFY_EXPIRES_IN || "1h",
     );
 
     // Update user
@@ -863,23 +928,23 @@ export const resendVerification = async (req, res, next) => {
     // Send verification email
     await sendTemplatedEmail({
       email: user.email,
-      templateType: 'VERIFICATION',
+      templateType: "VERIFICATION",
       templateData: {
         name: user.fullName,
         verificationLink: `${
-          process.env.FRONTEND_URL || 'http://localhost:5000'
+          process.env.FRONTEND_URL || "http://localhost:5000"
         }/verify-email?token=${verificationToken}`,
       },
     });
 
-    logger.info('Verification email resent successfully', { userId: user._id });
+    logger.info("Verification email resent successfully", { userId: user._id });
 
     res.status(200).json({
       success: true,
-      message: 'Verification email sent successfully',
+      message: "Verification email sent successfully",
     });
   } catch (error) {
-    logger.error('Error in resendVerification controller', {
+    logger.error("Error in resendVerification controller", {
       error: error.message,
       stack: error.stack,
     });
@@ -900,7 +965,7 @@ export const refreshToken = asyncHandler(async (req, res, next) => {
   const { refreshToken } = req.body;
 
   if (!refreshToken) {
-    return next(new ErrorResponse('Refresh token is required', 400));
+    return next(new ErrorResponse("Refresh token is required", 400));
   }
 
   try {
@@ -908,7 +973,7 @@ export const refreshToken = asyncHandler(async (req, res, next) => {
     const user = await User.findById(decoded.id);
 
     if (!user) {
-      return next(new ErrorResponse('User not found', 404));
+      return next(new ErrorResponse("User not found", 404));
     }
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
@@ -920,7 +985,7 @@ export const refreshToken = asyncHandler(async (req, res, next) => {
       token,
     });
   } catch (err) {
-    return next(new ErrorResponse('Invalid refresh token', 401));
+    return next(new ErrorResponse("Invalid refresh token", 401));
   }
 });
 
@@ -938,7 +1003,7 @@ export const sendOTP = async (req, res, next) => {
     const { email } = req.body;
 
     if (!email) {
-      return next(new ErrorResponse('Email is required', 400));
+      return next(new ErrorResponse("Email is required", 400));
     }
 
     // Clean expired OTPs
@@ -950,9 +1015,9 @@ export const sendOTP = async (req, res, next) => {
       // OTP sent less than 1 minute ago
       return next(
         new ErrorResponse(
-          'OTP was sent recently. Please wait before requesting a new one.',
-          429
-        )
+          "OTP was sent recently. Please wait before requesting a new one.",
+          429,
+        ),
       );
     }
 
@@ -968,55 +1033,58 @@ export const sendOTP = async (req, res, next) => {
     });
 
     // Always log OTP in development (before trying to send email)
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('\n========================================');
+    if (process.env.NODE_ENV !== "production") {
+      console.log("\n========================================");
       console.log(`📧 OTP for ${email}`);
       console.log(`🔐 OTP Code: ${otp}`);
       console.log(`⏰ Expires in: 5 minutes`);
-      console.log('========================================\n');
+      console.log("========================================\n");
     }
 
     // Send OTP via email
     try {
       // Get user if exists to get fullName
       const user = await User.findOne({ email });
-      const name = user ? user.fullName : 'User';
+      const name = user ? user.fullName : "User";
 
       await sendTemplatedEmail({
         email,
-        templateType: 'OTP',
+        templateType: "OTP",
         templateData: {
           name,
           otp,
-          expiresIn: '5 minutes',
+          expiresIn: "5 minutes",
         },
       });
-      logger.info('OTP sent successfully', { email });
+      logger.info("OTP sent successfully", { email });
     } catch (emailError) {
-      logger.error('Failed to send OTP email', {
+      logger.error("Failed to send OTP email", {
         error: emailError.message,
         email,
       });
       // In development, OTP is already logged above
-      if (process.env.NODE_ENV !== 'production') {
-        logger.warn('Email service not configured. OTP is logged in console above.');
+      if (process.env.NODE_ENV !== "production") {
+        logger.warn(
+          "Email service not configured. OTP is logged in console above.",
+        );
       }
     }
 
     const responseData = {
       success: true,
-      message: 'OTP sent successfully to your email',
+      message: "OTP sent successfully to your email",
     };
 
     // In development, include OTP in response for testing
-    if (process.env.NODE_ENV !== 'production') {
+    if (process.env.NODE_ENV !== "production") {
       responseData.otp = otp; // Only in development
-      responseData.message += ' (Check console or response for OTP in development)';
+      responseData.message +=
+        " (Check console or response for OTP in development)";
     }
 
     res.status(200).json(responseData);
   } catch (error) {
-    logger.error('Error in sendOTP controller', {
+    logger.error("Error in sendOTP controller", {
       error: error.message,
       stack: error.stack,
     });
@@ -1038,7 +1106,7 @@ export const verifyOTP = async (req, res, next) => {
     const { email, otp } = req.body;
 
     if (!email || !otp) {
-      return next(new ErrorResponse('Email and OTP are required', 400));
+      return next(new ErrorResponse("Email and OTP are required", 400));
     }
 
     // Clean expired OTPs
@@ -1048,13 +1116,20 @@ export const verifyOTP = async (req, res, next) => {
     const storedOTP = otpStore.get(email);
 
     if (!storedOTP) {
-      return next(new ErrorResponse('OTP not found or expired. Please request a new OTP.', 400));
+      return next(
+        new ErrorResponse(
+          "OTP not found or expired. Please request a new OTP.",
+          400,
+        ),
+      );
     }
 
     // Check if OTP is expired
     if (storedOTP.expiresAt < Date.now()) {
       otpStore.delete(email);
-      return next(new ErrorResponse('OTP has expired. Please request a new OTP.', 400));
+      return next(
+        new ErrorResponse("OTP has expired. Please request a new OTP.", 400),
+      );
     }
 
     // Check attempts (max 5 attempts)
@@ -1062,16 +1137,16 @@ export const verifyOTP = async (req, res, next) => {
       otpStore.delete(email);
       return next(
         new ErrorResponse(
-          'Too many failed attempts. Please request a new OTP.',
-          429
-        )
+          "Too many failed attempts. Please request a new OTP.",
+          429,
+        ),
       );
     }
 
     // Verify OTP
     if (storedOTP.otp !== otp) {
       storedOTP.attempts += 1;
-      return next(new ErrorResponse('Invalid OTP. Please try again.', 400));
+      return next(new ErrorResponse("Invalid OTP. Please try again.", 400));
     }
 
     // OTP is valid - remove from store
@@ -1081,7 +1156,7 @@ export const verifyOTP = async (req, res, next) => {
     const user = await User.findOne({ email });
 
     if (!user) {
-      return next(new ErrorResponse('User not found', 404));
+      return next(new ErrorResponse("User not found", 404));
     }
 
     // Verify the user if not already verified
@@ -1090,21 +1165,21 @@ export const verifyOTP = async (req, res, next) => {
       user.verificationToken = undefined;
       user.verificationTokenExpires = undefined;
       await user.save();
-      logger.info('User verified via OTP', { userId: user._id });
+      logger.info("User verified via OTP", { userId: user._id });
 
       // Send welcome email if user is a buyer
-      if (user.role === 'buyer') {
+      if (user.role === "buyer") {
         try {
           await sendTemplatedEmail({
             email: user.email,
-            templateType: 'WELCOME',
+            templateType: "WELCOME",
             templateData: {
               name: user.fullName,
             },
           });
-          logger.info('Welcome email sent successfully', { userId: user._id });
+          logger.info("Welcome email sent successfully", { userId: user._id });
         } catch (emailError) {
-          logger.error('Failed to send welcome email', {
+          logger.error("Failed to send welcome email", {
             error: emailError.message,
             userId: user._id,
           });
@@ -1114,10 +1189,13 @@ export const verifyOTP = async (req, res, next) => {
     }
 
     // Generate tokens
-    const accessToken = generateToken({ id: user._id }, process.env.JWT_EXPIRES_IN || '1d');
+    const accessToken = generateToken(
+      { id: user._id },
+      process.env.JWT_EXPIRES_IN || "1d",
+    );
     const refreshToken = generateToken(
       { id: user._id },
-      process.env.JWT_REFRESH_EXPIRES_IN || '7d'
+      process.env.JWT_REFRESH_EXPIRES_IN || "7d",
     );
 
     // Remove sensitive data
@@ -1127,7 +1205,7 @@ export const verifyOTP = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      message: 'OTP verified successfully',
+      message: "OTP verified successfully",
       data: {
         user,
         tokens: {
@@ -1137,7 +1215,7 @@ export const verifyOTP = async (req, res, next) => {
       },
     });
   } catch (error) {
-    logger.error('Error in verifyOTP controller', {
+    logger.error("Error in verifyOTP controller", {
       error: error.message,
       stack: error.stack,
     });

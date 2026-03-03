@@ -122,7 +122,6 @@ const voucherSchema = new mongoose.Schema(
 );
 
 // Index for efficient querying
-voucherSchema.index({ code: 1 });
 voucherSchema.index({ startTime: 1, endTime: 1 });
 voucherSchema.index({ status: 1 });
 

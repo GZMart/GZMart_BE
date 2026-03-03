@@ -36,6 +36,7 @@ import addOnDealRoutes from "./routes/addOnDeal.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import addressRoutes from "./routes/address.routes.js";
 import purchaseOrderRoutes from "./routes/purchaseOrder.routes.js";
+import ghnRoutes from "./routes/ghn.routes.js";
 import chatRoutes from "./routes/chat.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
 
@@ -198,6 +199,7 @@ app.use("/api/seller/addons", addOnDealRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
+app.use("/api/ghn", ghnRoutes);
 
 // Error handler
 app.use(errorHandler);

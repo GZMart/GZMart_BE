@@ -147,7 +147,6 @@ const purchaseOrderSchema = new mongoose.Schema(
 );
 
 // Indexes for performance
-purchaseOrderSchema.index({ code: 1 });
 purchaseOrderSchema.index({ supplierId: 1, status: 1 });
 purchaseOrderSchema.index({ status: 1, createdAt: -1 });
 purchaseOrderSchema.index({ expectedDeliveryDate: 1 });
