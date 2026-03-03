@@ -36,8 +36,11 @@ import addOnDealRoutes from "./routes/addOnDeal.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import addressRoutes from "./routes/address.routes.js";
 import purchaseOrderRoutes from "./routes/purchaseOrder.routes.js";
+import chatRoutes from "./routes/chat.routes.js";
+import aiRoutes from "./routes/ai.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
+import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 // Load environment variables
 dotenv.config();
 
@@ -249,8 +252,17 @@ import { setSocketIO } from "./utils/socketIO.js";
 // Make io instance globally accessible for controllers
 setSocketIO(io);
 
+import setupSocketHandlers from './socket.js';
+// Setup socket handlers
+setupSocketHandlers(io);
+
+app.use("/api/chat", chatRoutes); // Register chat routes
+app.use("/api/ai", aiRoutes); // Register AI routes
+
 server.listen(PORT, HOST, () => {
   logger.info(`Server is running on port ${PORT}`);
+  // Initialize cron jobs
+  initShopStatisticJobs();
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s
