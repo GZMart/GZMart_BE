@@ -55,6 +55,18 @@ const addressSchema = new mongoose.Schema(
       type: String,
       trim: true, // specific address details
     },
+    location: {
+      lat: {
+        type: Number,
+        min: -90,
+        max: 90,
+      },
+      lng: {
+        type: Number,
+        min: -180,
+        max: 180,
+      },
+    },
     isDefault: {
       type: Boolean,
       default: false,

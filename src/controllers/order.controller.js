@@ -14,6 +14,11 @@ import { ErrorResponse } from "../utils/errorResponse.js";
 import * as flashSaleService from "../services/flashsale.service.js";
 import { validateAndCalculateVouchers } from "../utils/voucherValidator.js";
 import * as orderTrackingService from "../services/orderTracking.service.js";
+import {
+  deductOrderResources,
+  clearUserCart,
+} from "../utils/orderInventory.js";
+import mongoose from "mongoose";
 
 // @desc    Get checkout info (user details)
 // @route   GET /api/orders/checkout-info
@@ -171,6 +176,47 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse("Cart is empty", 400));
   }
 
+  // SECURITY FIX (BUG 8): Validate that all cartItemIds belong to this user's cart
+  if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+    const foundItemIds = cartItems.map((item) => item._id.toString());
+    const requestedItemIds = cartItemIds.map((id) => id.toString());
+    const invalidItems = requestedItemIds.filter(
+      (id) => !foundItemIds.includes(id),
+    );
+
+    if (invalidItems.length > 0) {
+      return next(
+        new ErrorResponse(
+          "Some cart items do not belong to your cart or do not exist",
+          403,
+        ),
+      );
+    }
+  }
+
+  // DUPLICATE ORDER PREVENTION (BUG 9): Check for recent duplicate orders
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  const recentOrder = await Order.findOne({
+    userId: req.user._id,
+    totalPrice: { $exists: true },
+    createdAt: { $gte: fiveMinutesAgo },
+    status: { $nin: ["cancelled", "refunded"] },
+  }).sort({ createdAt: -1 });
+
+  if (recentOrder) {
+    // Calculate if this is a duplicate (same total price and similar timestamp)
+    const timeDiff = Date.now() - new Date(recentOrder.createdAt).getTime();
+    if (timeDiff < 10000) {
+      // Less than 10 seconds
+      return next(
+        new ErrorResponse(
+          "Duplicate order detected. Please wait before creating another order.",
+          429,
+        ),
+      );
+    }
+  }
+
   // 2. Validate Stock & Calculate Subtotal
   let subtotal = 0;
   const validItems = [];
@@ -268,118 +314,126 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   const tax = 0;
   const totalPrice = subtotal + shippingCost + tax - discount;
 
-  // 5. Create Order
+  // 5. Create Order with Transaction Support
   const appliedCodes = validVouchers.map((v) => v.code).join(", ");
-  const order = await Order.create({
-    userId: req.user._id,
-    orderNumber: generateOrderNumber(),
-    status: "pending",
-    totalPrice,
-    subtotal,
-    shippingAddress,
-    shippingCost,
-    paymentMethod,
-    notes,
-    discount,
-    discountAmount: discount,
-    discountCode: appliedCodes || undefined,
-    isActive: true,
-    items: [],
-  });
 
-  // Increment voucher usage counts
-  for (const v of validVouchers) {
-    await Voucher.findByIdAndUpdate(v.voucherId, {
-      $inc: { usageCount: 1 },
-    });
-  }
+  // Start MongoDB transaction for data consistency
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  // 5. Create Order Items & Deduct Inventory
-  const orderItemIds = [];
-  for (const { cartItem, model, product, flashSaleInfo } of validItems) {
-    // Create Order Item
-    const orderItem = await OrderItem.create({
-      orderId: order._id,
-      productId: product._id,
-      modelId: model._id,
-      sku: model.sku,
-      quantity: cartItem.quantity,
-      price: flashSaleInfo.price,
-      tierSelections: {
-        size: cartItem.size,
-        color: cartItem.color,
-      },
-      subtotal: flashSaleInfo.price * cartItem.quantity,
-      originalPrice: model.price,
-      isFlashSale: flashSaleInfo.isFlashSale,
-    });
+  try {
+    const order = await Order.create(
+      [
+        {
+          userId: req.user._id,
+          orderNumber: generateOrderNumber(),
+          status: "pending",
+          totalPrice,
+          subtotal,
+          shippingAddress,
+          shippingCost,
+          paymentMethod,
+          notes,
+          discount,
+          discountAmount: discount,
+          discountCode: appliedCodes || undefined,
+          isActive: true,
+          items: [],
+          resourcesDeducted: false, // Will be set to true after deduction
+        },
+      ],
+      { session },
+    );
+    const createdOrder = order[0];
 
-    orderItemIds.push(orderItem._id);
+    // 5. Create Order Items
+    const orderItemIds = [];
+    for (const { cartItem, model, product, flashSaleInfo } of validItems) {
+      // Create Order Item
+      const orderItem = await OrderItem.create(
+        [
+          {
+            orderId: createdOrder._id,
+            productId: product._id,
+            modelId: model._id,
+            sku: model.sku,
+            quantity: cartItem.quantity,
+            price: flashSaleInfo.price,
+            tierSelections: {
+              size: cartItem.size,
+              color: cartItem.color,
+            },
+            subtotal: flashSaleInfo.price * cartItem.quantity,
+            originalPrice: model.price,
+            isFlashSale: flashSaleInfo.isFlashSale,
+          },
+        ],
+        { session },
+      );
 
-    // Update flash sale sold quantity if applicable
-    if (flashSaleInfo.isFlashSale && flashSaleInfo.flashSaleId) {
-      await Deal.findByIdAndUpdate(flashSaleInfo.flashSaleId, {
-        $inc: { soldCount: cartItem.quantity },
-      });
+      orderItemIds.push(orderItem[0]._id);
     }
 
-    // Deduct Inventory from InventoryItem (source of truth)
-    const inventoryItem = await InventoryItem.findOne({
-      productId: product._id,
-      sku: model.sku,
-    });
-    const currentStock = inventoryItem ? inventoryItem.quantity : model.stock;
+    // Add order items to order document
+    createdOrder.items = orderItemIds;
+    await createdOrder.save({ session });
 
-    // Update InventoryItem
-    if (inventoryItem) {
-      inventoryItem.reduceStock(cartItem.quantity);
-      await inventoryItem.save();
+    // 6. Deduct Resources ONLY for COD (Cash on Delivery)
+    // For PayOS, resources will be deducted after payment confirmation
+    const isCOD =
+      paymentMethod === "cod" || paymentMethod === "cash_on_delivery";
+
+    if (isCOD) {
+      // Deduct inventory, vouchers, and flash sales immediately for COD
+      await deductOrderResources(
+        createdOrder,
+        validItems,
+        validVouchers,
+        req.user._id,
+      );
+      createdOrder.resourcesDeducted = true;
+      createdOrder.paymentStatus = "paid"; // COD is considered paid upon delivery confirmation
+      await createdOrder.save({ session });
+
+      // Clear cart for COD using utility function with transaction support
+      await clearUserCart(req.user._id, session);
     }
 
-    // Create transaction log
-    await InventoryTransaction.create({
-      productId: product._id,
-      modelId: model._id,
-      sku: model.sku,
-      type: "out",
-      quantity: -cartItem.quantity,
-      stockBefore: currentStock,
-      stockAfter: currentStock - cartItem.quantity,
-      referenceType: "order",
-      referenceId: order._id,
-      createdBy: req.user._id,
-      note: `Order ${order.orderNumber}`,
+    // Commit transaction
+    await session.commitTransaction();
+    session.endSession();
+
+    // After successful transaction, do non-critical operations
+
+    // Notify seller about new order via Socket.io
+    const user = await User.findById(req.user._id);
+    orderTrackingService.notifySellerNewOrder(createdOrder._id.toString(), {
+      orderNumber: createdOrder.orderNumber,
+      totalPrice: createdOrder.totalPrice,
+      items: orderItemIds,
+      createdAt: createdOrder.createdAt,
+      customerName: user?.fullName || "Customer",
     });
+
+    // Populate order items before sending response
+    await createdOrder.populate("items");
+
+    res.status(201).json({
+      success: true,
+      data: createdOrder,
+    });
+  } catch (error) {
+    // Rollback transaction on error
+    await session.abortTransaction();
+    session.endSession();
+    console.error("Error creating order:", error);
+    return next(
+      new ErrorResponse(
+        error.message || "Failed to create order. Please try again.",
+        500,
+      ),
+    );
   }
-
-  // Add order items to order document
-  order.items = orderItemIds;
-  await order.save();
-
-  // Notify seller about new order via Socket.io
-  const user = await User.findById(req.user._id);
-  orderTrackingService.notifySellerNewOrder(order._id.toString(), {
-    orderNumber: order.orderNumber,
-    totalPrice: order.totalPrice,
-    items: orderItemIds,
-    createdAt: order.createdAt,
-    customerName: user?.fullName || "Customer",
-  });
-
-  // 6. Clear Cart (only for COD, PayOS cart will be cleared after payment webhook)
-  if (paymentMethod === "cod") {
-    await CartItem.deleteMany({ cartId: cart._id });
-    cart.totalPrice = 0;
-    await cart.save();
-  }
-
-  // Populate order items before sending response
-  await order.populate("items");
-
-  res.status(201).json({
-    success: true,
-    data: order,
-  });
 });
 
 // @desc    Get my orders
@@ -391,6 +445,7 @@ export const getMyOrders = asyncHandler(async (req, res, next) => {
   const skip = (page - 1) * limit;
 
   const orders = await Order.find({ userId: req.user._id })
+    .populate("userId", "fullName email phone address location")
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit);
@@ -416,7 +471,7 @@ export const getMyOrders = asyncHandler(async (req, res, next) => {
  */
 export const generateInvoice = asyncHandler(async (req, res, next) => {
   const order = await Order.findById(req.params.id)
-    .populate("userId", "fullName email phone address")
+    .populate("userId", "fullName email phone address location")
     .populate("items");
 
   if (!order) {
@@ -536,7 +591,10 @@ export const getOrderById = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse("Invalid Order ID", 400));
   }
 
-  const order = await Order.findById(req.params.id);
+  const order = await Order.findById(req.params.id).populate(
+    "userId",
+    "fullName email phone address location",
+  );
 
   if (!order) {
     console.log(`[DEBUG] Order not found`);
@@ -545,12 +603,18 @@ export const getOrderById = asyncHandler(async (req, res, next) => {
 
   console.log(`[DEBUG] Order found: ${order._id}, User: ${order.userId}`);
   console.log(`[DEBUG] Req User: ${req.user?._id}, Role: ${req.user?.role}`);
+  console.log(`[DEBUG] Comparison:`, {
+    orderUserId: order.userId._id?.toString() || order.userId.toString(),
+    reqUserId: req.user._id.toString(),
+    orderUserIdType: typeof order.userId,
+    hasIdProperty: !!order.userId._id,
+  });
 
-  // Verify owner
-  if (
-    order.userId.toString() !== req.user._id.toString() &&
-    req.user.role !== "admin"
-  ) {
+  // Verify owner - FIX: Handle populated userId
+  const orderUserId = order.userId._id
+    ? order.userId._id.toString()
+    : order.userId.toString();
+  if (orderUserId !== req.user._id.toString() && req.user.role !== "admin") {
     console.log(`[DEBUG] Authorization failed`);
     return next(new ErrorResponse("Not authorized", 401));
   }
@@ -735,6 +799,64 @@ export const confirmReceipt = asyncHandler(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: "Order completed successfully. You can now review the products.",
+    data: order,
+  });
+});
+
+// @desc    Mark order as delivered (when map animation completes)
+// @route   PUT /api/orders/:id/mark-delivered
+// @access  Private (Buyer only - triggered by map animation completion)
+export const markAsDelivered = asyncHandler(async (req, res, next) => {
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    return next(new ErrorResponse("Order not found", 404));
+  }
+
+  // Verify ownership
+  if (order.userId.toString() !== req.user._id.toString()) {
+    return next(new ErrorResponse("Not authorized", 401));
+  }
+
+  // Only mark as delivered if currently shipping or shipped
+  if (order.status !== "shipping" && order.status !== "shipped") {
+    return next(
+      new ErrorResponse(
+        `Cannot mark as delivered for order with status: ${order.status}. Order must be in shipping or shipped status.`,
+        400,
+      ),
+    );
+  }
+
+  // Cancel auto-delivery timer if exists
+  orderTrackingService.cancelDeliveryTimer(order._id.toString());
+
+  // Update to delivered
+  order.status = "delivered";
+  order.deliveredAt = new Date();
+  order.statusHistory.push({
+    status: "delivered",
+    changedBy: req.user._id,
+    changedByRole: req.user.role,
+    changedAt: new Date(),
+    notes: "Đơn hàng đã được giao đến địa chỉ (tự động từ map tracking)",
+  });
+
+  await order.save();
+
+  // Notify via Socket
+  orderTrackingService.notifyBuyerStatusChange(
+    order._id.toString(),
+    "delivered",
+    {
+      orderNumber: order.orderNumber,
+      deliveredAt: order.deliveredAt,
+    },
+  );
+
+  res.status(200).json({
+    success: true,
+    message: "Order marked as delivered successfully",
     data: order,
   });
 });

@@ -6,6 +6,7 @@ import { ErrorResponse } from "../utils/errorResponse.js";
 import ghnService from "./ghn.service.js";
 import User from "../models/User.js";
 import { simulateGHNWebhook } from "../utils/simulateGHNWebhook.js";
+import * as orderTrackingService from "./orderTracking.service.js";
 
 /**
  * Create a new order
@@ -454,11 +455,21 @@ export const cancelOrder = async (orderId, cancellationReason) => {
   }
 
   // Can only cancel pending or processing orders
-  if (!["pending", "processing"].includes(order.status)) {
+  if (!["pending", "processing", "shipping"].includes(order.status)) {
     throw new ErrorResponse(
       `Cannot cancel order with status '${order.status}'`,
       400,
     );
+  }
+
+  // FIX BUG 13: Cancel delivery timer if order was in shipping status
+  if (order.status === "shipping") {
+    const cancelled = orderTrackingService.cancelDeliveryTimer(orderId);
+    if (cancelled) {
+      console.log(
+        `[CancelOrder] Delivery timer cancelled for order ${orderId}`,
+      );
+    }
   }
 
   order.status = "cancelled";

@@ -41,7 +41,10 @@ import chatRoutes from "./routes/chat.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
+import rmaRoutes from "./routes/rma.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
+import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
+import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
 // Load environment variables
 dotenv.config();
 
@@ -200,6 +203,7 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
 app.use("/api/ghn", ghnRoutes);
+app.use("/api/rma", rmaRoutes);
 
 // Error handler
 app.use(errorHandler);
@@ -254,7 +258,7 @@ import { setSocketIO } from "./utils/socketIO.js";
 // Make io instance globally accessible for controllers
 setSocketIO(io);
 
-import setupSocketHandlers from './socket.js';
+import setupSocketHandlers from "./socket.js";
 // Setup socket handlers
 setupSocketHandlers(io);
 
@@ -265,6 +269,8 @@ server.listen(PORT, HOST, () => {
   logger.info(`Server is running on port ${PORT}`);
   // Initialize cron jobs
   initShopStatisticJobs();
+  startOrderCleanupJob();
+  startRmaAutoApprovalJob();
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s
