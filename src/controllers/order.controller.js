@@ -5,7 +5,6 @@ import CartItem from "../models/CartItem.js";
 import Product from "../models/Product.js";
 import InventoryItem from "../models/InventoryItem.js";
 import InventoryTransaction from "../models/InventoryTransaction.js";
-import FlashSaleProduct from "../models/FlashSaleProduct.js";
 import Voucher from "../models/Voucher.js";
 import Deal from "../models/Deal.js";
 import User from "../models/User.js";
