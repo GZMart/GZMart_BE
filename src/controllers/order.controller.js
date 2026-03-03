@@ -33,8 +33,8 @@ export const getCheckoutInfo = asyncHandler(async (req, res, next) => {
       email: user.email,
       phone: user.phone || "",
       address: user.address || "",
-      state: user.provinceName || "Melbourne", // Default or from DB
-      country: "Australia", // Hardcoded for now or add to User model if needed
+      state: user.provinceName || "", // Default or from DB
+      country: "Vietnam", // Changed from Australia
     },
   });
 });
