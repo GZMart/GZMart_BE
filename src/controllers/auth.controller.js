@@ -374,13 +374,25 @@ export const loginWithGoogle = async (req, res) => {
       await user.save();
       console.log("New Google user created:", { avatar: user.avatar, picture });
     } else {
-      if (picture && user.avatar !== picture) {
+      const DEFAULT_AVATAR = 'https://static.vecteezy.com/system/resources/previews/019/896/008/original/male-user-avatar-icon-in-flat-design-style-person-signs-illustration-png.png';
+      
+      console.log('Google Login Check:', { 
+        currentAvatar: user.avatar, 
+        googlePicture: picture,
+        isDefault: user.avatar === DEFAULT_AVATAR 
+      });
+
+      // Update if no avatar OR if it's currently the default one
+      if (picture && (!user.avatar || user.avatar === DEFAULT_AVATAR)) {
         user.avatar = picture;
         await user.save();
         console.log("Existing Google user avatar updated:", {
           oldAvatar: user.avatar,
           newPicture: picture,
         });
+        console.log('Google user avatar updated (was empty or default).');
+      } else {
+        console.log('Skipping avatar update (custom avatar exists).');
       }
     }
 
@@ -444,7 +456,7 @@ export const loginWithFacebook = async (req, res) => {
 
       await user.save();
     } else {
-      if (picture && user.avatar !== picture) {
+      if (picture && !user.avatar) {
         user.avatar = picture;
         await user.save();
       }

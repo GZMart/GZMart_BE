@@ -1,8 +1,55 @@
 import Product from "../models/Product.js";
 import Category from "../models/Category.js";
 import User from "../models/User.js";
+import Deal from "../models/Deal.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { generateSKU } from "../utils/skuGenerator.js";
+
+/**
+ * Fetch the currently active flash sale for a product, shaped for the FE.
+ * Returns null when there is no active flash sale.
+ */
+const getActiveFlashSaleForProduct = async (productId, originalPrice = 0) => {
+  const now = new Date();
+  const deal = await Deal.findOne({
+    productId,
+    type: "flash_sale",
+    status: "active",
+    startDate: { $lte: now },
+    endDate: { $gt: now },
+  }).lean();
+
+  if (!deal) return null;
+
+  const salePrice = deal.dealPrice ?? originalPrice;
+  const discount =
+    originalPrice > 0
+      ? Math.round(((originalPrice - salePrice) / originalPrice) * 10000) / 100
+      : 0;
+
+  return {
+    flashSaleId: deal._id,
+    salePrice,
+    originalPrice,
+    discountPercent: discount,
+    discountAmount: Math.max(0, originalPrice - salePrice),
+    totalQuantity: deal.quantityLimit || 0,
+    soldQuantity: deal.soldCount || 0,
+    remainingQuantity: Math.max(
+      0,
+      (deal.quantityLimit || 0) - (deal.soldCount || 0),
+    ),
+    startAt: deal.startDate,
+    endAt: deal.endDate,
+    timeRemaining: Math.max(
+      0,
+      new Date(deal.endDate).getTime() - now.getTime(),
+    ),
+    campaignTitle: deal.title || null,
+    purchaseLimitPerOrder: deal.purchaseLimitPerOrder,
+    purchaseLimitPerUser: deal.purchaseLimitPerUser,
+  };
+};
 
 /**
  * Generate URL-friendly slug
@@ -177,10 +224,9 @@ export const createProduct = async (productData, sellerId) => {
  * (Merged: Dev logic + GZM-13 view increment)
  */
 export const getProductById = async (productId) => {
-  const product = await Product.findById(productId).populate(
-    "categoryId",
-    "name slug",
-  );
+  const product = await Product.findById(productId)
+    .populate("categoryId", "name slug")
+    .populate("sellerId", "fullName avatar email provinceName createdAt aboutMe");
 
   if (!product) {
     throw new ErrorResponse("Product not found", 404);
@@ -190,17 +236,58 @@ export const getProductById = async (productId) => {
   product.viewCount = (product.viewCount || 0) + 1;
   await product.save({ validateBeforeSave: false });
 
-  return product;
+  // Convert to object so we can attach computed seller fields
+  const productObj = product.toObject();
+
+  if (productObj.sellerId && productObj.sellerId._id) {
+    const sellerId = productObj.sellerId._id;
+    // Import dynamically or ensure imported at file top
+    // Try doing parallel promises to fetch shop details
+    const [shopStats, productCount, followerCount, followingCount] = await Promise.all([
+      import('../models/ShopStatistic.js').then(m => m.default.findOne({ sellerId })),
+      Product.countDocuments({ sellerId, status: "active" }),
+      import('../models/Follow.js').then(m => m.default.countDocuments({ followingId: sellerId })),
+      import('../models/Follow.js').then(m => m.default.countDocuments({ followerId: sellerId }))
+    ]);
+
+    productObj.sellerId.productCount = productCount;
+    productObj.sellerId.followerCount = followerCount;
+    productObj.sellerId.followingCount = followingCount;
+    
+    if (shopStats) {
+      productObj.sellerId.isPreferred = shopStats.isPreferred;
+      productObj.sellerId.rating = shopStats.ratingAverage;
+      productObj.sellerId.ratingCount = shopStats.ratingCount;
+      productObj.sellerId.chatResponseRate = shopStats.chatResponseRate;
+      productObj.sellerId.cancelDutyRate = shopStats.cancelDutyRate;
+    } else {
+      // Default fallback
+      productObj.sellerId.isPreferred = false;
+      productObj.sellerId.rating = 0;
+      productObj.sellerId.ratingCount = 0;
+      productObj.sellerId.chatResponseRate = 100;
+      productObj.sellerId.cancelDutyRate = 0;
+    }
+  }
+
+  console.log('RETURNING', JSON.stringify(productObj.sellerId)); return productObj;
+  const flashSale = await getActiveFlashSaleForProduct(
+    product._id,
+    product.originalPrice,
+  );
+
+  const result = product.toObject();
+  result.flashSale = flashSale;
+  return result;
 };
 
 /**
  * Get product by Slug
  */
 export const getProductBySlug = async (slug) => {
-  const product = await Product.findOne({ slug }).populate(
-    "categoryId",
-    "name slug",
-  );
+  const product = await Product.findOne({ slug })
+    .populate("categoryId", "name slug")
+    .populate("sellerId", "fullName avatar email provinceName createdAt aboutMe");
 
   if (!product) {
     throw new ErrorResponse("Product not found", 404);
@@ -209,7 +296,48 @@ export const getProductBySlug = async (slug) => {
   product.viewCount = (product.viewCount || 0) + 1;
   await product.save({ validateBeforeSave: false });
 
-  return product;
+
+  // Convert to object so we can attach computed seller fields
+  const productObj = product.toObject();
+
+  if (productObj.sellerId && productObj.sellerId._id) {
+    const sellerId = productObj.sellerId._id;
+    const [shopStats, productCount, followerCount, followingCount] = await Promise.all([
+      import('../models/ShopStatistic.js').then(m => m.default.findOne({ sellerId })),
+      Product.countDocuments({ sellerId, status: "active" }),
+      import('../models/Follow.js').then(m => m.default.countDocuments({ followingId: sellerId })),
+      import('../models/Follow.js').then(m => m.default.countDocuments({ followerId: sellerId }))
+    ]);
+
+    productObj.sellerId.productCount = productCount;
+    productObj.sellerId.followerCount = followerCount;
+    productObj.sellerId.followingCount = followingCount;
+    
+    if (shopStats) {
+      productObj.sellerId.isPreferred = shopStats.isPreferred;
+      productObj.sellerId.rating = shopStats.ratingAverage;
+      productObj.sellerId.ratingCount = shopStats.ratingCount;
+      productObj.sellerId.chatResponseRate = shopStats.chatResponseRate;
+      productObj.sellerId.cancelDutyRate = shopStats.cancelDutyRate;
+    } else {
+      productObj.sellerId.isPreferred = false;
+      productObj.sellerId.rating = 0;
+      productObj.sellerId.ratingCount = 0;
+      productObj.sellerId.chatResponseRate = 100;
+      productObj.sellerId.cancelDutyRate = 0;
+    }
+  }
+
+  return productObj;
+
+  const flashSale = await getActiveFlashSaleForProduct(
+    product._id,
+    product.originalPrice,
+  );
+
+  const result = product.toObject();
+  result.flashSale = flashSale;
+  return result;
 };
 
 /**
@@ -407,6 +535,7 @@ export const getProductsAdvanced = async (options) => {
   const [products, total] = await Promise.all([
     Product.find(query)
       .populate("categoryId", "name slug")
+      .populate("sellerId", "fullName avatar email provinceName createdAt aboutMe")
       .sort(sortOptions)
       .skip(skip)
       .limit(limit)
@@ -621,17 +750,47 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
   const { page = 1, limit = 20 } = options;
   const skip = (page - 1) * limit;
 
-  const [products, total] = await Promise.all([
-    Product.find({ sellerId })
+  // Validate Seller exists
+  const seller = await User.findById(sellerId).select("fullName avatar provinceName createdAt aboutMe role");
+  if (!seller) {
+    throw new ErrorResponse("Seller not found", 404);
+  }
+
+  const sellerObj = seller.toObject();
+
+  const [products, total, shopStats, productCount, followerCount, followingCount] = await Promise.all([
+    Product.find({ sellerId, status: "active" })
       .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-    Product.countDocuments({ sellerId }),
+    Product.countDocuments({ sellerId, status: "active" }),
+    import('../models/ShopStatistic.js').then(m => m.default.findOne({ sellerId })),
+    Product.countDocuments({ sellerId, status: "active" }),
+    import('../models/Follow.js').then(m => m.default.countDocuments({ followingId: sellerId })),
+    import('../models/Follow.js').then(m => m.default.countDocuments({ followerId: sellerId }))
   ]);
 
-  return { products, total, page, pages: Math.ceil(total / limit) };
+  sellerObj.productCount = productCount;
+  sellerObj.followerCount = followerCount;
+  sellerObj.followingCount = followingCount;
+  
+  if (shopStats) {
+    sellerObj.isPreferred = shopStats.isPreferred;
+    sellerObj.rating = shopStats.ratingAverage;
+    sellerObj.ratingCount = shopStats.ratingCount;
+    sellerObj.chatResponseRate = shopStats.chatResponseRate;
+    sellerObj.cancelDutyRate = shopStats.cancelDutyRate;
+  } else {
+    sellerObj.isPreferred = false;
+    sellerObj.rating = 0;
+    sellerObj.ratingCount = 0;
+    sellerObj.chatResponseRate = 100;
+    sellerObj.cancelDutyRate = 0;
+  }
+
+  return { seller: sellerObj, products, total, page, pages: Math.ceil(total / limit) };
 };
 
 /**
