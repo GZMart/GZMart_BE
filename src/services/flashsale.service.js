@@ -145,6 +145,117 @@ export const createFlashSale = async (flashSaleData) => {
 };
 
 /**
+ * Create multiple flash-sale deals in one batch for a single product.
+ * Each entry in `variants[]` becomes its own Deal document.
+ *
+ * Payload:
+ *   { productId, campaignTitle, startAt, endAt, sellerId,
+ *     variants: [{ variantSku, salePrice, totalQuantity,
+ *                  purchaseLimitPerOrder, purchaseLimitPerUser }] }
+ */
+export const createBatchFlashSale = async (batchData) => {
+  const { productId, campaignTitle, startAt, endAt, sellerId, variants } =
+    batchData;
+
+  if (
+    !productId ||
+    !startAt ||
+    !endAt ||
+    !Array.isArray(variants) ||
+    variants.length === 0
+  ) {
+    throw new ErrorResponse(
+      "Please provide productId, startAt, endAt, and at least one variant",
+      400,
+    );
+  }
+
+  const start = new Date(startAt);
+  const end = new Date(endAt);
+
+  if (start >= end) {
+    throw new ErrorResponse("startAt must be before endAt", 400);
+  }
+  if (start <= new Date()) {
+    throw new ErrorResponse("startAt must be in the future", 400);
+  }
+
+  const product = await Product.findById(productId);
+  if (!product) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
+  const originalPrice = product.originalPrice || 0;
+  const resolvedSellerId = sellerId || product.sellerId;
+
+  // Validate each variant and check for duplicates
+  for (const v of variants) {
+    if (v.salePrice === undefined || v.salePrice <= 0) {
+      throw new ErrorResponse(
+        `salePrice must be > 0 for variant ${v.variantSku || "(no sku)"}`,
+        400,
+      );
+    }
+    if (!v.totalQuantity || Number(v.totalQuantity) < 1) {
+      throw new ErrorResponse(
+        `totalQuantity must be >= 1 for variant ${v.variantSku || "(no sku)"}`,
+        400,
+      );
+    }
+
+    const dupQuery = {
+      productId,
+      type: "flash_sale",
+      status: { $in: ["pending", "active"] },
+    };
+    if (v.variantSku) dupQuery.variantSku = v.variantSku;
+
+    const existing = await Deal.findOne(dupQuery);
+    if (existing) {
+      throw new ErrorResponse(
+        `An active or upcoming flash sale already exists for ${
+          v.variantSku ? `variant ${v.variantSku}` : "this product"
+        }`,
+        400,
+      );
+    }
+  }
+
+  // Create one Deal per variant
+  const created = await Promise.all(
+    variants.map((v) => {
+      const salePrice = Number(v.salePrice);
+      const discountPercent =
+        originalPrice > 0
+          ? Math.max(
+              0,
+              Math.round(
+                ((originalPrice - salePrice) / originalPrice) * 10000,
+              ) / 100,
+            )
+          : 0;
+
+      return Deal.create({
+        type: "flash_sale",
+        productId,
+        variantSku: v.variantSku || null,
+        title: campaignTitle || null,
+        dealPrice: salePrice,
+        discountPercent,
+        quantityLimit: Number(v.totalQuantity),
+        startDate: start,
+        endDate: end,
+        sellerId: resolvedSellerId,
+        purchaseLimitPerOrder: v.purchaseLimitPerOrder || 1,
+        purchaseLimitPerUser: v.purchaseLimitPerUser || 1,
+      });
+    }),
+  );
+
+  return created.map(mapToFlashSaleShape);
+};
+
+/**
  * Get all flash sales (with pagination, status filter, and sortBy)
  */
 export const getFlashSales = async (filters = {}) => {
@@ -295,20 +406,50 @@ export const updateFlashSale = async (flashSaleId, updateData) => {
     throw new ErrorResponse("Flash sale not found", 404);
   }
 
-  if (startAt || endAt) {
-    const newStartAt = startAt ? new Date(startAt) : flashSale.startDate;
-    const newEndAt = endAt ? new Date(endAt) : flashSale.endDate;
-    if (newStartAt >= newEndAt) {
-      throw new ErrorResponse("startAt must be before endAt", 400);
+  const now = new Date();
+  const isActive = flashSale.startDate <= now && flashSale.endDate >= now;
+  const isPending = flashSale.startDate > now;
+
+  // If flash sale already started, disallow changing startAt
+  if (startAt && isActive) {
+    const requestedStart = new Date(startAt);
+    // Only block if trying to change to a genuinely different value
+    if (
+      Math.abs(requestedStart.getTime() - flashSale.startDate.getTime()) > 1000
+    ) {
+      throw new ErrorResponse(
+        "Cannot change start time of an already active flash sale",
+        400,
+      );
+    }
+    // Same value sent back – just ignore it
+  }
+
+  // For pending flash sales, validate that new startAt is in the future
+  if (startAt && isPending) {
+    const newStart = new Date(startAt);
+    if (newStart <= now) {
+      throw new ErrorResponse("startAt must be in the future", 400);
     }
   }
 
-  if (salePrice !== undefined) {
-    flashSale.dealPrice = Number(salePrice);
+  if (endAt) {
+    const newStartAt =
+      startAt && isPending ? new Date(startAt) : flashSale.startDate;
+    const newEndAt = new Date(endAt);
+    if (newStartAt >= newEndAt) {
+      throw new ErrorResponse("startAt must be before endAt", 400);
+    }
+    if (newEndAt <= now) {
+      throw new ErrorResponse("endAt must be in the future", 400);
+    }
   }
+
+  if (salePrice !== undefined) flashSale.dealPrice = Number(salePrice);
   if (totalQuantity !== undefined)
     flashSale.quantityLimit = Number(totalQuantity);
-  if (startAt) flashSale.startDate = new Date(startAt);
+  // Only update startAt when flash sale hasn't started yet
+  if (startAt && isPending) flashSale.startDate = new Date(startAt);
   if (endAt) flashSale.endDate = new Date(endAt);
   if (variantSku !== undefined) flashSale.variantSku = variantSku;
   if (campaignTitle !== undefined) flashSale.title = campaignTitle;
@@ -317,11 +458,11 @@ export const updateFlashSale = async (flashSaleId, updateData) => {
   if (purchaseLimitPerUser !== undefined)
     flashSale.purchaseLimitPerUser = Number(purchaseLimitPerUser);
 
-  // Recalculate status based on dates
-  const now = new Date();
-  if (flashSale.startDate > now) {
+  // Recalculate status based on dates (pre-save hook also does this)
+  const updatedNow = new Date();
+  if (flashSale.startDate > updatedNow) {
     flashSale.status = "pending";
-  } else if (flashSale.endDate < now) {
+  } else if (flashSale.endDate < updatedNow) {
     flashSale.status = "expired";
   } else {
     flashSale.status = "active";
@@ -384,6 +525,54 @@ export const getFlashSalePrice = async (productId, regularPrice) => {
     isFlashSale: false,
     flashSaleId: null,
   };
+};
+
+/**
+ * Sync deal statuses based on current time.
+ * Activates pending deals whose startDate has passed, and expires
+ * active deals whose endDate has passed.
+ * Called by the background scheduler and on-demand.
+ */
+export const syncDealStatuses = async () => {
+  const now = new Date();
+
+  // pending → active
+  await Deal.updateMany(
+    {
+      type: "flash_sale",
+      status: "pending",
+      startDate: { $lte: now },
+      endDate: { $gt: now },
+    },
+    { $set: { status: "active" } },
+  );
+
+  // pending → expired (end date passed before ever going active, e.g. server was down)
+  await Deal.updateMany(
+    { type: "flash_sale", status: "pending", endDate: { $lte: now } },
+    { $set: { status: "expired" } },
+  );
+
+  // active → expired (time exceeded)
+  await Deal.updateMany(
+    { type: "flash_sale", status: "active", endDate: { $lte: now } },
+    { $set: { status: "expired" } },
+  );
+
+  // active → expired (quantity exhausted)
+  await Deal.updateMany(
+    {
+      type: "flash_sale",
+      status: "active",
+      $expr: {
+        $and: [
+          { $gt: ["$quantityLimit", 0] },
+          { $gte: ["$soldCount", "$quantityLimit"] },
+        ],
+      },
+    },
+    { $set: { status: "expired" } },
+  );
 };
 
 // ─── Unused / legacy stubs kept for backward-compat ──────────────────────────
