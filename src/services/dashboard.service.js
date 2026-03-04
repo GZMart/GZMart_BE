@@ -7,7 +7,7 @@ import { ErrorResponse } from "../utils/errorResponse.js";
 
 /**
  * Get overall dashboard analytics
- * Returns: Revenue, Best sellers, Low stock, Order stats
+ * Returns: Revenue, Best sellers, Order stats, Customer stats
  */
 export const getDashboardAnalytics = async (sellerId) => {
   if (!sellerId) {
@@ -15,20 +15,16 @@ export const getDashboardAnalytics = async (sellerId) => {
   }
 
   // Fetch all data in parallel
-  const [revenue, bestSellers, lowStock, orderStats, customerStats] =
-    await Promise.all([
-      getRevenueStats(sellerId),
-      getBestSellingProducts(sellerId, 5),
-      getLowStockProducts(sellerId, 10),
-      getOrderStats(sellerId),
-      getCustomerStats(sellerId),
-    ]);
+  const [revenue, bestSellers, orderStats, customerStats] = await Promise.all([
+    getRevenueStats(sellerId),
+    getBestSellingProducts(sellerId, 5),
+    getOrderStats(sellerId),
+    getCustomerStats(sellerId),
+  ]);
 
   return {
-    period: "today", // Can be expanded to include more periods
     revenue,
     bestSellers,
-    lowStock,
     orderStats,
     customerStats,
   };
@@ -62,11 +58,12 @@ export const getRevenueStats = async (sellerId) => {
   }
 
   // Get orders with seller's products
+  // Count revenue from completed/delivered orders (regardless of payment status)
   const orders = await Order.aggregate([
     {
       $match: {
         createdAt: { $gte: yearAgo },
-        paymentStatus: "paid", // Only count paid orders
+        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
       },
     },
     {
@@ -154,7 +151,7 @@ export const getRevenueOverTime = async (sellerId, period = "daily") => {
     {
       $match: {
         createdAt: { $gte: startDate },
-        paymentStatus: "paid",
+        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
       },
     },
     {
@@ -236,13 +233,10 @@ export const getBestSellingProducts = async (sellerId, limit = 5) => {
     {
       $project: {
         _id: 0,
-        productId: "$_id",
-        name: "$product.name",
-        originalPrice: "$product.originalPrice",
-        images: "$product.images",
+        productId: '$_id',
+        name: '$product.name',
+        originalPrice: '$product.originalPrice',
         totalSold: 1,
-        totalRevenue: 1,
-        averagePrice: 1,
       },
     },
   ]);
@@ -340,15 +334,10 @@ export const getOrderStats = async (sellerId) => {
   if (sellerProductIds.length === 0) {
     return {
       total: 0,
-      pending: 0,
-      processing: 0,
-      shipped: 0,
-      delivered: 0,
-      cancelled: 0,
-      averageValue: 0,
     };
   }
 
+  // Get stats by order status
   const orderStats = await Order.aggregate([
     {
       $lookup: {
@@ -368,31 +357,34 @@ export const getOrderStats = async (sellerId) => {
     },
     {
       $group: {
-        _id: "$status",
-        count: { $sum: 1 },
+        _id: null,
+        total: { $sum: 1 },
       },
     },
   ]);
 
-  const statusMap = {
-    pending: 0,
-    processing: 0,
-    shipped: 0,
-    delivered: 0,
-    cancelled: 0,
+  const total = orderStats[0]?.total || 0;
+
+  return {
+    total,
   };
+};
 
-  orderStats.forEach((stat) => {
-    if (statusMap.hasOwnProperty(stat._id)) {
-      statusMap[stat._id] = stat.count;
-    }
-  });
+/**
+ * Get customer statistics
+ */
+export const getCustomerStats = async (sellerId) => {
+  const sellerProducts = await Product.find({ sellerId }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
 
-  const totalOrders = await Order.countDocuments({
-    items: { $elemMatch: { productId: { $in: sellerProductIds } } },
-  });
+  if (sellerProductIds.length === 0) {
+    return {
+      repeatedPurchaseRate: 0,
+    };
+  }
 
-  const avgValue = await Order.aggregate([
+  // Get all orders with seller products using aggregation
+  const orders = await Order.aggregate([
     {
       $lookup: {
         from: "orderitems",
@@ -411,79 +403,18 @@ export const getOrderStats = async (sellerId) => {
     },
     {
       $group: {
-        _id: null,
-        avgValue: { $avg: "$subtotal" },
+        _id: '$userId',
+        orderCount: { $sum: 1 },
       },
     },
   ]);
 
-  return {
-    total: totalOrders,
-    ...statusMap,
-    averageValue: avgValue[0]?.avgValue || 0,
-  };
-};
-
-/**
- * Get customer statistics
- */
-export const getCustomerStats = async (sellerId) => {
-  const sellerProducts = await Product.find({ sellerId }).select("_id");
-  const sellerProductIds = sellerProducts.map((p) => p._id);
-
-  if (sellerProductIds.length === 0) {
-    return {
-      totalCustomers: 0,
-      repeatCustomers: 0,
-      newCustomers: 0,
-      repeatedPurchaseRate: 0,
-    };
-  }
-
-  // Get all orders with seller products
-  const orders = await Order.find().populate("items").lean();
-
-  const filteredOrders = orders.filter(
-    (order) =>
-      order.items &&
-      order.items.length > 0 &&
-      order.items.some((item) =>
-        sellerProductIds.includes(
-          typeof item.productId === "string"
-            ? item.productId
-            : item.productId.toString(),
-        ),
-      ),
-  );
-
-  // Get unique customers
-  const uniqueCustomers = new Set(
-    filteredOrders.map((o) => o.userId.toString()),
-  );
-  const totalCustomers = uniqueCustomers.size;
-
-  // Get repeat customers (more than 1 order)
-  const customerOrderCount = {};
-  filteredOrders.forEach((order) => {
-    const userId = order.userId.toString();
-    customerOrderCount[userId] = (customerOrderCount[userId] || 0) + 1;
-  });
-
-  const repeatCustomers = Object.values(customerOrderCount).filter(
-    (count) => count > 1,
-  ).length;
-  const newCustomers = Object.values(customerOrderCount).filter(
-    (count) => count === 1,
-  ).length;
-  const repeatedPurchaseRate =
-    totalCustomers > 0
-      ? Math.round((repeatCustomers / totalCustomers) * 100)
-      : 0;
+  // Calculate repeat customers
+  const totalCustomers = orders.length;
+  const repeatCustomers = orders.filter(order => order.orderCount > 1).length;
+  const repeatedPurchaseRate = totalCustomers > 0 ? Math.round((repeatCustomers / totalCustomers) * 100 * 100) / 100 : 0;
 
   return {
-    totalCustomers,
-    repeatCustomers,
-    newCustomers,
     repeatedPurchaseRate,
   };
 };
@@ -571,7 +502,7 @@ export const getSalesTrend = async (sellerId, days = 30) => {
     {
       $match: {
         createdAt: { $gte: startDate },
-        paymentStatus: "paid",
+        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
       },
     },
     {
@@ -649,7 +580,7 @@ export const getComparisonStats = async (sellerId, period = "month") => {
       {
         $match: {
           createdAt: { $gte: start, $lte: end },
-          paymentStatus: "paid",
+          status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
         },
       },
       {
