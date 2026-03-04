@@ -157,21 +157,46 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
   };
 
   const orders = await Order.find(filterQuery)
-    .populate("userId", "fullName email phone")
-    .populate("items")
+    .populate('userId', 'fullName email phone')
+    .populate({
+      path: 'items',
+      populate: {
+        path: 'productId',
+        select: 'name images originalPrice models tiers',
+      },
+    })
     .sort(sortOptions[sortBy] || { createdAt: -1 })
     .skip(skip)
-    .limit(Number(limit))
-    .lean();
+    .limit(Number(limit));
 
   const total = await Order.countDocuments(filterQuery);
+
+  // Enrich items with selected model only
+  const enrichedOrders = orders.map(order => ({
+    ...order.toObject(),
+    items: order.items.map(item => {
+      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
+      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+
+      return {
+        ...item.toObject(),
+        tierDetails,
+        productId: {
+          ...item.productId.toObject(),
+          selectedModel,
+          models: undefined,
+          tiers: undefined,
+        },
+      };
+    }),
+  }));
 
   return {
     total,
     page: Number(page),
     limit: Number(limit),
     pages: Math.ceil(total / limit),
-    data: orders,
+    data: enrichedOrders,
   };
 };
 
@@ -205,18 +230,43 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
   const filter = { status };
 
   const orders = await Order.find(filter)
-    .populate("userId", "fullName email phone")
-    .populate("items")
+    .populate('userId', 'fullName email phone')
+    .populate({
+      path: 'items',
+      populate: {
+        path: 'productId',
+        select: 'name images originalPrice models tiers',
+      },
+    })
     .sort({ createdAt: -1 })
     .skip(skip)
-    .limit(Number(limit))
-    .lean();
+    .limit(Number(limit));
 
   const total = await Order.countDocuments(filter);
 
   const statusCounts = await Order.aggregate([
     { $group: { _id: "$status", count: { $sum: 1 } } },
   ]);
+
+  // Enrich items with selected model only
+  const enrichedOrders = orders.map(order => ({
+    ...order.toObject(),
+    items: order.items.map(item => {
+      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
+      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+
+      return {
+        ...item.toObject(),
+        tierDetails,
+        productId: {
+          ...item.productId.toObject(),
+          selectedModel,
+          models: undefined,
+          tiers: undefined,
+        },
+      };
+    }),
+  }));
 
   return {
     total,
@@ -227,7 +277,7 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
       acc[item._id] = item.count;
       return acc;
     }, {}),
-    data: orders,
+    data: enrichedOrders,
   };
 };
 
@@ -257,15 +307,41 @@ export const getOrderStatusHistory = async (orderId) => {
  */
 export const getOrderDetail = async (orderId) => {
   const order = await Order.findById(orderId)
-    .populate("userId")
-    .populate("items")
-    .populate("shipperId", "fullName phone");
+    .populate('userId')
+    .populate({
+      path: 'items',
+      populate: {
+        path: 'productId',
+        select: 'name images originalPrice models tiers',
+      },
+    })
+    .populate('shipperId', 'fullName phone');
 
   if (!order) {
     throw new ErrorResponse("Order not found", 404);
   }
 
-  return order;
+  // Enrich items with selected model only
+  const enrichedOrder = {
+    ...order.toObject(),
+    items: order.items.map(item => {
+      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
+      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+
+      return {
+        ...item.toObject(),
+        tierDetails,
+        productId: {
+          ...item.productId.toObject(),
+          selectedModel,
+          models: undefined,
+          tiers: undefined,
+        },
+      };
+    }),
+  };
+
+  return enrichedOrder;
 };
 
 /**
@@ -437,11 +513,37 @@ export const updateOrderStatus = async (orderId, updateData, userData) => {
   await order.save();
 
   const updatedOrder = await Order.findById(orderId)
-    .populate("userId", "fullName email phone")
-    .populate("items")
-    .populate("statusHistory.changedBy", "fullName email role");
+    .populate('userId', 'fullName email phone')
+    .populate({
+      path: 'items',
+      populate: {
+        path: 'productId',
+        select: 'name images originalPrice models tiers',
+      },
+    })
+    .populate('statusHistory.changedBy', 'fullName email role');
 
-  return updatedOrder;
+  // Enrich items with selected model only
+  const enrichedOrder = {
+    ...updatedOrder.toObject(),
+    items: updatedOrder.items.map(item => {
+      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
+      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+
+      return {
+        ...item.toObject(),
+        tierDetails,
+        productId: {
+          ...item.productId.toObject(),
+          selectedModel,
+          models: undefined,
+          tiers: undefined,
+        },
+      };
+    }),
+  };
+
+  return enrichedOrder;
 };
 
 /**
@@ -479,10 +581,36 @@ export const cancelOrder = async (orderId, cancellationReason) => {
   await order.save();
 
   const updatedOrder = await Order.findById(orderId)
-    .populate("userId", "fullName email phone")
-    .populate("items");
+    .populate('userId', 'fullName email phone')
+    .populate({
+      path: 'items',
+      populate: {
+        path: 'productId',
+        select: 'name images originalPrice models tiers',
+      },
+    });
 
-  return updatedOrder;
+  // Enrich items with selected model only
+  const enrichedOrder = {
+    ...updatedOrder.toObject(),
+    items: updatedOrder.items.map(item => {
+      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
+      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+
+      return {
+        ...item.toObject(),
+        tierDetails,
+        productId: {
+          ...item.productId.toObject(),
+          selectedModel,
+          models: undefined,
+          tiers: undefined,
+        },
+      };
+    }),
+  };
+
+  return enrichedOrder;
 };
 
 /**
@@ -607,4 +735,23 @@ function generateDeliveryNoteHTML(order) {
     </body>
     </html>
   `;
+}
+
+/**
+ * Helper function to enrich tier details from tierIndex
+ * Maps tierIndex to tier names and values
+ */
+function enrichTierDetails(item, selectedModel, tiers) {
+  if (!selectedModel || !tiers || tiers.length === 0 || !selectedModel.tierIndex) {
+    return item.tierSelections || {};
+  }
+
+  const tierDetails = {};
+  selectedModel.tierIndex.forEach((index, tierPosition) => {
+    if (tiers[tierPosition] && tiers[tierPosition].options && tiers[tierPosition].options[index]) {
+      tierDetails[tiers[tierPosition].name] = tiers[tierPosition].options[index];
+    }
+  });
+
+  return tierDetails;
 }

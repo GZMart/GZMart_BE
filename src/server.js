@@ -39,6 +39,7 @@ import purchaseOrderRoutes from "./routes/purchaseOrder.routes.js";
 import ghnRoutes from "./routes/ghn.routes.js";
 import chatRoutes from "./routes/chat.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
+import reviewRoutes from "./routes/review.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
@@ -204,6 +205,7 @@ app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
 app.use("/api/ghn", ghnRoutes);
 app.use("/api/rma", rmaRoutes);
+app.use("/api/reviews", reviewRoutes);
 
 // Error handler
 app.use(errorHandler);
