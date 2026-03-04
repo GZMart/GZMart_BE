@@ -374,12 +374,13 @@ export const loginWithGoogle = async (req, res) => {
       await user.save();
       console.log("New Google user created:", { avatar: user.avatar, picture });
     } else {
-      const DEFAULT_AVATAR = 'https://static.vecteezy.com/system/resources/previews/019/896/008/original/male-user-avatar-icon-in-flat-design-style-person-signs-illustration-png.png';
-      
-      console.log('Google Login Check:', { 
-        currentAvatar: user.avatar, 
+      const DEFAULT_AVATAR =
+        "https://static.vecteezy.com/system/resources/previews/019/896/008/original/male-user-avatar-icon-in-flat-design-style-person-signs-illustration-png.png";
+
+      console.log("Google Login Check:", {
+        currentAvatar: user.avatar,
         googlePicture: picture,
-        isDefault: user.avatar === DEFAULT_AVATAR 
+        isDefault: user.avatar === DEFAULT_AVATAR,
       });
 
       // Update if no avatar OR if it's currently the default one
@@ -390,9 +391,9 @@ export const loginWithGoogle = async (req, res) => {
           oldAvatar: user.avatar,
           newPicture: picture,
         });
-        console.log('Google user avatar updated (was empty or default).');
+        console.log("Google user avatar updated (was empty or default).");
       } else {
-        console.log('Skipping avatar update (custom avatar exists).');
+        console.log("Skipping avatar update (custom avatar exists).");
       }
     }
 
@@ -964,27 +965,51 @@ export const resendVerification = async (req, res, next) => {
 export const refreshToken = asyncHandler(async (req, res, next) => {
   const { refreshToken } = req.body;
 
+  console.log("[REFRESH-TOKEN-DEBUG] 🔄 Refresh token request received");
+
   if (!refreshToken) {
+    console.log("[REFRESH-TOKEN-DEBUG] ❌ No refresh token provided");
     return next(new ErrorResponse("Refresh token is required", 400));
   }
 
+  console.log(
+    "[REFRESH-TOKEN-DEBUG] 🔑 Refresh token:",
+    refreshToken.substring(0, 30) + "...",
+  );
+
   try {
+    console.log(
+      "[REFRESH-TOKEN-DEBUG] 🔍 Verifying with secret:",
+      process.env.JWT_REFRESH_SECRET ? "EXISTS" : "MISSING",
+    );
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    console.log(
+      "[REFRESH-TOKEN-DEBUG] ✅ Token verified, user ID:",
+      decoded.id,
+    );
+
     const user = await User.findById(decoded.id);
 
     if (!user) {
+      console.log("[REFRESH-TOKEN-DEBUG] ❌ User not found:", decoded.id);
       return next(new ErrorResponse("User not found", 404));
     }
+
+    console.log("[REFRESH-TOKEN-DEBUG] ✅ User found:", user.email);
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRE,
     });
+
+    console.log("[REFRESH-TOKEN-DEBUG] ✅ New token generated");
 
     res.status(200).json({
       success: true,
       token,
     });
   } catch (err) {
+    console.log("[REFRESH-TOKEN-DEBUG] 💥 Error:", err.message);
+    console.log("[REFRESH-TOKEN-DEBUG] Error name:", err.name);
     return next(new ErrorResponse("Invalid refresh token", 401));
   }
 });

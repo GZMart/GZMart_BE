@@ -57,17 +57,25 @@ export const handlePayOsWebhook = asyncHandler(async (req, res, next) => {
   } catch (error) {
     console.error("[PayOS Webhook] Error:", error.message);
 
+    // CRITICAL FIX: Return proper error codes for webhook failures
+    // Return 400/401 so PayOS will retry the webhook
     if (
       error.message.includes("Data not integrity") ||
       error.name === "WebhookError" ||
       error.message.includes("Invalid webhook signature")
     ) {
-      console.warn("[PayOS Webhook] Invalid signature - test request");
+      console.warn("[PayOS Webhook] Invalid signature - sending 401 for retry");
+      return res.status(401).json({
+        success: false,
+        message: "Webhook signature verification failed",
+        error: error.message,
+      });
     }
 
-    return res.status(200).json({
+    // For other errors (e.g., order not found), send 400
+    return res.status(400).json({
       success: false,
-      message: "Webhook verification failed",
+      message: "Webhook processing failed",
       error: error.message,
     });
   }

@@ -6,6 +6,10 @@ import { ErrorResponse } from "../utils/errorResponse.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { emailTemplates } from "../templates/email.templates.js";
 import payOs from "../config/payos.config.js";
+import {
+  deductOrderResourcesFromOrder,
+  clearUserCart,
+} from "../utils/orderInventory.js";
 
 class PaymentService {
   /**
@@ -55,7 +59,7 @@ class PaymentService {
     const description = `GZMart #${order.orderNumber}`;
 
     const payosOrder = {
-      amount: 2000, // Hard-coded for testing
+      amount: Math.round(order.totalPrice), // Use actual order total price
       description: description.substring(0, 25),
       orderCode: orderCode,
       returnUrl: `${process.env.FRONTEND_URL}/buyer/payment/success?orderCode=${orderCode}`,
@@ -209,8 +213,26 @@ class PaymentService {
     await order.save();
     console.log("[Webhook] Order saved successfully");
 
+    // CRITICAL FIX: Deduct inventory, vouchers, and flash sales AFTER payment confirmed
+    console.log(
+      "[Webhook] Deducting resources (inventory/vouchers/flash sales)...",
+    );
+    try {
+      await deductOrderResourcesFromOrder(order);
+      console.log("[Webhook] Resources deducted successfully");
+    } catch (deductError) {
+      console.error("[Webhook] Error deducting resources:", deductError);
+      // Don't fail the webhook, but log the error for manual intervention
+    }
+
     console.log("[Webhook] Clearing cart...");
-    await this.clearCartAfterPayment(order.userId);
+    try {
+      await clearUserCart(order.userId);
+      console.log("[Webhook] Cart cleared successfully");
+    } catch (cartError) {
+      console.error("[Webhook] Error clearing cart:", cartError);
+      // Non-critical - cart can be cleared later by user or timeout job
+    }
 
     console.log("[Webhook] Sending confirmation email...");
     await this.sendOrderConfirmationEmail(order);
@@ -253,7 +275,9 @@ class PaymentService {
    * Cancel payment for pending order
    */
   async cancelPayment(orderCode, userId) {
-    const order = await Order.findOne({ payosOrderCode: orderCode });
+    const order = await Order.findOne({ payosOrderCode: orderCode }).populate(
+      "items",
+    );
 
     if (!order) {
       throw new ErrorResponse("Không tìm thấy đơn hàng", 404);
@@ -265,6 +289,16 @@ class PaymentService {
 
     if (order.paymentStatus !== "pending") {
       throw new ErrorResponse("Không thể hủy đơn hàng đã thanh toán", 400);
+    }
+
+    // CRITICAL FIX: Rollback resources if they were already deducted (shouldn't happen for PayOS, but safety check)
+    if (order.resourcesDeducted) {
+      console.log(
+        `[Payment] Rolling back resources for cancelled order ${order.orderNumber}`,
+      );
+      const { rollbackOrderResources } =
+        await import("../utils/orderInventory.js");
+      await rollbackOrderResources(order);
     }
 
     order.status = "cancelled";
@@ -367,8 +401,26 @@ class PaymentService {
           status: order.status,
         });
 
+        // CRITICAL FIX: Deduct resources after payment confirmed
+        console.log("[PayOS Check] Deducting resources...");
+        try {
+          await deductOrderResourcesFromOrder(order);
+          console.log("[PayOS Check] Resources deducted successfully");
+        } catch (deductError) {
+          console.error(
+            "[PayOS Check] Error deducting resources:",
+            deductError,
+          );
+        }
+
         console.log("[PayOS Check] Clearing cart for userId:", order.userId);
-        await this.clearCartAfterPayment(order.userId);
+        try {
+          await clearUserCart(order.userId);
+          console.log("[PayOS Check] Cart cleared successfully");
+        } catch (cartError) {
+          console.error("[PayOS Check] Error clearing cart:", cartError);
+          // Non-critical - cart can be cleared later by user
+        }
 
         console.log("[PayOS Check] Sending confirmation email...");
         await this.sendOrderConfirmationEmail(order);
