@@ -212,6 +212,13 @@ const orderSchema = new mongoose.Schema(
         notes: String,
       },
     ],
+
+    // ===== Resource Management =====
+    resourcesDeducted: {
+      type: Boolean,
+      default: false,
+      description: "Flag to track if inventory/vouchers have been deducted",
+    },
   },
   {
     timestamps: true,

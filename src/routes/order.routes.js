@@ -8,6 +8,7 @@ import {
   previewOrder,
   generateInvoice,
   confirmReceipt,
+  markAsDelivered,
 } from "../controllers/order.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 
@@ -144,5 +145,25 @@ router.route("/:id/cancel").put(cancelOrder);
  *         description: Success
  */
 router.route("/:id/confirm-receipt").put(confirmReceipt);
+
+/**
+ * @swagger
+ * /api/orders/{id}/mark-delivered:
+ *   put:
+ *     tags: [Orders]
+ *     summary: Mark order as delivered (triggered by map animation completion)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.route("/:id/mark-delivered").put(markAsDelivered);
 
 export default router;

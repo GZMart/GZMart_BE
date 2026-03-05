@@ -11,6 +11,11 @@ router
   .post(addressController.createAddress)
   .get(addressController.getAddresses);
 
+// Geocoding endpoints
+router.post("/geocode", addressController.geocodeAddress);
+router.post("/reverse-geocode", addressController.reverseGeocodeAddress);
+router.post("/calculate-distance", addressController.calculateDistance);
+
 router
   .route("/:id")
   .put(addressController.updateAddress)
