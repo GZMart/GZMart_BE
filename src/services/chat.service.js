@@ -4,11 +4,13 @@ import Message from '../models/Message.js';
 export const findOrCreateConversation = async (userId, shopId) => {
   let conversation = await Conversation.findOne({
     participants: { $all: [userId, shopId] },
-  });
+  }).populate('participants', 'fullName firstName lastName email avatar role');
+
   if (!conversation) {
     conversation = await Conversation.create({
       participants: [userId, shopId],
     });
+    conversation = await conversation.populate('participants', 'fullName firstName lastName email avatar role');
   }
   return conversation;
 };
@@ -37,6 +39,6 @@ export const getConversationsByUser = async userId => {
 export const getMessagesByConversation = async conversationId => {
   return Message.find({ conversationId })
     .sort({ timestamp: 1 })
-    .populate('sender', 'fullName firstName lastName email avatar')
-    .populate('receiver', 'fullName firstName lastName email avatar');
+    .populate('sender', 'fullName email avatar')
+    .populate('receiver', 'fullName email avatar');
 };
