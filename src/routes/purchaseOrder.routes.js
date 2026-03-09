@@ -1,117 +1,130 @@
 import express from "express";
 import * as purchaseOrderController from "../controllers/purchaseOrder.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
-import { authorize } from "../middlewares/role.middleware.js";
+import { requireRoles } from "../middlewares/role.middleware.js";
 
 const router = express.Router();
-
-/**
- * ===================================================================
- * PURCHASE ORDER ROUTES
- * ===================================================================
- */
 
 // All routes require authentication
 router.use(protect);
 
-// Purchase Order Routes - Only Admin and Manager can access
+/**
+ * ===================================================================
+ * PURCHASE ORDER ROUTES
+ * Role Policy:
+ *   - seller  : tạo PO, xem PO, cancel PO
+ *   - manager : xem PO, update PO, complete PO, cancel PO
+ *   - admin   : full access
+ * NOTE: Named routes MUST come before /:id to avoid wildcard collision
+ * ===================================================================
+ */
+
+// ─── Landed Cost Preview ───────────────────────────────────────────
+router
+  .route("/calculate")
+  .post(
+    requireRoles("admin", "manager", "seller"),
+    purchaseOrderController.calculateLandedCost,
+  );
+
+// ─── List / Create Purchase Orders ────────────────────────────────
 router
   .route("/")
   .post(
-    authorize("admin", "manager"),
+    requireRoles("admin", "manager", "seller"),   // seller tạo PO
     purchaseOrderController.createPurchaseOrder,
   )
   .get(
-    authorize("admin", "manager"),
+    requireRoles("admin", "manager", "seller"),
     purchaseOrderController.getPurchaseOrders,
-  );
-
-router
-  .route("/:id")
-  .get(
-    authorize("admin", "manager"),
-    purchaseOrderController.getPurchaseOrderById,
-  )
-  .put(
-    authorize("admin", "manager"),
-    purchaseOrderController.updatePurchaseOrder,
-  );
-
-// Complete purchase order (special action)
-router
-  .route("/:id/complete")
-  .post(
-    authorize("admin", "manager"),
-    purchaseOrderController.completePurchaseOrder,
-  );
-
-// Cancel purchase order
-router
-  .route("/:id/cancel")
-  .post(
-    authorize("admin", "manager"),
-    purchaseOrderController.cancelPurchaseOrder,
   );
 
 /**
  * ===================================================================
- * SUPPLIER ROUTES
+ * SUPPLIER ROUTES  (must be before /:id)
  * ===================================================================
  */
 
 router
   .route("/suppliers")
-  .post(authorize("admin", "manager"), purchaseOrderController.createSupplier)
-  .get(authorize("admin", "manager"), purchaseOrderController.getSuppliers);
+  .post(requireRoles("admin", "manager", "seller"), purchaseOrderController.createSupplier)
+  .get(requireRoles("admin", "manager", "seller"), purchaseOrderController.getSuppliers);
 
-router
-  .route("/suppliers/:id")
-  .get(authorize("admin", "manager"), purchaseOrderController.getSupplierById)
-  .put(authorize("admin", "manager"), purchaseOrderController.updateSupplier)
-  .delete(
-    authorize("admin", "manager"),
-    purchaseOrderController.deleteSupplier,
-  );
-
-// Get supplier purchase history with analytics
+// Get supplier purchase history with analytics (before /suppliers/:id to avoid conflict)
 router
   .route("/suppliers/:id/purchase-history")
   .get(
-    authorize("admin", "manager"),
+    requireRoles("admin", "manager", "seller"),
     purchaseOrderController.getSupplierPurchaseHistory,
   );
 
+router
+  .route("/suppliers/:id")
+  .get(requireRoles("admin", "manager", "seller"), purchaseOrderController.getSupplierById)
+  .put(requireRoles("admin", "manager"), purchaseOrderController.updateSupplier)
+  .delete(requireRoles("admin", "manager"), purchaseOrderController.deleteSupplier);
+
 /**
  * ===================================================================
- * INVENTORY MANAGEMENT ROUTES
+ * INVENTORY MANAGEMENT ROUTES  (must be before /:id)
  * ===================================================================
  */
 
-// Get low stock items alert
 router
   .route("/inventory/low-stock")
   .get(
-    authorize("admin", "manager", "seller"),
+    requireRoles("admin", "manager", "seller"),
     purchaseOrderController.getLowStockItems,
   );
 
-// Get inventory valuation report
 router
   .route("/inventory/valuation")
   .get(
-    authorize("admin", "manager"),
+    requireRoles("admin", "manager"),
     purchaseOrderController.getInventoryValuation,
   );
 
 /**
  * ===================================================================
- * REPORTING ROUTES
+ * REPORTING ROUTES  (must be before /:id)
  * ===================================================================
  */
 
-// Get Profit & Loss report
 router
   .route("/reports/profit-loss")
-  .get(authorize("admin"), purchaseOrderController.getProfitLossReport);
+  .get(requireRoles("admin"), purchaseOrderController.getProfitLossReport);
+
+/**
+ * ===================================================================
+ * DYNAMIC /:id ROUTES  (must be LAST to avoid capturing named paths)
+ * ===================================================================
+ */
+
+router
+  .route("/:id")
+  .get(
+    requireRoles("admin", "manager", "seller"),
+    purchaseOrderController.getPurchaseOrderById,
+  )
+  .put(
+    requireRoles("admin", "manager", "seller"),   // seller sửa PO của mình (service kiểm tra status)
+    purchaseOrderController.updatePurchaseOrder,
+  );
+
+// Complete purchase order – chỉ admin/manager mới nhập kho
+router
+  .route("/:id/complete")
+  .post(
+    requireRoles("admin", "manager"),
+    purchaseOrderController.completePurchaseOrder,
+  );
+
+// Cancel purchase order – seller cũng có thể cancel PO của mình
+router
+  .route("/:id/cancel")
+  .post(
+    requireRoles("admin", "manager", "seller"),
+    purchaseOrderController.cancelPurchaseOrder,
+  );
 
 export default router;
