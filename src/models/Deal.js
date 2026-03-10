@@ -21,6 +21,7 @@ const dealSchema = new mongoose.Schema(
         "weekly_deal",
         "limited_time",
         "clearance",
+        "special",
       ],
       required: [true, "Deal type is required"],
     },

@@ -17,7 +17,7 @@ import {
 } from "../controllers/flashsale.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { authorize } from "../middlewares/role.middleware.js";
-import { protect } from "../middlewares/auth.middleware.js";
+import { protect, optionalAuth } from "../middlewares/auth.middleware.js";
 
 const router = express.Router();
 
@@ -229,7 +229,8 @@ router.get("/active", asyncHandler(getActiveFlashSales));
  *       404:
  *         description: Product not found
  */
-router.get("/", asyncHandler(getFlashSales));
+// Public but optionalAuth so: unauthenticated → all, seller → own only
+router.get("/", optionalAuth, asyncHandler(getFlashSales));
 
 router.post(
   "/",

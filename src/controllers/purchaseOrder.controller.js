@@ -71,7 +71,7 @@ export const getPurchaseOrders = asyncHandler(async (req, res) => {
     sortOrder: req.query.sortOrder || "desc",
   };
 
-  const result = await purchaseOrderService.getPurchaseOrders(filters);
+  const result = await purchaseOrderService.getPurchaseOrders(filters, req.user);
 
   res.status(200).json({
     success: true,
@@ -88,6 +88,7 @@ export const getPurchaseOrders = asyncHandler(async (req, res) => {
 export const getPurchaseOrderById = asyncHandler(async (req, res) => {
   const purchaseOrder = await purchaseOrderService.getPurchaseOrderById(
     req.params.id,
+    req.user,
   );
 
   res.status(200).json({
@@ -105,6 +106,7 @@ export const updatePurchaseOrder = asyncHandler(async (req, res) => {
   const purchaseOrder = await purchaseOrderService.updatePurchaseOrder(
     req.params.id,
     req.body,
+    req.user,
   );
 
   res.status(200).json({
@@ -145,6 +147,7 @@ export const completePurchaseOrder = asyncHandler(async (req, res) => {
 export const cancelPurchaseOrder = asyncHandler(async (req, res) => {
   const purchaseOrder = await purchaseOrderService.cancelPurchaseOrder(
     req.params.id,
+    req.user,
   );
 
   res.status(200).json({
