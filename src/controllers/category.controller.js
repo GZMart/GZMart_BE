@@ -47,7 +47,8 @@ export const getCategories = asyncHandler(async (req, res, next) => {
  * @access  Public
  */
 export const getCategoryTree = asyncHandler(async (req, res, next) => {
-  const tree = await categoryService.getCategoryTree();
+  const includeAll = req.query.includeAll === 'true';
+  const tree = await categoryService.getCategoryTree(includeAll);
 
   res.status(200).json({
     success: true,
@@ -229,5 +230,20 @@ export const getCategoryStats = asyncHandler(async (req, res, next) => {
   res.status(200).json({
     success: true,
     data: stats,
+  });
+});
+
+/**
+ * @desc    Bulk-update order for categories (drag-and-drop reorder)
+ * @route   PATCH /api/categories/reorder
+ * @access  Private (Admin)
+ */
+export const reorderCategories = asyncHandler(async (req, res) => {
+  const { items } = req.body;
+  const result = await categoryService.reorderCategories(items);
+  res.status(200).json({
+    success: true,
+    message: ` categories reordered`,
+    data: result,
   });
 });
