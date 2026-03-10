@@ -2,6 +2,10 @@ import Product from "../models/Product.js";
 import Category from "../models/Category.js";
 import User from "../models/User.js";
 import Deal from "../models/Deal.js";
+import ShopProgram from "../models/ShopProgram.js";
+import ShopProgramProduct from "../models/ShopProgramProduct.js";
+import ComboPromotion from "../models/ComboPromotion.js";
+import AddOnDeal from "../models/AddOnDeal.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { generateSKU } from "../utils/skuGenerator.js";
 
@@ -913,4 +917,193 @@ export const getAvailableOptions = async (productId, selection) => {
     availableOptions: Array.from(availableOptions),
     nextTier: tiers[nextTierIndex],
   };
+};
+
+/**
+ * Get all active promotions for a product (public buyer API)
+ * Returns: shopProgram, comboPromotions, addOnDeals
+ */
+export const getActivePromotionsForProduct = async (productId) => {
+  const now = new Date();
+
+  // --- 1. Shop Program ---
+  // Sync statuses first
+  await ShopProgram.syncAllStatuses().catch(() => {});
+
+  const programProduct = await ShopProgramProduct.findOne({
+    productId,
+    status: "active",
+  })
+    .populate("programId", "name startDate endDate status")
+    .lean();
+
+  let shopProgram = null;
+  if (
+    programProduct &&
+    programProduct.programId &&
+    programProduct.programId.status === "active"
+  ) {
+    // Find the first enabled variant with a real discount
+    const enabledVariant = programProduct.variants.find(
+      (v) => v.enabled && v.salePrice < v.originalPrice
+    );
+
+    if (enabledVariant) {
+      const discountPercent =
+        enabledVariant.discountType === "percent"
+          ? enabledVariant.discount
+          : Math.round(
+              ((enabledVariant.originalPrice - enabledVariant.salePrice) /
+                enabledVariant.originalPrice) *
+                100
+            );
+
+      shopProgram = {
+        programId: programProduct.programId._id,
+        programName: programProduct.programId.name,
+        salePrice: enabledVariant.salePrice,
+        originalPrice: enabledVariant.originalPrice,
+        discount: discountPercent,
+        discountType: enabledVariant.discountType,
+        endDate: programProduct.programId.endDate,
+        variants: programProduct.variants
+          .filter((v) => v.enabled)
+          .map((v) => ({
+            variantId: v.variantId,
+            variantName: v.variantName,
+            salePrice: v.salePrice,
+            originalPrice: v.originalPrice,
+            discount:
+              v.discountType === "percent"
+                ? v.discount
+                : Math.round(
+                    ((v.originalPrice - v.salePrice) / v.originalPrice) * 100
+                  ),
+          })),
+      };
+    }
+  }
+
+  // --- 2. Combo Promotions ---
+  // Sync statuses
+  await ComboPromotion.updateMany(
+    { status: "upcoming", startDate: { $lte: now } },
+    { status: "active" }
+  );
+  await ComboPromotion.updateMany(
+    { status: { $in: ["active", "upcoming"] }, endDate: { $lte: now } },
+    { status: "ended" }
+  );
+
+  const comboPromotions = await ComboPromotion.find({
+    products: productId,
+    status: "active",
+  })
+    .select("name comboType tiers endDate")
+    .lean();
+
+  // --- 3. Add-on Deals ---
+  // Sync statuses
+  await AddOnDeal.updateMany(
+    { status: "upcoming", startDate: { $lte: now } },
+    { status: "active" }
+  );
+  await AddOnDeal.updateMany(
+    { status: { $in: ["active", "upcoming"] }, endDate: { $lte: now } },
+    { status: "ended" }
+  );
+
+  const addOnDeals = await AddOnDeal.find({
+    mainProducts: productId,
+    status: "active",
+  })
+    .populate("subProducts.productId", "name images originalPrice models")
+    .select("name subProducts endDate purchaseLimit")
+    .lean();
+
+  // Transform add-on deals for FE
+  const transformedAddOnDeals = addOnDeals.map((deal) => ({
+    dealId: deal._id,
+    name: deal.name,
+    endDate: deal.endDate,
+    purchaseLimit: deal.purchaseLimit,
+    subProducts: deal.subProducts.map((sp) => {
+      const productData = sp.productId;
+      const originalPrice =
+        productData?.originalPrice ||
+        (productData?.models?.[0]?.price ?? 0);
+      return {
+        product: productData
+          ? {
+              _id: productData._id,
+              name: productData.name,
+              images: productData.images,
+            }
+          : null,
+        price: sp.price,
+        originalPrice,
+        limit: sp.limit,
+      };
+    }),
+  }));
+
+  return {
+    shopProgram,
+    comboPromotions: comboPromotions.map((c) => ({
+      comboId: c._id,
+      name: c.name,
+      comboType: c.comboType,
+      tiers: c.tiers,
+      endDate: c.endDate,
+    })),
+    addOnDeals: transformedAddOnDeals,
+  };
+};
+
+/**
+ * Get shop program sale price for a specific product variant (model).
+ * Used by cart/order controllers to override model.price.
+ *
+ * variantId format in ShopProgramProduct is "productId-modelIndex",
+ * so we match by reconstructing this composite key.
+ *
+ * @param {string} productId
+ * @param {number} modelIndex - The index of the model in product.models array
+ * @param {number} originalPrice - Fallback price (model.price)
+ * @returns {{ price: number, isShopProgram: boolean, originalPrice: number, programName?: string }}
+ */
+export const getShopProgramPriceForVariant = async (productId, modelIndex, originalPrice) => {
+  try {
+    const programProduct = await ShopProgramProduct.findOne({
+      productId,
+      status: "active",
+    })
+      .populate("programId", "name status")
+      .lean();
+
+    if (
+      programProduct &&
+      programProduct.programId &&
+      programProduct.programId.status === "active"
+    ) {
+      // variantId format: "productId-modelIndex"
+      const targetVariantId = `${productId.toString()}-${modelIndex}`;
+      const variant = programProduct.variants.find(
+        (v) => v.enabled && v.variantId === targetVariantId && v.salePrice < v.originalPrice
+      );
+
+      if (variant) {
+        return {
+          price: variant.salePrice,
+          isShopProgram: true,
+          originalPrice: variant.originalPrice,
+          programName: programProduct.programId.name,
+        };
+      }
+    }
+  } catch (err) {
+    // Silently fall back to original price
+  }
+
+  return { price: originalPrice, isShopProgram: false, originalPrice };
 };
