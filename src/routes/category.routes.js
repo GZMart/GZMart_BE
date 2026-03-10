@@ -13,6 +13,7 @@ import {
   getFeaturedCategories,
   getCategoriesWithCounts,
   getCategoryProducts,
+  reorderCategories,
 } from "../controllers/category.controller.js";
 
 import { protect } from "../middlewares/auth.middleware.js";
@@ -138,6 +139,7 @@ router.get("/:id/stats", getCategoryStats);
 router.get("/:id/products", getCategoryProducts);
 
 router.post("/", protect, requireRoles("admin"), createCategory);
+router.patch("/reorder", protect, requireRoles("admin"), reorderCategories);
 router.put("/:id", protect, requireRoles("admin"), updateCategory);
 router.delete("/:id", protect, requireRoles("admin"), deleteCategory);
 router.delete(
