@@ -1,6 +1,6 @@
-import { v2 as cloudinary } from 'cloudinary';
-import { CloudinaryStorage } from 'multer-storage-cloudinary';
-import logger from '../utils/logger.js';
+import { v2 as cloudinary } from "cloudinary";
+import { CloudinaryStorage } from "multer-storage-cloudinary";
+import logger from "../utils/logger.js";
 
 // Configure Cloudinary
 cloudinary.config({
@@ -13,30 +13,50 @@ cloudinary.config({
 
 // Log Cloudinary configuration status
 if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY) {
-  logger.info('Cloudinary configured successfully', {
+  logger.info("Cloudinary configured successfully", {
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   });
 } else {
-  logger.warn('Cloudinary configuration incomplete - check environment variables');
+  logger.warn(
+    "Cloudinary configuration incomplete - check environment variables",
+  );
 }
 
 // Configure storage for multer
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
-  params: {
-    folder: 'gzmart/avatars',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'gif'],
-    transformation: [{ width: 500, height: 500, crop: 'limit' }],
-    format: 'jpg',
-    resource_type: 'auto',
-    use_filename: true,
-    unique_filename: true,
-    overwrite: true,
-    secure: true,
+  params: async (req, file) => {
+    // Shop banner needs higher resolution
+    if (file.fieldname === "profileImage") {
+      return {
+        folder: "gzmart/banners",
+        allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
+        transformation: [
+          { width: 1920, height: 600, crop: "limit", quality: "auto:best" },
+        ],
+        resource_type: "auto",
+        use_filename: true,
+        unique_filename: true,
+        overwrite: true,
+        secure: true,
+      };
+    }
+    // Default: avatar and other uploads
+    return {
+      folder: "gzmart/avatars",
+      allowed_formats: ["jpg", "jpeg", "png", "gif"],
+      transformation: [{ width: 500, height: 500, crop: "limit" }],
+      format: "jpg",
+      resource_type: "auto",
+      use_filename: true,
+      unique_filename: true,
+      overwrite: true,
+      secure: true,
+    };
   },
   filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, file.fieldname + '-' + uniqueSuffix);
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, file.fieldname + "-" + uniqueSuffix);
   },
 });
 
@@ -44,19 +64,19 @@ const storage = new CloudinaryStorage({
 const deliveryProofStorage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
-    folder: 'gzmart/delivery-proofs',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'gif'],
-    transformation: [{ width: 1200, height: 1200, crop: 'limit' }],
-    format: 'jpg',
-    resource_type: 'auto',
+    folder: "gzmart/delivery-proofs",
+    allowed_formats: ["jpg", "jpeg", "png", "gif"],
+    transformation: [{ width: 1200, height: 1200, crop: "limit" }],
+    format: "jpg",
+    resource_type: "auto",
     use_filename: true,
     unique_filename: true,
     overwrite: false,
     secure: true,
   },
   filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, 'proof-' + uniqueSuffix);
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, "proof-" + uniqueSuffix);
   },
 });
 
@@ -65,11 +85,11 @@ const handleUpload = (req, res, next) => {
   // Handle single file upload (req.file)
   if (req.file) {
     // Ensure URL is HTTPS
-    if (req.file.path && !req.file.path.startsWith('https://')) {
-      req.file.path = req.file.path.replace('http://', 'https://');
+    if (req.file.path && !req.file.path.startsWith("https://")) {
+      req.file.path = req.file.path.replace("http://", "https://");
     }
 
-    logger.info('File upload result:', {
+    logger.info("File upload result:", {
       originalname: req.file.originalname,
       path: req.file.path,
     });
@@ -77,15 +97,15 @@ const handleUpload = (req, res, next) => {
 
   // Handle multiple file uploads (req.files)
   if (req.files) {
-    Object.keys(req.files).forEach(fieldName => {
+    Object.keys(req.files).forEach((fieldName) => {
       const files = req.files[fieldName];
-      files.forEach(file => {
+      files.forEach((file) => {
         // Ensure URL is HTTPS
-        if (file.path && !file.path.startsWith('https://')) {
-          file.path = file.path.replace('http://', 'https://');
+        if (file.path && !file.path.startsWith("https://")) {
+          file.path = file.path.replace("http://", "https://");
         }
 
-        logger.info('File upload result:', {
+        logger.info("File upload result:", {
           fieldName,
           originalname: file.originalname,
           path: file.path,
@@ -95,7 +115,7 @@ const handleUpload = (req, res, next) => {
   }
 
   if (!req.file && !req.files) {
-    logger.info('No file uploaded');
+    logger.info("No file uploaded");
   }
 
   next();
