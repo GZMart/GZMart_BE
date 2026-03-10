@@ -79,7 +79,7 @@ export const getFlashSales = asyncHandler(async (req, res, next) => {
     limit: Number(limit) || 10,
     status,
     sortBy: sortBy || "createdAt",
-  });
+  }, req.user);
 
   res.status(200).json({
     success: true,
@@ -198,6 +198,7 @@ export const updateFlashSale = asyncHandler(async (req, res, next) => {
   const flashSale = await flashSaleService.updateFlashSale(
     req.params.flashSaleId,
     updateData,
+    req.user,
   );
 
   res.status(200).json({
@@ -259,7 +260,7 @@ export const removeProductFromFlashSale = asyncHandler(
  * @access  Private (Seller, Admin)
  */
 export const deleteFlashSale = asyncHandler(async (req, res, next) => {
-  await flashSaleService.deleteFlashSale(req.params.flashSaleId);
+  await flashSaleService.deleteFlashSale(req.params.flashSaleId, req.user);
 
   res.status(200).json({
     success: true,
@@ -276,6 +277,7 @@ export const deleteFlashSale = asyncHandler(async (req, res, next) => {
 export const getFlashSaleStats = asyncHandler(async (req, res, next) => {
   const stats = await flashSaleService.getFlashSaleStats(
     req.params.flashSaleId,
+    req.user,
   );
 
   res.status(200).json({

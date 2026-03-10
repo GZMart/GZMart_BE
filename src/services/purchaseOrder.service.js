@@ -469,7 +469,7 @@ export const createPurchaseOrder = async (poData, userId) => {
  * @param {String} purchaseOrderId - PO ID
  * @returns {Object} Purchase order
  */
-export const getPurchaseOrderById = async (purchaseOrderId) => {
+export const getPurchaseOrderById = async (purchaseOrderId, user = null) => {
   const purchaseOrder = await PurchaseOrder.findById(purchaseOrderId)
     .populate("supplierId", "name contactPerson phone email")
     .populate("createdBy", "name email")
@@ -477,6 +477,11 @@ export const getPurchaseOrderById = async (purchaseOrderId) => {
 
   if (!purchaseOrder) {
     throw new ErrorResponse("Purchase Order not found", 404);
+  }
+
+  // Sellers can only view their own purchase orders
+  if (user && user.role === "seller" && purchaseOrder.createdBy._id.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to access this purchase order", 403);
   }
 
   return purchaseOrder;
@@ -487,7 +492,7 @@ export const getPurchaseOrderById = async (purchaseOrderId) => {
  * @param {Object} filters - Filter criteria
  * @returns {Array} List of purchase orders
  */
-export const getPurchaseOrders = async (filters = {}) => {
+export const getPurchaseOrders = async (filters = {}, user = null) => {
   const {
     status,
     supplierId,
@@ -500,6 +505,11 @@ export const getPurchaseOrders = async (filters = {}) => {
   } = filters;
 
   const query = {};
+
+  // Sellers can only see their own purchase orders
+  if (user && user.role === "seller") {
+    query.createdBy = user._id;
+  }
 
   if (status) {
     query.status = status;
@@ -549,11 +559,16 @@ export const getPurchaseOrders = async (filters = {}) => {
  * @param {Object} updateData - Data to update
  * @returns {Object} Updated purchase order
  */
-export const updatePurchaseOrder = async (purchaseOrderId, updateData) => {
+export const updatePurchaseOrder = async (purchaseOrderId, updateData, user = null) => {
   const purchaseOrder = await PurchaseOrder.findById(purchaseOrderId);
 
   if (!purchaseOrder) {
     throw new ErrorResponse("Purchase Order not found", 404);
+  }
+
+  // Sellers can only update their own purchase orders
+  if (user && user.role === "seller" && purchaseOrder.createdBy.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to update this purchase order", 403);
   }
 
   // Can only update Draft or Pending orders
@@ -581,11 +596,16 @@ export const updatePurchaseOrder = async (purchaseOrderId, updateData) => {
  * @param {String} purchaseOrderId - PO ID
  * @returns {Object} Cancelled purchase order
  */
-export const cancelPurchaseOrder = async (purchaseOrderId) => {
+export const cancelPurchaseOrder = async (purchaseOrderId, user = null) => {
   const purchaseOrder = await PurchaseOrder.findById(purchaseOrderId);
 
   if (!purchaseOrder) {
     throw new ErrorResponse("Purchase Order not found", 404);
+  }
+
+  // Sellers can only cancel their own purchase orders
+  if (user && user.role === "seller" && purchaseOrder.createdBy.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to cancel this purchase order", 403);
   }
 
   if (purchaseOrder.status === "Completed") {
