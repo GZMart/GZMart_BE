@@ -226,7 +226,10 @@ export const createProduct = async (productData, sellerId) => {
 export const getProductById = async (productId) => {
   const product = await Product.findById(productId)
     .populate("categoryId", "name slug")
-    .populate("sellerId", "fullName avatar email provinceName createdAt aboutMe");
+    .populate(
+      "sellerId",
+      "fullName avatar email provinceName createdAt aboutMe",
+    );
 
   if (!product) {
     throw new ErrorResponse("Product not found", 404);
@@ -243,17 +246,24 @@ export const getProductById = async (productId) => {
     const sellerId = productObj.sellerId._id;
     // Import dynamically or ensure imported at file top
     // Try doing parallel promises to fetch shop details
-    const [shopStats, productCount, followerCount, followingCount] = await Promise.all([
-      import('../models/ShopStatistic.js').then(m => m.default.findOne({ sellerId })),
-      Product.countDocuments({ sellerId, status: "active" }),
-      import('../models/Follow.js').then(m => m.default.countDocuments({ followingId: sellerId })),
-      import('../models/Follow.js').then(m => m.default.countDocuments({ followerId: sellerId }))
-    ]);
+    const [shopStats, productCount, followerCount, followingCount] =
+      await Promise.all([
+        import("../models/ShopStatistic.js").then((m) =>
+          m.default.findOne({ sellerId }),
+        ),
+        Product.countDocuments({ sellerId, status: "active" }),
+        import("../models/Follow.js").then((m) =>
+          m.default.countDocuments({ followingId: sellerId }),
+        ),
+        import("../models/Follow.js").then((m) =>
+          m.default.countDocuments({ followerId: sellerId }),
+        ),
+      ]);
 
     productObj.sellerId.productCount = productCount;
     productObj.sellerId.followerCount = followerCount;
     productObj.sellerId.followingCount = followingCount;
-    
+
     if (shopStats) {
       productObj.sellerId.isPreferred = shopStats.isPreferred;
       productObj.sellerId.rating = shopStats.ratingAverage;
@@ -270,7 +280,8 @@ export const getProductById = async (productId) => {
     }
   }
 
-  console.log('RETURNING', JSON.stringify(productObj.sellerId)); return productObj;
+  console.log("RETURNING", JSON.stringify(productObj.sellerId));
+  return productObj;
   const flashSale = await getActiveFlashSaleForProduct(
     product._id,
     product.originalPrice,
@@ -287,7 +298,10 @@ export const getProductById = async (productId) => {
 export const getProductBySlug = async (slug) => {
   const product = await Product.findOne({ slug })
     .populate("categoryId", "name slug")
-    .populate("sellerId", "fullName avatar email provinceName createdAt aboutMe");
+    .populate(
+      "sellerId",
+      "fullName avatar email provinceName createdAt aboutMe",
+    );
 
   if (!product) {
     throw new ErrorResponse("Product not found", 404);
@@ -296,23 +310,29 @@ export const getProductBySlug = async (slug) => {
   product.viewCount = (product.viewCount || 0) + 1;
   await product.save({ validateBeforeSave: false });
 
-
   // Convert to object so we can attach computed seller fields
   const productObj = product.toObject();
 
   if (productObj.sellerId && productObj.sellerId._id) {
     const sellerId = productObj.sellerId._id;
-    const [shopStats, productCount, followerCount, followingCount] = await Promise.all([
-      import('../models/ShopStatistic.js').then(m => m.default.findOne({ sellerId })),
-      Product.countDocuments({ sellerId, status: "active" }),
-      import('../models/Follow.js').then(m => m.default.countDocuments({ followingId: sellerId })),
-      import('../models/Follow.js').then(m => m.default.countDocuments({ followerId: sellerId }))
-    ]);
+    const [shopStats, productCount, followerCount, followingCount] =
+      await Promise.all([
+        import("../models/ShopStatistic.js").then((m) =>
+          m.default.findOne({ sellerId }),
+        ),
+        Product.countDocuments({ sellerId, status: "active" }),
+        import("../models/Follow.js").then((m) =>
+          m.default.countDocuments({ followingId: sellerId }),
+        ),
+        import("../models/Follow.js").then((m) =>
+          m.default.countDocuments({ followerId: sellerId }),
+        ),
+      ]);
 
     productObj.sellerId.productCount = productCount;
     productObj.sellerId.followerCount = followerCount;
     productObj.sellerId.followingCount = followingCount;
-    
+
     if (shopStats) {
       productObj.sellerId.isPreferred = shopStats.isPreferred;
       productObj.sellerId.rating = shopStats.ratingAverage;
@@ -535,7 +555,10 @@ export const getProductsAdvanced = async (options) => {
   const [products, total] = await Promise.all([
     Product.find(query)
       .populate("categoryId", "name slug")
-      .populate("sellerId", "fullName avatar email provinceName createdAt aboutMe")
+      .populate(
+        "sellerId",
+        "fullName avatar email provinceName createdAt aboutMe",
+      )
       .sort(sortOptions)
       .skip(skip)
       .limit(limit)
@@ -751,14 +774,23 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
   const skip = (page - 1) * limit;
 
   // Validate Seller exists
-  const seller = await User.findById(sellerId).select("fullName avatar provinceName createdAt aboutMe role");
+  const seller = await User.findById(sellerId).select(
+    "fullName avatar provinceName createdAt aboutMe role profileImage",
+  );
   if (!seller) {
     throw new ErrorResponse("Seller not found", 404);
   }
 
   const sellerObj = seller.toObject();
 
-  const [products, total, shopStats, productCount, followerCount, followingCount] = await Promise.all([
+  const [
+    products,
+    total,
+    shopStats,
+    productCount,
+    followerCount,
+    followingCount,
+  ] = await Promise.all([
     Product.find({ sellerId, status: "active" })
       .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
@@ -766,16 +798,22 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
       .limit(limit)
       .lean(),
     Product.countDocuments({ sellerId, status: "active" }),
-    import('../models/ShopStatistic.js').then(m => m.default.findOne({ sellerId })),
+    import("../models/ShopStatistic.js").then((m) =>
+      m.default.findOne({ sellerId }),
+    ),
     Product.countDocuments({ sellerId, status: "active" }),
-    import('../models/Follow.js').then(m => m.default.countDocuments({ followingId: sellerId })),
-    import('../models/Follow.js').then(m => m.default.countDocuments({ followerId: sellerId }))
+    import("../models/Follow.js").then((m) =>
+      m.default.countDocuments({ followingId: sellerId }),
+    ),
+    import("../models/Follow.js").then((m) =>
+      m.default.countDocuments({ followerId: sellerId }),
+    ),
   ]);
 
   sellerObj.productCount = productCount;
   sellerObj.followerCount = followerCount;
   sellerObj.followingCount = followingCount;
-  
+
   if (shopStats) {
     sellerObj.isPreferred = shopStats.isPreferred;
     sellerObj.rating = shopStats.ratingAverage;
@@ -790,7 +828,13 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     sellerObj.cancelDutyRate = 0;
   }
 
-  return { seller: sellerObj, products, total, page, pages: Math.ceil(total / limit) };
+  return {
+    seller: sellerObj,
+    products,
+    total,
+    page,
+    pages: Math.ceil(total / limit),
+  };
 };
 
 /**
