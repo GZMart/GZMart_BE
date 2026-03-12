@@ -182,7 +182,10 @@ walletTransactionSchema.statics.recordTransaction = async function (data) {
 walletTransactionSchema.statics.getUserStats = async function (userId) {
   const stats = await this.aggregate([
     {
-      $match: { userId: mongoose.Types.ObjectId(userId), status: "completed" },
+      $match: {
+        userId: new mongoose.Types.ObjectId(userId),
+        status: "completed",
+      },
     },
     {
       $group: {
