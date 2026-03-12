@@ -1,5 +1,5 @@
 import logger from "./utils/logger.js";
-import { saveMessage } from "./services/chat.service.js";
+import { saveMessage, handleAutoReply } from "./services/chat.service.js";
 // import { setupLiveStreamHandlers } from './services/livestreamSocket.service.js';
 // import liveStreamService from './services/livestream.service.js';
 
@@ -11,7 +11,7 @@ export default function setupSocketHandlers(io) {
   const userSocketMap = new Map();
 
   io.on("connection", (socket) => {
-    // logger.info(`Socket connected: ${socket.id}`);
+    logger.info(`Socket connected: ${socket.id}`);
     // Fallback handlers on default namespace to support clients not using /livestream
     socket.on("join_as_viewer", async (data) => {
       try {
@@ -123,10 +123,20 @@ export default function setupSocketHandlers(io) {
 
     // Nhận và phát tin nhắn mới
     socket.on("send_message", async (message) => {
-      // message: { conversationId, sender, receiver, content }
+      // message: { conversationId, sender, receiver, content, type?, productInfo? }
       try {
         const saved = await saveMessage(message);
         io.to(message.conversationId).emit("receive_message", saved);
+
+        // Notify receiver in their user room
+        if (message.receiver) {
+          io.to(`user_${message.receiver}`).emit("new_message_notification", {
+            conversationId: message.conversationId,
+          });
+        }
+
+        // Trigger Auto Reply Handler (Fire and forget)
+        handleAutoReply(message, io);
       } catch (err) {
         logger.error("Error saving message:", err);
         socket.emit("error_message", "Could not save message");

@@ -1,4 +1,5 @@
 import Voucher from "../models/Voucher.js";
+import SavedVoucher from "../models/SavedVoucher.js";
 import Cart from "../models/Cart.js";
 import CartItem from "../models/CartItem.js";
 import User from "../models/User.js";
@@ -209,7 +210,13 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
     .filter((item) => item.productId)
     .map((item) => item.productId._id.toString());
 
-  // 3. Query applicable vouchers
+  // 3. Get saved voucher IDs for this buyer
+  const savedVouchers = await SavedVoucher.find({
+    userId: req.user._id,
+  }).lean();
+  const savedVoucherIds = savedVouchers.map((sv) => sv.voucherId.toString());
+
+  // 4. Query applicable vouchers (only ones buyer has saved)
   const now = new Date();
   const vouchers = await Voucher.find({
     status: "active",
@@ -219,6 +226,7 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
     type: { $in: ["shop", "product"] },
     shopId: { $in: sellerIds },
     $expr: { $lt: ["$usageCount", "$usageLimit"] },
+    _id: { $in: savedVoucherIds },
   })
     .populate("appliedProducts", "name")
     .lean();
@@ -458,4 +466,106 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
         : null,
     },
   });
+});
+
+// @desc    Get active public vouchers for a shop (buyer browsing)
+// @route   GET /api/vouchers/shop/:shopId
+// @access  Public (optionalAuth for saved status)
+export const getShopVouchers = asyncHandler(async (req, res) => {
+  const { shopId } = req.params;
+  const now = new Date();
+
+  const vouchers = await Voucher.find({
+    shopId,
+    status: "active",
+    startTime: { $lte: now },
+    endTime: { $gte: now },
+    displaySetting: "public",
+    $expr: { $lt: ["$usageCount", "$usageLimit"] },
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // If user is logged in, mark which vouchers they've saved
+  let savedSet = new Set();
+  if (req.user) {
+    const saved = await SavedVoucher.find({
+      userId: req.user._id,
+      voucherId: { $in: vouchers.map((v) => v._id) },
+    }).lean();
+    savedSet = new Set(saved.map((s) => s.voucherId.toString()));
+  }
+
+  const result = vouchers.map((v) => ({
+    _id: v._id,
+    code: v.code,
+    name: v.name,
+    type: v.type,
+    discountType: v.discountType,
+    discountValue: v.discountValue,
+    maxDiscountAmount: v.maxDiscountAmount || null,
+    minBasketPrice: v.minBasketPrice || 0,
+    usageCount: v.usageCount,
+    usageLimit: v.usageLimit,
+    endTime: v.endTime,
+    isSaved: savedSet.has(v._id.toString()),
+  }));
+
+  res.status(200).json({ success: true, data: result });
+});
+
+// @desc    Save/claim a voucher
+// @route   POST /api/vouchers/:id/save
+// @access  Private (Buyer)
+export const saveVoucher = asyncHandler(async (req, res) => {
+  const voucher = await Voucher.findById(req.params.id);
+  if (!voucher) {
+    throw new ApiError("Voucher not found", 404);
+  }
+
+  // Check voucher is still active and valid
+  const now = new Date();
+  if (
+    voucher.status !== "active" ||
+    voucher.startTime > now ||
+    voucher.endTime < now
+  ) {
+    throw new ApiError("This voucher is no longer available", 400);
+  }
+
+  if (voucher.usageCount >= voucher.usageLimit) {
+    throw new ApiError("This voucher has reached its usage limit", 400);
+  }
+
+  // Check if already saved
+  const existing = await SavedVoucher.findOne({
+    userId: req.user._id,
+    voucherId: req.params.id,
+  });
+  if (existing) {
+    return res
+      .status(200)
+      .json({ success: true, message: "Voucher already saved" });
+  }
+
+  await SavedVoucher.create({
+    userId: req.user._id,
+    voucherId: req.params.id,
+  });
+
+  res
+    .status(201)
+    .json({ success: true, message: "Voucher saved successfully" });
+});
+
+// @desc    Remove saved voucher
+// @route   DELETE /api/vouchers/:id/save
+// @access  Private (Buyer)
+export const unsaveVoucher = asyncHandler(async (req, res) => {
+  await SavedVoucher.findOneAndDelete({
+    userId: req.user._id,
+    voucherId: req.params.id,
+  });
+
+  res.status(200).json({ success: true, message: "Voucher removed" });
 });

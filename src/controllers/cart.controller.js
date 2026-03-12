@@ -4,6 +4,8 @@ import Product from "../models/Product.js";
 import InventoryItem from "../models/InventoryItem.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
+import * as flashSaleService from "../services/flashsale.service.js";
+import { getShopProgramPriceForVariant } from "../services/product.service.js";
 
 // Helper to check stock via InventoryItem (source of truth) with fallback to model.stock
 const checkStockAvailability = async (
@@ -140,9 +142,10 @@ export const addToCart = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse("Product not found", 404));
   }
 
-  // Find specific variant (model)
+  // Find specific variant (model) and its index
   const model = findProductModel(product, color, size);
-  if (!model) {
+  const modelIndex = product.models.findIndex((m) => m._id.toString() === model?._id.toString());
+  if (!model || modelIndex === -1) {
     return next(
       new ErrorResponse("Selected variant (color/size) not available", 400),
     );
@@ -184,11 +187,28 @@ export const addToCart = asyncHandler(async (req, res, next) => {
     );
   }
 
+  // Determine best price: Flash Sale > Shop Program > Original
+  let cartPrice = model.price;
+  const flashSaleInfo = await flashSaleService.getFlashSalePrice(
+    productId,
+    model.price,
+  );
+  if (flashSaleInfo.isFlashSale) {
+    cartPrice = flashSaleInfo.price;
+  } else {
+    const spInfo = await getShopProgramPriceForVariant(
+      productId,
+      modelIndex,
+      model.price,
+    );
+    if (spInfo.isShopProgram) {
+      cartPrice = spInfo.price;
+    }
+  }
+
   if (existingItem) {
     existingItem.quantity = newQuantity;
-    // Update price in case product price changed? Usually we keep cart price unless re-fetched,
-    // but for e-commerce, it's safer to update to current price.
-    existingItem.price = model.price;
+    existingItem.price = cartPrice;
     existingItem.image = model.image || product.images[0];
     await existingItem.save();
   } else {
@@ -198,7 +218,7 @@ export const addToCart = asyncHandler(async (req, res, next) => {
       quantity,
       size,
       color,
-      price: model.price,
+      price: cartPrice,
       image: model.image || product.images[0],
     });
   }

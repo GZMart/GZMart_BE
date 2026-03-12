@@ -12,6 +12,7 @@ import User from "../models/User.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import * as flashSaleService from "../services/flashsale.service.js";
+import { getShopProgramPriceForVariant } from "../services/product.service.js";
 import { validateAndCalculateVouchers } from "../utils/voucherValidator.js";
 import * as orderTrackingService from "../services/orderTracking.service.js";
 import {
@@ -95,12 +96,39 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse("Cart is empty", 400));
   }
 
-  // 2. Calculate Subtotal
+  // 2. Calculate Subtotal (re-check promotion prices)
   let subtotal = 0;
   for (const item of cartItems) {
-    if (item.productId) {
-      subtotal += item.price * item.quantity;
+    if (!item.productId) continue;
+    const product = item.productId;
+
+    // Find model for this variant
+    const colorTierIndex = product.tiers?.findIndex(
+      (t) => t.name.toLowerCase() === "color" || t.name.toLowerCase() === "màu sắc",
+    ) ?? -1;
+    const sizeTierIndex = product.tiers?.findIndex(
+      (t) => t.name.toLowerCase() === "size" || t.name.toLowerCase() === "kích thước",
+    ) ?? -1;
+    const model = product.models?.find((m) => {
+      const colorMatch = colorTierIndex === -1 || product.tiers[colorTierIndex].options[m.tierIndex[colorTierIndex]] === item.color;
+      const sizeMatch = sizeTierIndex === -1 || product.tiers[sizeTierIndex].options[m.tierIndex[sizeTierIndex]] === item.size;
+      return colorMatch && sizeMatch;
+    });
+
+    let unitPrice = item.price;
+    if (model) {
+      const modelIdx = product.models.findIndex((m) => m._id.toString() === model._id.toString());
+      const flashSaleInfo = await flashSaleService.getFlashSalePrice(product._id, model.price);
+      if (flashSaleInfo.isFlashSale) {
+        unitPrice = flashSaleInfo.price;
+      } else {
+        const spInfo = await getShopProgramPriceForVariant(product._id, modelIdx, model.price);
+        if (spInfo.isShopProgram) {
+          unitPrice = spInfo.price;
+        }
+      }
     }
+    subtotal += unitPrice * item.quantity;
   }
 
   // 3. Calculate Voucher Discount
@@ -275,12 +303,28 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       );
     }
 
-    // Check flash sale pricing
+    // Check pricing: Flash Sale > Shop Program > Original
     const flashSaleInfo = await flashSaleService.getFlashSalePrice(
       product._id,
       model.price,
     );
-    const finalPrice = flashSaleInfo.price;
+    let finalPrice = model.price;
+    let isShopProgram = false;
+    const modelIdx = product.models.findIndex((m) => m._id.toString() === model._id.toString());
+
+    if (flashSaleInfo.isFlashSale) {
+      finalPrice = flashSaleInfo.price;
+    } else {
+      const spInfo = await getShopProgramPriceForVariant(
+        product._id,
+        modelIdx,
+        model.price,
+      );
+      if (spInfo.isShopProgram) {
+        finalPrice = spInfo.price;
+        isShopProgram = true;
+      }
+    }
 
     subtotal += finalPrice * item.quantity;
     validItems.push({
@@ -358,14 +402,15 @@ export const createOrder = asyncHandler(async (req, res, next) => {
             modelId: model._id,
             sku: model.sku,
             quantity: cartItem.quantity,
-            price: flashSaleInfo.price,
+            price: finalPrice,
             tierSelections: {
               size: cartItem.size,
               color: cartItem.color,
             },
-            subtotal: flashSaleInfo.price * cartItem.quantity,
+            subtotal: finalPrice * cartItem.quantity,
             originalPrice: model.price,
             isFlashSale: flashSaleInfo.isFlashSale,
+            isShopProgram: isShopProgram,
           },
         ],
         { session },
