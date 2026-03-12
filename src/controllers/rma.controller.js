@@ -180,6 +180,37 @@ export const cancelReturnRequest = asyncHandler(async (req, res, next) => {
   });
 });
 
+/**
+ * @desc    Update return shipping info (buyer ships items back)
+ * @route   PUT /api/rma/requests/:id/shipping
+ * @access  Private (Buyer)
+ */
+export const updateReturnShipping = asyncHandler(async (req, res, next) => {
+  const { trackingNumber, shippingProvider, estimatedReturnDate, notes } =
+    req.body;
+
+  if (!trackingNumber) {
+    return next(new ErrorResponse("Tracking number is required", 400));
+  }
+
+  const returnRequest = await rmaService.updateReturnShipping(
+    req.params.id,
+    req.user._id,
+    {
+      trackingNumber,
+      shippingProvider,
+      estimatedReturnDate,
+      notes,
+    },
+  );
+
+  res.status(200).json({
+    success: true,
+    message: "Shipping info updated. Items marked as returned.",
+    data: returnRequest,
+  });
+});
+
 // ==================== SELLER ENDPOINTS ====================
 
 /**
@@ -230,6 +261,28 @@ export const respondToReturnRequest = asyncHandler(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: `Return request ${decision}d successfully`,
+    data: returnRequest,
+  });
+});
+
+/**
+ * @desc    Confirm receiving returned items
+ * @route   PUT /api/rma/seller/requests/:id/confirm-received
+ * @access  Private (Seller/Admin)
+ */
+export const confirmItemsReceived = asyncHandler(async (req, res, next) => {
+  const { notes } = req.body;
+
+  const returnRequest = await rmaService.confirmItemsReceived(
+    req.params.id,
+    req.user._id,
+    notes,
+  );
+
+  res.status(200).json({
+    success: true,
+    message:
+      "Items received confirmed. Status changed to processing. You can now process refund or exchange.",
     data: returnRequest,
   });
 });
