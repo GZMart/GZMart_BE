@@ -80,7 +80,7 @@ categorySchema.index({ order: 1 });
 categorySchema.index({ isFeatured: 1 });
 
 // Pre-save middleware to generate slug (From GZM-13 - Preserved for VN char support)
-categorySchema.pre("save", function (next) {
+categorySchema.pre("save", async function () {
   if (!this.slug && this.name) {
     this.slug = this.name
       .toLowerCase()
@@ -92,7 +92,6 @@ categorySchema.pre("save", function (next) {
       .replace(/-+/g, "-")
       .trim();
   }
-  next();
 });
 
 export default mongoose.model("Category", categorySchema);

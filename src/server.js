@@ -40,6 +40,8 @@ import ghnRoutes from "./routes/ghn.routes.js";
 import chatRoutes from "./routes/chat.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
 import reviewRoutes from "./routes/review.routes.js";
+import promotionPublicRoutes from "./routes/promotionPublic.routes.js";
+import followRoutes from "./routes/follow.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
@@ -180,6 +182,7 @@ app.get("/api/tryon/debug", (req, res) => {
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
+app.use("/api/products", promotionPublicRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/attributes", attributeRoutes);
 app.use("/api/inventory", inventoryRoutes);
@@ -205,6 +208,7 @@ app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
 app.use("/api/ghn", ghnRoutes);
 app.use("/api/reviews", reviewRoutes);
+app.use("/api/follows", followRoutes);
 
 // Error handler
 app.use(errorHandler);

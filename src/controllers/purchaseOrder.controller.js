@@ -9,6 +9,34 @@ import { ErrorResponse } from "../utils/errorResponse.js";
  */
 
 /**
+ * @desc    Preview Landed Cost calculation without saving a PO
+ * @route   POST /api/purchase-orders/calculate
+ * @access  Private (Admin/Manager)
+ */
+export const calculateLandedCost = asyncHandler(async (req, res) => {
+  const result = purchaseOrderService.calculateLandedCostPreview(req.body);
+
+  const responseItems = result.itemsWithLC.map((item) => ({
+    sku:                item.sku || "",
+    productName:       item.productName || "",
+    quantity:          item.quantity,
+    unitPriceCny:      item.unitPriceCny,
+    priceVnd:          Math.round(item.priceVnd),
+    chargeableWeightKg: item.chargeableWeightKg,
+    landedCostUnit:    item.landedCostUnit,
+    breakdown:         item.breakdown,
+  }));
+
+  res.status(200).json({
+    success: true,
+    data: {
+      items:   responseItems,
+      summary: result.summary,
+    },
+  });
+});
+
+/**
  * @desc    Create new purchase order
  * @route   POST /api/purchase-orders
  * @access  Private (Admin/Manager)
@@ -43,7 +71,7 @@ export const getPurchaseOrders = asyncHandler(async (req, res) => {
     sortOrder: req.query.sortOrder || "desc",
   };
 
-  const result = await purchaseOrderService.getPurchaseOrders(filters);
+  const result = await purchaseOrderService.getPurchaseOrders(filters, req.user);
 
   res.status(200).json({
     success: true,
@@ -60,6 +88,7 @@ export const getPurchaseOrders = asyncHandler(async (req, res) => {
 export const getPurchaseOrderById = asyncHandler(async (req, res) => {
   const purchaseOrder = await purchaseOrderService.getPurchaseOrderById(
     req.params.id,
+    req.user,
   );
 
   res.status(200).json({
@@ -77,6 +106,7 @@ export const updatePurchaseOrder = asyncHandler(async (req, res) => {
   const purchaseOrder = await purchaseOrderService.updatePurchaseOrder(
     req.params.id,
     req.body,
+    req.user,
   );
 
   res.status(200).json({
@@ -117,6 +147,7 @@ export const completePurchaseOrder = asyncHandler(async (req, res) => {
 export const cancelPurchaseOrder = asyncHandler(async (req, res) => {
   const purchaseOrder = await purchaseOrderService.cancelPurchaseOrder(
     req.params.id,
+    req.user,
   );
 
   res.status(200).json({
@@ -165,7 +196,7 @@ export const getSuppliers = asyncHandler(async (req, res) => {
     sortOrder: req.query.sortOrder || "asc",
   };
 
-  const result = await purchaseOrderService.getSuppliers(filters);
+  const result = await purchaseOrderService.getSuppliers(filters, req.user);
 
   res.status(200).json({
     success: true,
@@ -180,7 +211,7 @@ export const getSuppliers = asyncHandler(async (req, res) => {
  * @access  Private (Admin/Manager)
  */
 export const getSupplierById = asyncHandler(async (req, res) => {
-  const supplier = await purchaseOrderService.getSupplierById(req.params.id);
+  const supplier = await purchaseOrderService.getSupplierById(req.params.id, req.user);
 
   res.status(200).json({
     success: true,
@@ -197,6 +228,7 @@ export const updateSupplier = asyncHandler(async (req, res) => {
   const supplier = await purchaseOrderService.updateSupplier(
     req.params.id,
     req.body,
+    req.user,
   );
 
   res.status(200).json({
@@ -212,7 +244,7 @@ export const updateSupplier = asyncHandler(async (req, res) => {
  * @access  Private (Admin/Manager)
  */
 export const deleteSupplier = asyncHandler(async (req, res) => {
-  const supplier = await purchaseOrderService.deleteSupplier(req.params.id);
+  const supplier = await purchaseOrderService.deleteSupplier(req.params.id, req.user);
 
   res.status(200).json({
     success: true,

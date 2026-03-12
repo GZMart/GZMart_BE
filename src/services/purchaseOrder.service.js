@@ -13,11 +13,135 @@ import { ErrorResponse } from "../utils/errorResponse.js";
  * ===================================================================
  */
 
+// =============================================================================
+// LANDED COST ENGINE – Pure calculation (no DB writes)
+// =============================================================================
+
+/**
+ * Tính Landed Cost cho từng SKU theo công thức Quảng Châu.
+ * Hàm này là PURE – không ghi DB, dùng được cho cả Preview và completePurchaseOrder.
+ *
+ * @param {Array}  items        - Mảng item từ PO (hoặc payload raw)
+ * @param {Object} importConfig - { exchangeRate, buyingServiceFeeRate, shippingRatePerKg, useVolumetricShipping }
+ * @param {Object} fixedCosts   - { cnDomesticShippingCny, packagingCostVnd, vnDomesticShippingVnd }
+ * @param {Number} taxAmount    - Thuế NK (VNĐ, nếu có)
+ * @param {Number} otherCost    - Chi phí khác (VNĐ)
+ * @returns {Object} { itemsWithLC, summary }
+ */
+export const computeLandedCost = (items, importConfig = {}, fixedCosts = {}, taxAmount = 0, otherCost = 0) => {
+  const rate             = importConfig.exchangeRate          || 3500;
+  const buyingFeeRate    = importConfig.buyingServiceFeeRate  || 0;
+  const shippingRateKg   = importConfig.shippingRatePerKg     || 0;
+  const useVolumetric    = importConfig.useVolumetricShipping !== false;
+
+  // ─── Bước 1: Tính chargeable weight từng item ────────────────────────────
+  const enriched = items.map((item) => {
+    const unitPriceCny = item.unitPriceCny > 0 ? item.unitPriceCny : (item.unitPrice / rate);
+    const priceVnd     = unitPriceCny * rate;
+    const valueCnyLine = unitPriceCny * item.quantity; // giá trị Tệ của dòng
+    const valueVndLine = priceVnd * item.quantity;     // giá trị VNĐ của dòng
+
+    // Cân nặng thực → tính chargeable (theo đơn vị kg/unit)
+    const volKg       = ((item.dimLength || 0) * (item.dimWidth || 0) * (item.dimHeight || 0)) / 6000;
+    const chargePerUnit = useVolumetric ? Math.max(item.weightKg || 0, volKg) : (item.weightKg || 0);
+    const chargeableWeightKg = chargePerUnit * item.quantity;
+
+    return { ...item, unitPriceCny, priceVnd, valueCnyLine, valueVndLine, chargeableWeightKg };
+  });
+
+  // ─── Bước 2: Tổng hợp ────────────────────────────────────────────────────
+  const totalValueCny      = enriched.reduce((s, i) => s + i.valueCnyLine, 0);
+  const totalValueVnd      = enriched.reduce((s, i) => s + i.valueVndLine, 0);
+  const totalChargeableKg  = enriched.reduce((s, i) => s + i.chargeableWeightKg, 0);
+
+  // ─── Bước 3: Tính các pool chi phí ──────────────────────────────────────
+  // Value-based pool (phân bổ theo tỷ lệ giá trị CNY)
+  const buyingFeeVnd       = totalValueVnd * buyingFeeRate;
+  const cnDomesticVnd      = (fixedCosts.cnDomesticShippingCny || 0) * rate;
+  const packagingVnd       = fixedCosts.packagingCostVnd      || 0;
+  const valueCostPool      = buyingFeeVnd + cnDomesticVnd + packagingVnd + taxAmount + (otherCost * 0.5);
+
+  // Weight-based pool (phân bổ theo trọng lượng tính cước)
+  const intlShippingVnd    = totalChargeableKg * shippingRateKg;
+  const vnDomesticVnd      = fixedCosts.vnDomesticShippingVnd || 0;
+  const weightCostPool     = intlShippingVnd + vnDomesticVnd + (otherCost * 0.5);
+
+  // ─── Bước 4: Phân bổ và tính LC/unit mỗi SKU ────────────────────────────
+  const itemsWithLC = enriched.map((item) => {
+    // Value-based allocation (tỷ lệ giá trị Tệ)
+    const valueRatio  = totalValueCny > 0 ? item.valueCnyLine / totalValueCny : 0;
+    const valueAlloc  = valueCostPool * valueRatio;
+
+    // Weight-based allocation (tỷ lệ chargeable weight)
+    const weightRatio = totalChargeableKg > 0 ? item.chargeableWeightKg / totalChargeableKg : 0;
+    const weightAlloc = weightCostPool * weightRatio;
+
+    // Tổng chi phí phân bổ cho dòng này
+    const totalAllocated = valueAlloc + weightAlloc;
+
+    // LC/unit = (tiền hàng dòng + phí phân bổ dòng) / số lượng
+    const landedCostUnit = item.quantity > 0
+      ? (item.valueVndLine + totalAllocated) / item.quantity
+      : item.priceVnd;
+
+    return {
+      ...item,
+      chargeableWeightKg: Math.round(item.chargeableWeightKg * 1000) / 1000,
+      landedCostUnit: Math.round(landedCostUnit),
+      // breakdown (dùng cho preview)
+      breakdown: {
+        goodsValueVnd:   Math.round(item.valueVndLine),
+        valueAllocVnd:   Math.round(valueAlloc),
+        weightAllocVnd:  Math.round(weightAlloc),
+        totalAllocVnd:   Math.round(totalAllocated),
+        lcTotalVnd:      Math.round(item.valueVndLine + totalAllocated),
+      },
+    };
+  });
+
+  const totalLandedCost = itemsWithLC.reduce((s, i) => s + i.breakdown.lcTotalVnd, 0);
+
+  return {
+    itemsWithLC,
+    summary: {
+      exchangeRate:        rate,
+      totalValueCny:       Math.round(totalValueCny * 100) / 100,
+      totalValueVnd:       Math.round(totalValueVnd),
+      totalChargeableKg:   Math.round(totalChargeableKg * 1000) / 1000,
+      intlShippingVnd:     Math.round(intlShippingVnd),
+      buyingFeeVnd:        Math.round(buyingFeeVnd),
+      cnDomesticVnd:       Math.round(cnDomesticVnd),
+      packagingVnd:        Math.round(packagingVnd),
+      vnDomesticVnd:       Math.round(vnDomesticVnd),
+      valueCostPool:       Math.round(valueCostPool),
+      weightCostPool:      Math.round(weightCostPool),
+      totalLandedCost:     Math.round(totalLandedCost),
+    },
+  };
+};
+
+/**
+ * Preview Landed Cost (không cần PO đã lưu)
+ * Dùng cho FE real-time hoặc endpoint POST /api/purchase-orders/calculate
+ *
+ * @param {Object} poData - raw payload giống createPurchaseOrder
+ * @returns {Object} { items với LC breakdown, summary }
+ */
+export const calculateLandedCostPreview = (poData) => {
+  const { items = [], importConfig = {}, fixedCosts = {}, taxAmount = 0, otherCost = 0 } = poData;
+
+  if (!items.length) {
+    throw new ErrorResponse("Cần ít nhất 1 sản phẩm để tính Landed Cost", 400);
+  }
+
+  return computeLandedCost(items, importConfig, fixedCosts, taxAmount, otherCost);
+};
+
 /**
  * Complete Purchase Order
  * Handles the entire workflow when goods arrive at the warehouse:
  * 1. Validate PO status
- * 2. Calculate landed cost per unit
+ * 2. Calculate landed cost per unit (using computeLandedCost engine)
  * 3. Update inventory stock and cost price using Weighted Moving Average
  * 4. Log inventory transactions
  * 5. Update PO status to Completed
@@ -66,27 +190,23 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
     }
 
     // ============================================================
-    // STEP 2: Calculate Landed Cost Per Unit
+    // STEP 2: Calculate Landed Cost Per Unit (Guangzhou Engine)
     // ============================================================
-    // Total Import Quantity = Sum of all item quantities
-    const totalImportQuantity = purchaseOrder.items.reduce(
-      (sum, item) => sum + item.quantity,
-      0,
+    const { itemsWithLC, summary: lcSummary } = computeLandedCost(
+      purchaseOrder.items.map((i) => i.toObject ? i.toObject() : { ...i }),
+      purchaseOrder.importConfig || {},
+      purchaseOrder.fixedCosts || {},
+      purchaseOrder.taxAmount || 0,
+      purchaseOrder.otherCost || 0,
     );
 
-    // Edge case: Prevent division by zero
-    if (totalImportQuantity === 0) {
-      throw new ErrorResponse("Total import quantity cannot be zero", 400);
-    }
-
-    // Additional costs to be allocated across all items
-    const additionalCosts =
-      (purchaseOrder.shippingCost || 0) +
-      (purchaseOrder.taxAmount || 0) +
-      (purchaseOrder.otherCost || 0);
-
-    // Allocated Cost Per Unit = (shipping + tax + other costs) / Total Import Quantity
-    const allocatedCostPerUnit = additionalCosts / totalImportQuantity;
+    // Build lookup map: SKU → computed LC data
+    const lcMap = {};
+    itemsWithLC.forEach((lc, idx) => {
+      // Match by index (order preserved)
+      const originalSku = purchaseOrder.items[idx]?.sku;
+      if (originalSku) lcMap[originalSku + "_" + idx] = lc;
+    });
 
     // ============================================================
     // STEP 3: Update Inventory & Cost Price for Each Item
@@ -94,7 +214,23 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
     const inventoryTransactions = [];
     const updatedProducts = [];
 
-    for (const item of purchaseOrder.items) {
+    for (let idx = 0; idx < purchaseOrder.items.length; idx++) {
+      const item = purchaseOrder.items[idx];
+      const lcData = lcMap[item.sku + "_" + idx];
+      const landedCostPerUnit = lcData ? lcData.landedCostUnit : item.unitPrice;
+
+      // Write computed landed cost back to PO item (persisted on save)
+      item.chargeableWeightKg = lcData ? lcData.chargeableWeightKg : 0;
+      item.landedCostUnit     = landedCostPerUnit;
+
+      // ============================================================
+      // STEP 3: Update Inventory (only when item is linked to a listing)
+      // ============================================================
+      if (!item.productId || !item.modelId) {
+        // Free-form import log — landed cost recorded but no inventory update
+        continue;
+      }
+
       // Fetch the product
       const product = await Product.findById(item.productId).session(session);
 
@@ -123,14 +259,9 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
         );
       }
 
-      // Calculate Landed Cost Per Unit for this item
-      // Formula: Landed Cost Unit = Item Unit Price + Allocated Cost Per Unit
-      const landedCostPerUnit = item.unitPrice + allocatedCostPerUnit;
-
       // ============================================================
       // STEP 3.1: Update Inventory Item (Single Source of Truth for Stock)
       // ============================================================
-      // Find or create inventory item
       let inventoryItem = await InventoryItem.findOne({
         sku: item.sku,
         warehouseId: purchaseOrder.warehouseId,
@@ -140,15 +271,14 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
       const costPriceBefore = inventoryItem ? inventoryItem.costPrice : 0;
 
       if (!inventoryItem) {
-        // Create new inventory item with the imported stock
         inventoryItem = await InventoryItem.create(
           [
             {
               productId: item.productId,
               modelId: item.modelId,
               sku: item.sku,
-              quantity: item.quantity, // Start from imported quantity
-              costPrice: landedCostPerUnit, // Use landed cost for new items
+              quantity: item.quantity,
+              costPrice: landedCostPerUnit,
               warehouseId: purchaseOrder.warehouseId,
               lastRestockDate: new Date(),
             },
@@ -157,24 +287,20 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
         );
         inventoryItem = inventoryItem[0];
       } else {
-        // Update existing inventory item using weighted average method
         inventoryItem.addStock(item.quantity, landedCostPerUnit);
         await inventoryItem.save({ session });
       }
 
-      // Get final values from InventoryItem (single source of truth)
       const stockAfter = inventoryItem.quantity;
       const costPriceAfter = inventoryItem.costPrice;
 
       // ============================================================
-      // STEP 3.2: Sync Product.models with InventoryItem (for backward compatibility)
+      // STEP 3.2: Sync Product.models (backward compatibility)
       // ============================================================
-      // Sync with InventoryItem (for backward compatibility with existing code)
       model.stock = stockAfter;
       model.costPrice = costPriceAfter;
-
-      // Save the product
       await product.save({ session });
+
       updatedProducts.push({
         productId: product._id,
         productName: product.name,
@@ -246,7 +372,7 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
           0,
         ),
         totalCost: purchaseOrder.finalAmount,
-        allocatedCostPerUnit: Math.round(allocatedCostPerUnit * 100) / 100,
+        landedCostEngine: lcSummary,
       },
       updatedProducts,
       inventoryTransactions: inventoryTransactions.map((t) => ({
@@ -300,8 +426,10 @@ export const createPurchaseOrder = async (poData, userId) => {
       throw new ErrorResponse("Supplier is not active", 400);
     }
 
-    // Validate all products and variants exist
+    // Validate products/variants only when productId is provided (linked listing)
     for (const item of poData.items) {
+      if (!item.productId) continue; // free-form import log — skip validation
+
       const product = await Product.findById(item.productId);
       if (!product) {
         throw new ErrorResponse(`Product not found: ${item.productName}`, 404);
@@ -315,7 +443,7 @@ export const createPurchaseOrder = async (poData, userId) => {
         );
       }
 
-      // Populate product details
+      // Sync authoritative data from listing
       item.productName = product.name;
       item.sku = model.sku;
     }
@@ -341,7 +469,7 @@ export const createPurchaseOrder = async (poData, userId) => {
  * @param {String} purchaseOrderId - PO ID
  * @returns {Object} Purchase order
  */
-export const getPurchaseOrderById = async (purchaseOrderId) => {
+export const getPurchaseOrderById = async (purchaseOrderId, user = null) => {
   const purchaseOrder = await PurchaseOrder.findById(purchaseOrderId)
     .populate("supplierId", "name contactPerson phone email")
     .populate("createdBy", "name email")
@@ -349,6 +477,11 @@ export const getPurchaseOrderById = async (purchaseOrderId) => {
 
   if (!purchaseOrder) {
     throw new ErrorResponse("Purchase Order not found", 404);
+  }
+
+  // Sellers can only view their own purchase orders
+  if (user && user.role === "seller" && purchaseOrder.createdBy._id.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to access this purchase order", 403);
   }
 
   return purchaseOrder;
@@ -359,7 +492,7 @@ export const getPurchaseOrderById = async (purchaseOrderId) => {
  * @param {Object} filters - Filter criteria
  * @returns {Array} List of purchase orders
  */
-export const getPurchaseOrders = async (filters = {}) => {
+export const getPurchaseOrders = async (filters = {}, user = null) => {
   const {
     status,
     supplierId,
@@ -372,6 +505,11 @@ export const getPurchaseOrders = async (filters = {}) => {
   } = filters;
 
   const query = {};
+
+  // Sellers can only see their own purchase orders
+  if (user && user.role === "seller") {
+    query.createdBy = user._id;
+  }
 
   if (status) {
     query.status = status;
@@ -421,11 +559,16 @@ export const getPurchaseOrders = async (filters = {}) => {
  * @param {Object} updateData - Data to update
  * @returns {Object} Updated purchase order
  */
-export const updatePurchaseOrder = async (purchaseOrderId, updateData) => {
+export const updatePurchaseOrder = async (purchaseOrderId, updateData, user = null) => {
   const purchaseOrder = await PurchaseOrder.findById(purchaseOrderId);
 
   if (!purchaseOrder) {
     throw new ErrorResponse("Purchase Order not found", 404);
+  }
+
+  // Sellers can only update their own purchase orders
+  if (user && user.role === "seller" && purchaseOrder.createdBy.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to update this purchase order", 403);
   }
 
   // Can only update Draft or Pending orders
@@ -453,11 +596,16 @@ export const updatePurchaseOrder = async (purchaseOrderId, updateData) => {
  * @param {String} purchaseOrderId - PO ID
  * @returns {Object} Cancelled purchase order
  */
-export const cancelPurchaseOrder = async (purchaseOrderId) => {
+export const cancelPurchaseOrder = async (purchaseOrderId, user = null) => {
   const purchaseOrder = await PurchaseOrder.findById(purchaseOrderId);
 
   if (!purchaseOrder) {
     throw new ErrorResponse("Purchase Order not found", 404);
+  }
+
+  // Sellers can only cancel their own purchase orders
+  if (user && user.role === "seller" && purchaseOrder.createdBy.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to cancel this purchase order", 403);
   }
 
   if (purchaseOrder.status === "Completed") {
@@ -502,9 +650,10 @@ export const createSupplier = async (supplierData, userId) => {
 /**
  * Get all Suppliers with filters
  * @param {Object} filters - Filter criteria
+ * @param {Object} user - The requesting user (used to scope seller access)
  * @returns {Array} List of suppliers
  */
-export const getSuppliers = async (filters = {}) => {
+export const getSuppliers = async (filters = {}, user = null) => {
   const {
     status,
     search,
@@ -515,6 +664,11 @@ export const getSuppliers = async (filters = {}) => {
   } = filters;
 
   const query = {};
+
+  // Sellers can only see their own suppliers
+  if (user && user.role === "seller") {
+    query.createdBy = user._id;
+  }
 
   if (status) {
     query.status = status;
@@ -550,13 +704,19 @@ export const getSuppliers = async (filters = {}) => {
 /**
  * Get Supplier by ID
  * @param {String} supplierId - Supplier ID
+ * @param {Object} user - The requesting user
  * @returns {Object} Supplier
  */
-export const getSupplierById = async (supplierId) => {
+export const getSupplierById = async (supplierId, user = null) => {
   const supplier = await Supplier.findById(supplierId);
 
   if (!supplier) {
     throw new ErrorResponse("Supplier not found", 404);
+  }
+
+  // Sellers can only view their own suppliers
+  if (user && user.role === "seller" && supplier.createdBy.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to access this supplier", 403);
   }
 
   return supplier;
@@ -566,13 +726,19 @@ export const getSupplierById = async (supplierId) => {
  * Update Supplier
  * @param {String} supplierId - Supplier ID
  * @param {Object} updateData - Data to update
+ * @param {Object} user - The requesting user
  * @returns {Object} Updated supplier
  */
-export const updateSupplier = async (supplierId, updateData) => {
+export const updateSupplier = async (supplierId, updateData, user = null) => {
   const supplier = await Supplier.findById(supplierId);
 
   if (!supplier) {
     throw new ErrorResponse("Supplier not found", 404);
+  }
+
+  // Sellers can only update their own suppliers
+  if (user && user.role === "seller" && supplier.createdBy.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to update this supplier", 403);
   }
 
   Object.keys(updateData).forEach((key) => {
@@ -589,13 +755,19 @@ export const updateSupplier = async (supplierId, updateData) => {
 /**
  * Delete Supplier (soft delete by setting status to Inactive)
  * @param {String} supplierId - Supplier ID
+ * @param {Object} user - The requesting user
  * @returns {Object} Deleted supplier
  */
-export const deleteSupplier = async (supplierId) => {
+export const deleteSupplier = async (supplierId, user = null) => {
   const supplier = await Supplier.findById(supplierId);
 
   if (!supplier) {
     throw new ErrorResponse("Supplier not found", 404);
+  }
+
+  // Sellers can only delete their own suppliers
+  if (user && user.role === "seller" && supplier.createdBy.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to delete this supplier", 403);
   }
 
   // Check if supplier has active purchase orders

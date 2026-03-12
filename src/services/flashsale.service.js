@@ -258,11 +258,16 @@ export const createBatchFlashSale = async (batchData) => {
 /**
  * Get all flash sales (with pagination, status filter, and sortBy)
  */
-export const getFlashSales = async (filters = {}) => {
+export const getFlashSales = async (filters = {}, user = null) => {
   const { page = 1, limit = 10, status, sortBy = "createdAt" } = filters;
   const skip = (page - 1) * limit;
 
   const filterQuery = { type: "flash_sale" };
+
+  // Sellers can only see their own flash sales
+  if (user && user.role === "seller") {
+    filterQuery.sellerId = user._id;
+  }
 
   // FlashSale status: upcoming mapped to Deal pending
   if (status) {
@@ -333,7 +338,7 @@ export const getActiveFlashSales = async () => {
 /**
  * Get flash sale stats
  */
-export const getFlashSaleStats = async (flashSaleId) => {
+export const getFlashSaleStats = async (flashSaleId, user = null) => {
   const flashSale = await Deal.findOne({
     _id: flashSaleId,
     type: "flash_sale",
@@ -341,6 +346,11 @@ export const getFlashSaleStats = async (flashSaleId) => {
 
   if (!flashSale) {
     throw new ErrorResponse("Flash sale not found", 404);
+  }
+
+  // Sellers can only view stats for their own flash sales
+  if (user && user.role === "seller" && flashSale.sellerId?.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to access this flash sale", 403);
   }
 
   return mapToFlashSaleShape(flashSale);
@@ -386,7 +396,7 @@ export const searchFlashSaleProducts = async (
 /**
  * Update flash sale
  */
-export const updateFlashSale = async (flashSaleId, updateData) => {
+export const updateFlashSale = async (flashSaleId, updateData, user = null) => {
   const {
     salePrice,
     totalQuantity,
@@ -404,6 +414,11 @@ export const updateFlashSale = async (flashSaleId, updateData) => {
   });
   if (!flashSale) {
     throw new ErrorResponse("Flash sale not found", 404);
+  }
+
+  // Sellers can only update their own flash sales
+  if (user && user.role === "seller" && flashSale.sellerId?.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to update this flash sale", 403);
   }
 
   const now = new Date();
@@ -475,14 +490,22 @@ export const updateFlashSale = async (flashSaleId, updateData) => {
 /**
  * Delete flash sale
  */
-export const deleteFlashSale = async (flashSaleId) => {
-  const flashSale = await Deal.findOneAndDelete({
+export const deleteFlashSale = async (flashSaleId, user = null) => {
+  const flashSale = await Deal.findOne({
     _id: flashSaleId,
     type: "flash_sale",
   });
+
   if (!flashSale) {
     throw new ErrorResponse("Flash sale not found", 404);
   }
+
+  // Sellers can only delete their own flash sales
+  if (user && user.role === "seller" && flashSale.sellerId?.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to delete this flash sale", 403);
+  }
+
+  await flashSale.deleteOne();
   return mapToFlashSaleShape(flashSale);
 };
 

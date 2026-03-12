@@ -92,9 +92,11 @@ export const getCategory = async (identifier) => {
 
 /**
  * Get category tree structure
+ * @param {boolean} includeAll - If true, include all statuses (admin use)
  */
-export const getCategoryTree = async () => {
-  const categories = await Category.find({ status: "active" })
+export const getCategoryTree = async (includeAll = false) => {
+  const query = includeAll ? {} : { status: "active" };
+  const categories = await Category.find(query)
     .sort({ order: 1, name: 1 })
     .lean();
 
@@ -120,6 +122,11 @@ export const updateCategory = async (categoryId, updateData) => {
     throw new ErrorResponse("Category not found", 404);
   }
 
+  // Remove empty/undefined slug to preserve existing slug
+  if (!updateData.slug) {
+    delete updateData.slug;
+  }
+
   if (updateData.slug && updateData.slug !== category.slug) {
     const existing = await Category.findOne({ slug: updateData.slug });
     if (existing) {
@@ -137,6 +144,9 @@ export const updateCategory = async (categoryId, updateData) => {
       throw new ErrorResponse("Parent category not found", 404);
     }
     updateData.level = parent.level + 1;
+  } else if (updateData.parentId === null) {
+    // Moving to root level
+    updateData.level = 1;
   }
 
   Object.assign(category, updateData);
@@ -286,4 +296,24 @@ export const getCategoryStats = async (categoryId) => {
  */
 export const getChildCategories = async (parentId) => {
   return await Category.find({ parentId }).sort({ order: 1, name: 1 });
+};
+
+/**
+ * Bulk-update order fields for a list of categories.
+ * @param {Array<{id: string, order: number}>} items
+ */
+export const reorderCategories = async (items) => {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new ErrorResponse("items must be a non-empty array", 400);
+  }
+
+  const bulkOps = items.map(({ id, order }) => ({
+    updateOne: {
+      filter: { _id: id },
+      update: { $set: { order } },
+    },
+  }));
+
+  await Category.bulkWrite(bulkOps);
+  return { updated: items.length };
 };
