@@ -30,30 +30,33 @@ class ReviewService {
     // If orderId provided, verify user purchased this product
     let verifiedPurchase = false;
     if (orderId) {
-      const order = await Order.findOne({
-        _id: orderId,
-        userId,
-      }).populate({
-        path: "items",
-        select: "productId",
-      });
+      console.log("=== DEBUG: Fetching order ===");
+      try {
+        const order = await Order.findOne({
+          _id: orderId,
+          userId,
+        }).populate({
+          path: "items",
+        });
 
-      if (!order) {
-        throw new ErrorResponse("Order not found or does not belong to you", 404);
+        if (!order) {
+          console.log("Order not found");
+          // Don't throw - allow review creation without verified purchase
+        } else if (order.items && order.items.length > 0) {
+          // Check if any item in the order has the requested productId
+          const hasProduct = order.items.some((item) => {
+            return item.productId && item.productId.toString() === productId.toString();
+          });
+
+          if (hasProduct) {
+            verifiedPurchase = true;
+            console.log("Verified purchase: true");
+          }
+        }
+      } catch (error) {
+        console.log("Error verifying purchase:", error.message);
+        // Don't throw - allow review creation even if order verification fails
       }
-
-      // Check if any item in the order has the requested productId
-      const hasProduct = order.items.some(
-        (item) => item.productId.toString() === productId.toString(),
-      );
-
-      if (!hasProduct) {
-        throw new ErrorResponse(
-          "You did not purchase this product in this order",
-          403,
-        );
-      }
-      verifiedPurchase = true;
     }
 
     // Create review

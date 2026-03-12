@@ -204,6 +204,7 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
 app.use("/api/ghn", ghnRoutes);
+app.use("/api/reviews", reviewRoutes);
 
 // Error handler
 app.use(errorHandler);
