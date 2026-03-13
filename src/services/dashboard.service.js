@@ -38,12 +38,15 @@ export const getRevenueStats = async (sellerId) => {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const weekAgo = new Date(today);
   weekAgo.setDate(weekAgo.getDate() - 7);
-  const monthAgo = new Date(today);
-  monthAgo.setMonth(monthAgo.getMonth() - 1);
+  
+  // THIS MONTH: From 1st day of current month to today
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  
+  // LAST YEAR: From same date last year to today
   const yearAgo = new Date(today);
   yearAgo.setFullYear(yearAgo.getFullYear() - 1);
 
-  // Get seller's products
+  // Get seller's products only
   const sellerProducts = await Product.find({ sellerId }).select("_id");
   const sellerProductIds = sellerProducts.map((p) => p._id);
 
@@ -57,7 +60,7 @@ export const getRevenueStats = async (sellerId) => {
     };
   }
 
-  // Get orders with seller's products
+  // Get orders with all relevant products
   // Count revenue from completed/delivered orders (regardless of payment status)
   const orders = await Order.aggregate([
     {
@@ -97,7 +100,7 @@ export const getRevenueStats = async (sellerId) => {
         },
         thisMonth: {
           $sum: {
-            $cond: [{ $gte: ["$createdAt", monthAgo] }, "$items.subtotal", 0],
+            $cond: [{ $gte: ["$createdAt", monthStart] }, "$items.subtotal", 0],
           },
         },
         thisYear: {
@@ -116,10 +119,10 @@ export const getRevenueStats = async (sellerId) => {
 };
 
 /**
- * Get revenue over time (daily, weekly, monthly)
+ * Get revenue over time (daily, weekly, monthly, quarterly, yearly)
  */
 export const getRevenueOverTime = async (sellerId, period = "daily") => {
-  // period: 'daily', 'weekly', 'monthly'
+  // period: 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
   const now = new Date();
   let startDate;
   let dateFormat;
@@ -138,6 +141,16 @@ export const getRevenueOverTime = async (sellerId, period = "daily") => {
     startDate = new Date(now);
     startDate.setFullYear(startDate.getFullYear() - 1); // Last 12 months
     dateFormat = { $dateToString: { format: "%Y-%m", date: "$createdAt" } };
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1); // Last 12 months
+    dateFormat = {
+      $dateToString: { format: "%Y-Q", date: "$createdAt" },
+    };
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5); // Last 5 years
+    dateFormat = { $dateToString: { format: "%Y", date: "$createdAt" } };
   }
 
   const sellerProducts = await Product.find({ sellerId }).select("_id");
@@ -151,7 +164,7 @@ export const getRevenueOverTime = async (sellerId, period = "daily") => {
     {
       $match: {
         createdAt: { $gte: startDate },
-        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
+        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] },
       },
     },
     {
@@ -172,8 +185,14 @@ export const getRevenueOverTime = async (sellerId, period = "daily") => {
     },
     {
       $group: {
-        _id: dateFormat,
+        _id: { date: dateFormat, orderId: "$_id" },
         revenue: { $sum: "$items.subtotal" },
+      },
+    },
+    {
+      $group: {
+        _id: "$_id.date",
+        revenue: { $sum: "$revenue" },
         count: { $sum: 1 },
       },
     },
@@ -193,11 +212,11 @@ export const getBestSellingProducts = async (sellerId, limit = 5) => {
     "_id name originalPrice images",
   );
 
-  if (sellerProducts.length === 0) {
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
     return [];
   }
-
-  const sellerProductIds = sellerProducts.map((p) => p._id);
 
   const bestSellers = await OrderItem.aggregate([
     {
@@ -337,29 +356,21 @@ export const getOrderStats = async (sellerId) => {
     };
   }
 
-  // Get stats by order status
-  const orderStats = await Order.aggregate([
-    {
-      $lookup: {
-        from: "orderitems",
-        localField: "_id",
-        foreignField: "orderId",
-        as: "items",
-      },
-    },
-    {
-      $unwind: "$items",
-    },
+  // Count distinct orders with items from this seller's products
+  // Using OrderItem to find distinct orders, not counting items
+  const orderStats = await OrderItem.aggregate([
     {
       $match: {
-        "items.productId": { $in: sellerProductIds },
+        productId: { $in: sellerProductIds },
       },
     },
     {
       $group: {
-        _id: null,
-        total: { $sum: 1 },
+        _id: "$orderId", // Group by orderId to get distinct orders
       },
+    },
+    {
+      $count: "total", // Count the number of distinct orders
     },
   ]);
 
@@ -403,7 +414,12 @@ export const getCustomerStats = async (sellerId) => {
     },
     {
       $group: {
-        _id: '$userId',
+        _id: { userId: '$userId', orderId: '$_id' },
+      },
+    },
+    {
+      $group: {
+        _id: '$_id.userId',
         orderCount: { $sum: 1 },
       },
     },
@@ -430,7 +446,8 @@ export const getProductAnalytics = async (sellerId, limit = 10) => {
     return [];
   }
 
-  const analytics = await OrderItem.aggregate([
+  // Get product analytics with correct order count
+  const correctAnalytics = await OrderItem.aggregate([
     {
       $match: {
         productId: { $in: sellerProductIds },
@@ -438,11 +455,19 @@ export const getProductAnalytics = async (sellerId, limit = 10) => {
     },
     {
       $group: {
-        _id: "$productId",
+        _id: { productId: "$productId", orderId: "$orderId" },
+        quantity: { $first: "$quantity" },
+        subtotal: { $first: "$subtotal" },
+        price: { $first: "$price" },
+      },
+    },
+    {
+      $group: {
+        _id: "$_id.productId",
+        numberOfOrders: { $sum: 1 },
         quantitySold: { $sum: "$quantity" },
         revenue: { $sum: "$subtotal" },
         averagePrice: { $avg: "$price" },
-        numberOfOrders: { $sum: 1 },
       },
     },
     {
@@ -481,7 +506,7 @@ export const getProductAnalytics = async (sellerId, limit = 10) => {
     },
   ]);
 
-  return analytics;
+  return correctAnalytics;
 };
 
 /**
@@ -502,7 +527,7 @@ export const getSalesTrend = async (sellerId, days = 30) => {
     {
       $match: {
         createdAt: { $gte: startDate },
-        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
+        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] },
       },
     },
     {
@@ -524,11 +549,19 @@ export const getSalesTrend = async (sellerId, days = 30) => {
     {
       $group: {
         _id: {
-          $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          orderId: "$_id",
         },
-        sales: { $sum: 1 },
-        revenue: { $sum: "$items.subtotal" },
-        quantity: { $sum: "$items.quantity" },
+        dateRevenue: { $sum: "$items.subtotal" },
+        dateQuantity: { $sum: "$items.quantity" },
+      },
+    },
+    {
+      $group: {
+        _id: "$_id.date",
+        sales: { $sum: 1 }, // Count distinct orders per day
+        revenue: { $sum: "$dateRevenue" },
+        quantity: { $sum: "$dateQuantity" },
       },
     },
     {
@@ -580,7 +613,7 @@ export const getComparisonStats = async (sellerId, period = "month") => {
       {
         $match: {
           createdAt: { $gte: start, $lte: end },
-          status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
+          status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] },
         },
       },
       {
@@ -601,10 +634,17 @@ export const getComparisonStats = async (sellerId, period = "month") => {
       },
       {
         $group: {
-          _id: null,
-          orders: { $sum: 1 },
+          _id: "$_id",
           revenue: { $sum: "$items.subtotal" },
           quantity: { $sum: "$items.quantity" },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          orders: { $sum: 1 }, // Count distinct orders
+          revenue: { $sum: "$revenue" },
+          quantity: { $sum: "$quantity" },
         },
       },
     ]);
@@ -647,6 +687,391 @@ export const getComparisonStats = async (sellerId, period = "month") => {
     previousPeriod: previousStats,
     growth,
   };
+};
+
+/**
+ * Get profit and loss analysis
+ * Calculate revenue, cost, profit/loss by period
+ */
+export const getProfitLossAnalysis = async (sellerId, period = "daily") => {
+  const now = new Date();
+  let startDate;
+  let dateFormat;
+
+  if (period === "daily") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 30);
+    dateFormat = { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } };
+  } else if (period === "weekly") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 90);
+    dateFormat = { $dateToString: { format: "%Y-W%V", date: "$createdAt" } };
+  } else if (period === "monthly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+    dateFormat = { $dateToString: { format: "%Y-%m", date: "$createdAt" } };
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+    dateFormat = { $dateToString: { format: "%Y-Q", date: "$createdAt" } };
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5);
+    dateFormat = { $dateToString: { format: "%Y", date: "$createdAt" } };
+  }
+
+  const sellerProducts = await Product.find({ sellerId }).select("_id originalPrice cost");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return [];
+  }
+
+  const analysisData = await Order.aggregate([
+    {
+      $match: {
+        createdAt: { $gte: startDate },
+        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] },
+      },
+    },
+    {
+      $lookup: {
+        from: "orderitems",
+        localField: "_id",
+        foreignField: "orderId",
+        as: "items",
+      },
+    },
+    {
+      $unwind: "$items",
+    },
+    {
+      $match: {
+        "items.productId": { $in: sellerProductIds },
+      },
+    },
+    {
+      $lookup: {
+        from: "products",
+        localField: "items.productId",
+        foreignField: "_id",
+        as: "productInfo",
+      },
+    },
+    {
+      $group: {
+        _id: dateFormat,
+        totalRevenue: { $sum: "$items.subtotal" },
+        totalQuantity: { $sum: "$items.quantity" },
+        totalItems: { $sum: 1 },
+        totalCost: {
+          $sum: {
+            $multiply: [
+              {
+                $ifNull: [
+                  { $arrayElemAt: ["$productInfo.cost", 0] },
+                  { $arrayElemAt: ["$productInfo.originalPrice", 0] }
+                ]
+              },
+              "$items.quantity",
+            ],
+          },
+        },
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        revenue: "$totalRevenue",
+        cost: "$totalCost",
+        quantity: "$totalQuantity",
+        orders: "$totalItems",
+        profit: {
+          $subtract: ["$totalRevenue", "$totalCost"],
+        },
+      },
+    },
+    {
+      $sort: { _id: 1 },
+    },
+  ]);
+
+  return analysisData;
+};
+
+/**
+ * Get expense and cost breakdown
+ */
+export const getExpenseAnalysis = async (sellerId, period = "monthly") => {
+  const now = new Date();
+  let startDate;
+
+  if (period === "daily") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 30);
+  } else if (period === "weekly") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 90);
+  } else if (period === "monthly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5);
+  }
+
+  // Get seller's products only
+  const sellerProducts = await Product.find({ sellerId }).select("_id originalPrice cost");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return {
+      totalProductCost: 0,
+      totalShippingCost: 0,
+      totalExpense: 0,
+      breakdownByType: [],
+    };
+  }
+
+  // Get total product cost (cost of goods sold)
+  const productCostData = await OrderItem.aggregate([
+    {
+      $lookup: {
+        from: "orders",
+        localField: "orderId",
+        foreignField: "_id",
+        as: "order",
+      },
+    },
+    {
+      $unwind: "$order",
+    },
+    {
+      $match: {
+        productId: { $in: sellerProductIds },
+        "order.createdAt": { $gte: startDate },
+        "order.status": { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] },
+      },
+    },
+    {
+      $lookup: {
+        from: "products",
+        localField: "productId",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+    {
+      $group: {
+        _id: "$productId",
+        totalCost: {
+          $sum: {
+            $multiply: [
+              {
+                $ifNull: [
+                  { $arrayElemAt: ["$product.cost", 0] },
+                  { $arrayElemAt: ["$product.originalPrice", 0] }
+                ]
+              },
+              "$quantity",
+            ],
+          },
+        },
+        totalQuantity: { $sum: "$quantity" },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalCost: { $sum: "$totalCost" },
+        totalQuantity: { $sum: "$totalQuantity" },
+      },
+    },
+  ]);
+
+  const productCost = productCostData[0]?.totalCost || 0;
+
+  // Get total shipping cost - group by order to avoid double count
+  const shippingCostData = await Order.aggregate([
+    {
+      $match: {
+        createdAt: { $gte: startDate },
+        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] },
+      },
+    },
+    {
+      $lookup: {
+        from: "orderitems",
+        localField: "_id",
+        foreignField: "orderId",
+        as: "items",
+      },
+    },
+    {
+      $match: {
+        "items.productId": { $in: sellerProductIds },
+      },
+    },
+    {
+      $group: {
+        _id: "$_id",
+        shippingCost: { $first: "$shippingCost" },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalShipping: { $sum: "$shippingCost" },
+      },
+    },
+  ]);
+
+  const shippingCost = shippingCostData[0]?.totalShipping || 0;
+
+  return {
+    totalProductCost: productCost,
+    totalShippingCost: shippingCost,
+    totalExpense: productCost + shippingCost,
+    breakdownByType: [
+      { type: "Product Cost", amount: productCost },
+      { type: "Shipping Cost", amount: shippingCost },
+    ],
+  };
+};
+
+/**
+ * Get top selling products with profit analysis
+ */
+export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, period = "monthly") => {
+  const now = new Date();
+  let startDate;
+
+  if (period === "daily") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 30);
+  } else if (period === "weekly") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 90);
+  } else if (period === "monthly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5);
+  }
+
+  // Get all seller's products first
+  const sellerProducts = await Product.find({ sellerId }).select("_id name originalPrice cost images");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return [];
+  }
+
+  const topProducts = await OrderItem.aggregate([
+    {
+      $lookup: {
+        from: "orders",
+        localField: "orderId",
+        foreignField: "_id",
+        as: "order",
+      },
+    },
+    {
+      $unwind: "$order",
+    },
+    {
+      $match: {
+        productId: { $in: sellerProductIds },
+        "order.createdAt": { $gte: startDate },
+        "order.status": { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] },
+      },
+    },
+    {
+      $group: {
+        _id: { productId: "$productId", orderId: "$orderId" },
+        quantity: { $first: "$quantity" },
+        subtotal: { $first: "$subtotal" },
+        price: { $first: "$price" },
+      },
+    },
+    {
+      $group: {
+        _id: "$_id.productId",
+        totalQuantity: { $sum: "$quantity" },
+        totalRevenue: { $sum: "$subtotal" },
+        averagePrice: { $avg: "$price" },
+        totalOrders: { $sum: 1 },
+      },
+    },
+    {
+      $lookup: {
+        from: "products",
+        localField: "_id",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+    {
+      $unwind: "$product",
+    },
+    {
+      $addFields: {
+        unitCost: {
+          $ifNull: ["$product.cost", "$product.originalPrice"],
+        },
+      },
+    },
+    {
+      $sort: { totalQuantity: -1 },
+    },
+    {
+      $limit: limit,
+    },
+    {
+      $project: {
+        _id: 1,
+        name: "$product.name",
+        totalQuantity: 1,
+        totalRevenue: 1,
+        averagePrice: 1,
+        totalOrders: 1,
+        unitCost: 1,
+        cost: { $multiply: ["$unitCost", "$totalQuantity"] },
+        profit: {
+          $subtract: [
+            "$totalRevenue",
+            { $multiply: ["$unitCost", "$totalQuantity"] },
+          ],
+        },
+        profitMargin: {
+          $cond: [
+            { $gt: ["$totalRevenue", 0] },
+            {
+              $multiply: [
+                {
+                  $divide: [
+                    { $subtract: ["$totalRevenue", { $multiply: ["$unitCost", "$totalQuantity"] }] },
+                    "$totalRevenue",
+                  ],
+                },
+                100,
+              ],
+            },
+            0,
+          ],
+        },
+      },
+    },
+  ]);
+
+  return topProducts;
 };
 
 // ============= ADMIN DASHBOARD SERVICES =============

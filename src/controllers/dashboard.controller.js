@@ -181,6 +181,68 @@ export const getComparisonStats = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Get profit and loss analysis
+ * @route   GET /api/dashboard/profit-loss
+ * @access  Private (Seller, Admin)
+ */
+export const getProfitLossAnalysis = asyncHandler(async (req, res) => {
+  const { period } = req.query; // 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
+
+  const analysis = await dashboardService.getProfitLossAnalysis(
+    req.user._id,
+    period || "daily",
+  );
+
+  res.status(200).json({
+    success: true,
+    period: period || "daily",
+    data: analysis,
+  });
+});
+
+/**
+ * @desc    Get expense analysis
+ * @route   GET /api/dashboard/expense
+ * @access  Private (Seller, Admin)
+ */
+export const getExpenseAnalysis = asyncHandler(async (req, res) => {
+  const { period } = req.query; // 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
+
+  const analysis = await dashboardService.getExpenseAnalysis(
+    req.user._id,
+    period || "monthly",
+  );
+
+  res.status(200).json({
+    success: true,
+    period: period || "monthly",
+    data: analysis,
+  });
+});
+
+/**
+ * @desc    Get top selling products with profit analysis
+ * @route   GET /api/dashboard/top-products-profit
+ * @access  Private (Seller, Admin)
+ */
+export const getTopSellingProductsWithProfit = asyncHandler(async (req, res) => {
+  const { limit, period } = req.query;
+
+  const products = await dashboardService.getTopSellingProductsWithProfit(
+    req.user._id,
+    parseInt(limit) || 10,
+    period || "monthly",
+  );
+
+  res.status(200).json({
+    success: true,
+    count: products.length,
+    period: period || "monthly",
+    data: products,
+  });
+});
+
+/**
  * @desc    Get overview stats (revenue, orders, users, products with trends)
  * @route   GET /api/dashboard/overview-stats
  * @access  Private (Admin only)

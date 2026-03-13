@@ -10,6 +10,9 @@ import {
   getProductAnalytics,
   getSalesTrend,
   getComparisonStats,
+  getProfitLossAnalysis,
+  getExpenseAnalysis,
+  getTopSellingProductsWithProfit,
   getOverviewStats,
   getTopProducts,
   getRecentOrders,
@@ -131,6 +134,38 @@ router.get("/sales-trend", asyncHandler(getSalesTrend));
  * @query   period: 'month' | 'week' (default: 'month')
  */
 router.get("/comparison", asyncHandler(getComparisonStats));
+
+// ============= PROFIT & LOSS ANALYSIS =============
+
+/**
+ * @route   GET /api/dashboard/profit-loss
+ * @desc    Get profit and loss analysis by period
+ * @access  Private (Seller, Admin)
+ * @query   period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'daily')
+ * @returns Array of { _id, revenue, cost, quantity, orders, profit } grouped by period
+ */
+router.get("/profit-loss", asyncHandler(getProfitLossAnalysis));
+
+/**
+ * @route   GET /api/dashboard/expense
+ * @desc    Get expense analysis (product cost vs shipping cost)
+ * @access  Private (Seller, Admin)
+ * @query   period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'monthly')
+ * @returns Object with { totalProductCost, totalShippingCost, totalExpense, breakdownByType }
+ */
+router.get("/expense", asyncHandler(getExpenseAnalysis));
+
+/**
+ * @route   GET /api/dashboard/top-products-profit
+ * @desc    Get top selling products ranked by quantity with profit analysis
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 10), period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'monthly')
+ * @returns Array of { _id, name, totalQuantity, totalRevenue, cost, profit, profitMargin }
+ */
+router.get(
+  "/top-products-profit",
+  asyncHandler(getTopSellingProductsWithProfit),
+);
 
 // ============= ADMIN DASHBOARD ENDPOINTS =============
 
