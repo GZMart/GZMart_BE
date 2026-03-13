@@ -1,4 +1,6 @@
 import shopProgramService from "../services/shopProgram.service.js";
+import NotificationService from "../services/notification.service.js";
+import User from "../models/User.js";
 
 /**
  * Shop Program Controller
@@ -28,6 +30,19 @@ export const createProgram = async (req, res) => {
       startDate,
       endDate,
     });
+
+    // Notify followers (fire-and-forget)
+    const seller = await User.findById(sellerId, 'shopName fullName').lean();
+    const shopName = seller?.shopName || seller?.fullName || 'Shop';
+    const startFmt = new Date(startDate).toLocaleDateString('vi-VN');
+    const endFmt = new Date(endDate).toLocaleDateString('vi-VN');
+    NotificationService.notifyShopFollowers(
+      sellerId,
+      `🎉 Chương trình khuyến mãi mới tại ${shopName}!`,
+      `"${name}" diễn ra từ ${startFmt} đến ${endFmt}. Ghé shop ngay!`,
+      'PROMOTION',
+      { shopId: sellerId.toString() }
+    );
 
     res.status(201).json({
       success: true,
