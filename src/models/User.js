@@ -152,6 +152,17 @@ const userSchema = new mongoose.Schema(
       default: 0,
       min: [0, "Delivery count cannot be negative"],
     },
+    chatSettings: {
+      autoReply: {
+        isEnabled: { type: Boolean, default: false },
+        message: {
+          type: String,
+          default:
+            "Xin chào, cảm ơn bạn đã nhắn tin. Chúng tôi sẽ phản hồi trong giây lát.",
+        },
+        cooldownHours: { type: Number, default: 24 }, // 24 hours cooldown before sending another auto-reply
+      },
+    },
   },
   {
     timestamps: true,

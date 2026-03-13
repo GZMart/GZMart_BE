@@ -16,9 +16,27 @@ const MessageSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  type: {
+    type: String,
+    enum: ['text', 'product'],
+    default: 'text',
+  },
   content: {
     type: String,
-    required: true,
+    required: function () {
+      return this.type === 'text';
+    },
+  },
+  productInfo: {
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    name: String,
+    image: String,
+    price: Number,
+    originalPrice: Number,
+    variant: String,
+    slug: String,
+    rating: Number,
+    hasVoucher: Boolean,
   },
   timestamp: {
     type: Date,

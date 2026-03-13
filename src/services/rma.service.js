@@ -6,6 +6,7 @@ import OrderItem from "../models/OrderItem.js";
 import User from "../models/User.js";
 import InventoryItem from "../models/InventoryItem.js";
 import { rollbackOrderResources } from "../utils/orderInventory.js";
+import coinService from "./coin.service.js";
 
 /**
  * RMA Service - Return Merchandise Authorization
@@ -81,12 +82,44 @@ export const createReturnRequest = async (data) => {
       order.shippingCost,
     );
 
-    // 5. Create return request
+    // 5. Generate unique request number
+    // Format: RMA-YYYYMMDD-XXXXX
+    let requestNumber;
+    let isUnique = false;
+    let attempts = 0;
+    const maxAttempts = 5;
+
+    while (!isUnique && attempts < maxAttempts) {
+      const date = new Date();
+      const dateStr = date.toISOString().slice(0, 10).replace(/-/g, "");
+      const random = Math.floor(10000 + Math.random() * 90000);
+      requestNumber = `RMA-${dateStr}-${random}`;
+
+      // Check if request number already exists
+      const existing = await ReturnRequest.findOne({ requestNumber }).session(
+        session,
+      );
+      if (!existing) {
+        isUnique = true;
+      }
+      attempts++;
+    }
+
+    if (!isUnique) {
+      throw new Error(
+        "Failed to generate unique request number. Please try again.",
+      );
+    }
+
+    console.log(`[RMA] Generated unique request number: ${requestNumber}`);
+
+    // 6. Create return request
     const returnRequest = await ReturnRequest.create(
       [
         {
           orderId,
           userId,
+          requestNumber,
           type,
           reason,
           description,
@@ -234,25 +267,24 @@ export const processRefund = async (returnRequestId) => {
       throw new Error("This is not a refund request");
     }
 
-    if (
-      returnRequest.status !== "approved" &&
-      returnRequest.status !== "items_returned"
-    ) {
+    // Must be in processing status (after seller confirms receiving items)
+    if (returnRequest.status !== "processing") {
       throw new Error(
-        `Cannot process refund for status: ${returnRequest.status}`,
+        `Cannot process refund for status: ${returnRequest.status}. Must be 'processing' (seller must confirm receiving items first).`,
       );
     }
 
     const order = returnRequest.orderId;
     const coinAmount = returnRequest.refund.coinAmount;
 
-    // 1. Record wallet transaction (add coins)
-    const transaction = await WalletTransaction.recordTransaction({
+    // 1. Add coins to user wallet using new coin service
+    // Refund coins have NO EXPIRATION (expiresAt = null)
+    const coinResult = await coinService.addCoins({
       userId: returnRequest.userId,
-      type: "refund",
-      amount: coinAmount, // Positive = credit
-      description: `Hoàn tiền từ đơn hàng ${order.orderNumber} (${returnRequest.requestNumber})`,
-      reference: {
+      source: "refund",
+      amount: coinAmount,
+      description: `Refund from order ${order.orderNumber} (${returnRequest.requestNumber})`,
+      sourceTransaction: {
         orderId: order._id,
         returnRequestId: returnRequest._id,
       },
@@ -260,21 +292,21 @@ export const processRefund = async (returnRequestId) => {
         requestNumber: returnRequest.requestNumber,
         orderNumber: order.orderNumber,
         reason: returnRequest.reason,
-      },
-      originalPayment: {
-        method: order.paymentMethod,
-        amount: returnRequest.refund.amount,
-        transactionId: order.payosTransactionDateTime || order.transactionId,
+        originalPayment: {
+          method: order.paymentMethod,
+          amount: returnRequest.refund.amount,
+          transactionId: order.payosTransactionDateTime || order.transactionId,
+        },
       },
     });
 
     // 2. Update return request
     returnRequest.refund.refundedAt = new Date();
-    returnRequest.refund.transactionId = transaction._id;
+    returnRequest.refund.transactionId = coinResult.transaction._id;
     returnRequest.status = "completed";
     returnRequest.timeline.push({
       status: "completed",
-      description: `Refunded ${coinAmount} coins to wallet`,
+      description: `Refunded ${coinAmount} coins to wallet (no expiration)`,
       updatedAt: new Date(),
       role: "system",
     });
@@ -307,13 +339,15 @@ export const processRefund = async (returnRequestId) => {
     session.endSession();
 
     console.log(
-      `[RMA] Refund processed: ${coinAmount} coins added to user wallet`,
+      `[RMA] Refund processed: ${coinAmount} coins added to user wallet (no expiration)`,
     );
 
     return {
       returnRequest,
-      transaction,
+      transaction: coinResult.transaction,
+      coinPacket: coinResult.coinPacket,
       coinsAdded: coinAmount,
+      expiresAt: null, // Refund coins never expire
     };
   } catch (error) {
     await session.abortTransaction();
@@ -345,18 +379,36 @@ export const processExchange = async (returnRequestId) => {
       throw new Error("This is not an exchange request");
     }
 
-    if (
-      returnRequest.status !== "approved" &&
-      returnRequest.status !== "items_returned"
-    ) {
+    // Must be in processing status (after seller confirms receiving items)
+    if (returnRequest.status !== "processing") {
       throw new Error(
-        `Cannot process exchange for status: ${returnRequest.status}`,
+        `Cannot process exchange for status: ${returnRequest.status}. Must be 'processing' (seller must confirm receiving items first).`,
       );
     }
 
     const order = returnRequest.orderId;
 
-    // 1. Validate exchange items have stock
+    // 1. Rollback old items stock (trả hàng cũ về kho)
+    console.log("[RMA Exchange] Rolling back old items to inventory...");
+    for (const item of returnRequest.items) {
+      const orderItem = await OrderItem.findById(item.orderItemId).session(
+        session,
+      );
+      if (orderItem && orderItem.variantId) {
+        const oldVariant = await InventoryItem.findById(
+          orderItem.variantId,
+        ).session(session);
+        if (oldVariant) {
+          oldVariant.stock += item.quantity;
+          await oldVariant.save({ session });
+          console.log(
+            `[RMA Exchange] Restored ${item.quantity} units to ${orderItem.variantName} (Stock: ${oldVariant.stock})`,
+          );
+        }
+      }
+    }
+
+    // 2. Validate exchange items have stock
     for (const item of returnRequest.items) {
       if (item.exchangeToVariantId) {
         const variant = await InventoryItem.findById(
@@ -377,7 +429,7 @@ export const processExchange = async (returnRequestId) => {
       }
     }
 
-    // 2. Calculate price difference
+    // 3. Calculate price difference
     let priceDifference = 0;
     for (const item of returnRequest.items) {
       if (item.exchangeToVariantId) {
@@ -390,7 +442,9 @@ export const processExchange = async (returnRequestId) => {
       }
     }
 
-    // 3. Create new order items for exchange
+    console.log(`[RMA Exchange] Price difference: ${priceDifference} VND`);
+
+    // 4. Create new order items for exchange
     const newOrderItems = [];
     for (const item of returnRequest.items) {
       if (item.exchangeToVariantId) {
@@ -423,7 +477,7 @@ export const processExchange = async (returnRequestId) => {
       }
     }
 
-    // 4. Create new exchange order
+    // 5. Create new exchange order
     const newOrder = await Order.create(
       [
         {
@@ -435,7 +489,7 @@ export const processExchange = async (returnRequestId) => {
           shippingAddress: order.shippingAddress,
           shippingMethod: order.shippingMethod,
           shippingCost: 0, // Free shipping for exchange
-          paymentMethod: "cod", // Exchange paid by buyer if price difference
+          paymentMethod: priceDifference > 0 ? "wallet" : "cod", // Use wallet if buyer needs to pay difference
           paymentStatus: priceDifference > 0 ? "pending" : "paid",
           items: newOrderItems,
           notes: `Exchange from order ${order.orderNumber} (${returnRequest.requestNumber})`,
@@ -445,7 +499,7 @@ export const processExchange = async (returnRequestId) => {
       { session },
     );
 
-    // 5. Update return request
+    // 6. Update return request
     returnRequest.exchange = {
       newOrderId: newOrder[0]._id,
       priceDifference,
@@ -462,7 +516,7 @@ export const processExchange = async (returnRequestId) => {
 
     await returnRequest.save({ session });
 
-    // 6. Update original order
+    // 7. Update original order
     order.status = "refunded"; // Mark original as refunded/exchanged
     order.statusHistory.push({
       status: "refunded",
@@ -572,6 +626,136 @@ function calculateReturnShippingCost(reason, originalShippingCost) {
 }
 
 /**
+ * Buyer updates return shipping info after sending items back
+ */
+export const updateReturnShipping = async (
+  returnRequestId,
+  userId,
+  shippingData,
+) => {
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const returnRequest =
+      await ReturnRequest.findById(returnRequestId).session(session);
+
+    if (!returnRequest) {
+      throw new Error("Return request not found");
+    }
+
+    // Only owner can update
+    if (returnRequest.userId.toString() !== userId.toString()) {
+      throw new Error("You don't have permission to update this request");
+    }
+
+    // Can only update shipping if approved
+    if (returnRequest.status !== "approved") {
+      throw new Error(
+        `Cannot update shipping for status: ${returnRequest.status}. Must be approved first.`,
+      );
+    }
+
+    // Update shipping info
+    returnRequest.returnShipping = {
+      ...returnRequest.returnShipping,
+      trackingNumber: shippingData.trackingNumber,
+      shippingProvider: shippingData.shippingProvider || "Unknown",
+      estimatedReturnDate:
+        shippingData.estimatedReturnDate ||
+        new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+    };
+
+    // Update status to items_returned
+    returnRequest.status = "items_returned";
+    returnRequest.timeline.push({
+      status: "items_returned",
+      description: `Buyer shipped items back. Tracking: ${shippingData.trackingNumber}`,
+      updatedAt: new Date(),
+      updatedBy: userId,
+      role: "buyer",
+      notes: shippingData.notes,
+    });
+
+    await returnRequest.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    console.log(
+      `[RMA] Buyer updated shipping for request ${returnRequest.requestNumber}`,
+    );
+
+    return returnRequest;
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("[RMA] Error updating return shipping:", error);
+    throw error;
+  }
+};
+
+/**
+ * Seller confirms receiving returned items
+ */
+export const confirmItemsReceived = async (
+  returnRequestId,
+  sellerId,
+  notes,
+) => {
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const returnRequest =
+      await ReturnRequest.findById(returnRequestId).session(session);
+
+    if (!returnRequest) {
+      throw new Error("Return request not found");
+    }
+
+    // Can only confirm if items_returned
+    if (returnRequest.status !== "items_returned") {
+      throw new Error(
+        `Cannot confirm items for status: ${returnRequest.status}. Must be items_returned.`,
+      );
+    }
+
+    // Update shipping info
+    returnRequest.returnShipping.actualReturnDate = new Date();
+
+    // Update status to processing (ready for refund/exchange)
+    returnRequest.status = "processing";
+    returnRequest.timeline.push({
+      status: "processing",
+      description: "Seller confirmed receiving returned items",
+      updatedAt: new Date(),
+      updatedBy: sellerId,
+      role: "seller",
+      notes,
+    });
+
+    await returnRequest.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    console.log(
+      `[RMA] Seller confirmed items received for request ${returnRequest.requestNumber}`,
+    );
+
+    return returnRequest;
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("[RMA] Error confirming items received:", error);
+    throw error;
+  }
+};
+
+/**
  * Auto-approve requests if seller doesn't respond within 3 days
  */
 export const autoApproveExpiredRequests = async () => {
@@ -617,5 +801,7 @@ export default {
   processExchange,
   getUserReturnRequests,
   getSellerReturnRequests,
+  updateReturnShipping,
+  confirmItemsReceived,
   autoApproveExpiredRequests,
 };

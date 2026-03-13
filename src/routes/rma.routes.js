@@ -72,6 +72,22 @@ router.put(
   rmaController.cancelReturnRequest,
 );
 
+/**
+ * @swagger
+ * /api/rma/requests/{id}/shipping:
+ *   put:
+ *     summary: Update return shipping info (buyer ships items back)
+ *     tags: [RMA - Return & Exchange]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put(
+  "/requests/:id/shipping",
+  protect,
+  authorize("buyer"),
+  rmaController.updateReturnShipping,
+);
+
 // ==================== WALLET ROUTES ====================
 
 /**
@@ -132,6 +148,22 @@ router.put(
   protect,
   authorize("seller", "admin"),
   rmaController.respondToReturnRequest,
+);
+
+/**
+ * @swagger
+ * /api/rma/seller/requests/{id}/confirm-received:
+ *   put:
+ *     summary: Confirm receiving returned items
+ *     tags: [RMA - Seller]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put(
+  "/seller/requests/:id/confirm-received",
+  protect,
+  authorize("seller", "admin"),
+  rmaController.confirmItemsReceived,
 );
 
 /**

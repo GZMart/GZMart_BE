@@ -7,9 +7,25 @@ import { ErrorResponse } from "../utils/errorResponse.js";
  * @access  Public (for testing)
  */
 export const uploadSingle = asyncHandler(async (req, res, next) => {
+  console.log("🔵 [Upload Controller] Received upload request:", {
+    hasFile: !!req.file,
+    fieldname: req.file?.fieldname,
+    originalname: req.file?.originalname,
+    mimetype: req.file?.mimetype,
+    size: req.file?.size,
+    timestamp: new Date().toISOString(),
+  });
+
   if (!req.file) {
+    console.error("❌ [Upload Controller] No file in request");
     return next(new ErrorResponse("Please upload a file", 400));
   }
+
+  console.log("✅ [Upload Controller] File uploaded successfully:", {
+    filename: req.file.filename,
+    url: req.file.path,
+    cloudinaryUrl: req.file.path,
+  });
 
   res.status(200).json({
     success: true,

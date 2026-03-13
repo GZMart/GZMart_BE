@@ -45,12 +45,13 @@ import followRoutes from "./routes/follow.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
+import coinRoutes from "./routes/coin.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
 import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
-
 import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
 import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
+import { startCoinJobs } from "./jobs/coinExpirationJob.js";
 // Load environment variables
 dotenv.config();
 
@@ -214,6 +215,7 @@ app.use("/api/ghn", ghnRoutes);
 app.use("/api/rma", rmaRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/follows", followRoutes);
+app.use("/api/coins", coinRoutes);
 
 // Error handler
 app.use(errorHandler);
@@ -282,6 +284,7 @@ server.listen(PORT, HOST, () => {
   startOrderCleanupJob();
   startRmaAutoApprovalJob();
   startExchangeRateJob();
+  startCoinJobs(); // Start coin expiration jobs
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s
