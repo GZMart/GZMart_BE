@@ -77,6 +77,65 @@ class NotificationService {
   }
 
   /**
+   * Notify all followers of a shop
+   * @param {ObjectId} shopId - The seller/shop user ID
+   * @param {string} title
+   * @param {string} message
+   * @param {string} type - VOUCHER | FLASH_SALE | PROMOTION | ANNOUNCEMENT
+   * @param {Object} relatedData - optional extra data (shopId, voucherCode, etc.)
+   */
+  async notifyShopFollowers(shopId, title, message, type = 'PROMOTION', relatedData = null) {
+    try {
+      const Follow = (await import('../models/Follow.js')).default;
+
+      // 1. Get all follower IDs for this shop
+      const follows = await Follow.find({ followingId: shopId }, 'followerId');
+      if (!follows || follows.length === 0) {
+        logger.info(`No followers found for shop ${shopId}, skip notification.`);
+        return { success: true, count: 0 };
+      }
+
+      const followerIds = follows.map(f => f.followerId);
+
+      // 2. Prepare merged relatedData (always include shopId)
+      const mergedRelated = { shopId: shopId.toString(), ...(relatedData || {}) };
+
+      // 3. Bulk insert notification records
+      const docs = followerIds.map(followerId => ({
+        recipientId: followerId,
+        title,
+        message,
+        type,
+        relatedData: mergedRelated,
+      }));
+      await Notification.insertMany(docs);
+
+      // 4. Emit real-time event to each follower's socket room
+      const io = getSocketIO();
+      if (io) {
+        const displayNotif = {
+          title, message, type,
+          relatedData: mergedRelated,
+          createdAt: new Date(),
+          isRead: false,
+        };
+        followerIds.forEach(followerId => {
+          io.to(`user_${followerId.toString()}`).emit('new_notification', displayNotif);
+        });
+      } else {
+        logger.warn('Socket.io instance not found, follower notifications not sent in real-time.');
+      }
+
+      logger.info(`Sent "${type}" notification to ${followerIds.length} follower(s) of shop ${shopId}`);
+      return { success: true, count: followerIds.length };
+    } catch (error) {
+      // Fire-and-forget: log but don't crash the main request
+      logger.error('Error notifying shop followers:', error);
+      return { success: false, count: 0 };
+    }
+  }
+
+  /**
    * Get notifications for a user
    */
   async getUserNotifications(userId, limit = 10, skip = 0) {

@@ -80,6 +80,39 @@ class NotificationController {
       return sendError(res, 500, 'Error broadcasting notification', [error.message]);
     }
   }
+
+  /**
+   * Send a custom notification to all followers of the current shop
+   * POST /api/notifications/shop/announce
+   */
+  async sendFollowerAnnouncement(req, res) {
+    try {
+      const { title, message, type } = req.body;
+
+      if (!title || !message) {
+        return sendError(res, 400, 'title and message are required');
+      }
+
+      const allowedTypes = ['PROMOTION', 'ANNOUNCEMENT', 'FLASH_SALE', 'VOUCHER', 'SYSTEM'];
+      const notifType = allowedTypes.includes(type) ? type : 'ANNOUNCEMENT';
+
+      const result = await NotificationService.notifyShopFollowers(
+        req.user._id,
+        title,
+        message,
+        notifType,
+        { shopId: req.user._id.toString() }
+      );
+
+      return sendResponse(res, 200, result,
+        result.count > 0
+          ? `Đã gửi thông báo tới ${result.count} người theo dõi`
+          : 'Bạn chưa có người theo dõi nào'
+      );
+    } catch (error) {
+      return sendError(res, 500, 'Error sending announcement to followers', [error.message]);
+    }
+  }
 }
 
 export default new NotificationController();

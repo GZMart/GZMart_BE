@@ -109,4 +109,35 @@ router.put('/:id/read', NotificationController.markAsRead);
  */
 router.post('/broadcast', NotificationController.broadcastNotification);
 
+/**
+ * @swagger
+ * /api/notifications/shop/announce:
+ *   post:
+ *     tags: [Notifications]
+ *     summary: Send a manual announcement to all shop followers (Seller only)
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - title
+ *               - message
+ *             properties:
+ *               title:
+ *                 type: string
+ *               message:
+ *                 type: string
+ *               type:
+ *                 type: string
+ *                 enum: [PROMOTION, ANNOUNCEMENT, FLASH_SALE, VOUCHER]
+ *     responses:
+ *       200:
+ *         description: Sent successfully
+ */
+router.post('/shop/announce', NotificationController.sendFollowerAnnouncement);
+
 export default router;

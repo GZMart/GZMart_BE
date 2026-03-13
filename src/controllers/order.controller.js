@@ -15,6 +15,7 @@ import * as flashSaleService from "../services/flashsale.service.js";
 import { getShopProgramPriceForVariant } from "../services/product.service.js";
 import { validateAndCalculateVouchers } from "../utils/voucherValidator.js";
 import * as orderTrackingService from "../services/orderTracking.service.js";
+import NotificationService from "../services/notification.service.js";
 import {
   deductOrderResources,
   clearUserCart,
@@ -459,6 +460,19 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       createdAt: createdOrder.createdAt,
       customerName: user?.fullName || "Customer",
     });
+
+    // Notify Buyer via New Notification System
+    try {
+      await NotificationService.createNotification(
+        req.user._id,
+        "Đặt hàng thành công",
+        `Đơn hàng ${createdOrder.orderNumber} của bạn đã được tiếp nhận và đang chờ xác nhận.`,
+        "ORDER",
+        { orderId: createdOrder._id.toString() }
+      );
+    } catch (notifErr) {
+      console.error("Failed to send buyer notification:", notifErr);
+    }
 
     // Populate order items before sending response
     await createdOrder.populate("items");
