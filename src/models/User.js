@@ -96,6 +96,14 @@ const userSchema = new mongoose.Schema(
         message: "Please enter a valid phone number (10-11 digits)",
       },
     },
+    taxId: {
+      type: String,
+      trim: true,
+    },
+    citizenId: {
+      type: String,
+      trim: true,
+    },
     reward_point: {
       type: Number,
       default: 0,

@@ -45,6 +45,7 @@ import followRoutes from "./routes/follow.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
+import sellerApplicationRoutes from "./routes/sellerApplication.routes.js";
 import coinRoutes from "./routes/coin.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
@@ -216,6 +217,7 @@ app.use("/api/rma", rmaRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/follows", followRoutes);
 app.use("/api/coins", coinRoutes);
+app.use("/api/seller-applications", sellerApplicationRoutes);
 
 // Error handler
 app.use(errorHandler);
