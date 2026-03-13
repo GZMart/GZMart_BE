@@ -299,6 +299,7 @@ class SearchService {
     products.forEach((product) => {
       const models = product.models || [];
       models.forEach((model) => {
+        // model.stock is a cache synced from InventoryItem — safe for filter metadata
         if (model.stock > 0) {
           allPrices.push(model.price);
         }

@@ -17,6 +17,7 @@ import {
   deleteProduct,
   getMyProducts,
   getProductsBySeller,
+  toggleProductStatus,
 } from "../controllers/product.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import upload from "../middlewares/upload.middleware.js";
@@ -433,5 +434,13 @@ router.post(
 
 // Stock check
 router.get("/model/:modelId/stock", asyncHandler(checkStockAvailability));
+
+// Toggle product visibility (hide/unhide) — Seller only
+router.patch(
+  "/:id/status",
+  protect,
+  requireRoles("seller", "admin"),
+  asyncHandler(toggleProductStatus),
+);
 
 export default router;

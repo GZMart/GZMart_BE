@@ -243,7 +243,6 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
     type: { $in: ["shop", "product"] },
     shopId: { $in: sellerIds },
     $expr: { $lt: ["$usageCount", "$usageLimit"] },
-    _id: { $in: savedVoucherIds },
   })
     .populate("appliedProducts", "name")
     .lean();
@@ -348,6 +347,7 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
       ineligibleReason: !meetsMinBasket
         ? `Minimum order ${voucher.minBasketPrice?.toLocaleString()}₫`
         : null,
+      isSaved: savedVoucherIds.includes(voucher._id.toString()),
     });
   }
 

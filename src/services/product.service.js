@@ -1,4 +1,5 @@
 import Product from "../models/Product.js";
+import InventoryItem from "../models/InventoryItem.js";
 import Category from "../models/Category.js";
 import User from "../models/User.js";
 import Deal from "../models/Deal.js";
@@ -219,6 +220,22 @@ export const createProduct = async (productData, sellerId) => {
 
   await product.save();
   await Category.findByIdAndUpdate(categoryId, { $inc: { productCount: 1 } });
+
+  // Auto-create InventoryItem for every model so stock is always tracked
+  // even when the product was not imported via a Purchase Order.
+  for (const model of product.models) {
+    const existing = await InventoryItem.findOne({ sku: model.sku });
+    if (!existing) {
+      await InventoryItem.create({
+        productId: product._id,
+        modelId:   model._id,
+        sku:       model.sku,
+        quantity:  model.stock   || 0,
+        costPrice: model.costPrice || 0,
+        lastRestockDate: model.stock > 0 ? new Date() : null,
+      });
+    }
+  }
 
   return product;
 };
@@ -463,10 +480,10 @@ export const getProductsAdvanced = async (options) => {
     if (maxPrice) query["models.price"].$lte = Number(maxPrice);
   }
 
-  // Embedded Stock Filter
+  // Stock Filter: use Product.status as a proxy for InventoryItem availability.
+  // products are auto-set to 'out_of_stock' when inventory hits 0.
   if (inStock) {
-    // At least one model has stock > 0
-    query["models.stock"] = { $gt: 0 };
+    query.status = "active"; // 'active' implies stock > 0 per our sync logic
   }
 
   // Attribute/Tier Filter (Colors/Sizes)
@@ -611,7 +628,6 @@ export const updateProduct = async (productId, updateData, sellerId) => {
     const existingModels = product.models || [];
     updateData.models = updateData.models.map((model, idx) => {
       if (!model.sku) {
-        // Try to find matching existing model by tierIndex
         const existingModel = existingModels.find(
           (em) =>
             JSON.stringify(em.tierIndex) === JSON.stringify(model.tierIndex),
@@ -619,10 +635,8 @@ export const updateProduct = async (productId, updateData, sellerId) => {
         if (existingModel?.sku) {
           model.sku = existingModel.sku;
         } else if (existingModels[idx]?.sku) {
-          // Fallback to same index
           model.sku = existingModels[idx].sku;
         } else {
-          // Generate new SKU
           model.sku = generateSKU(
             product.name,
             updateData.tiers || product.tiers || [],
@@ -630,20 +644,32 @@ export const updateProduct = async (productId, updateData, sellerId) => {
           );
         }
       }
+
+      // STOCK GUARD: preserve existing stock from DB — stock is owned by InventoryItem.
+      // Never allow the product edit form to overwrite stock directly.
+      const existingModel = existingModels.find(
+        (em) => em.sku === model.sku || em._id?.toString() === model._id?.toString(),
+      );
+      model.stock = existingModel ? existingModel.stock : (model.stock || 0);
+
       return model;
     });
-
-    // Auto update total stock availability status
-    const totalStock = updateData.models.reduce(
-      (sum, m) => sum + (m.stock || 0),
-      0,
-    );
-    if (totalStock === 0 && product.status === "active") {
-      updateData.status = "out_of_stock";
-    }
   }
 
+  // Strip stock-related writes from the top-level updateData to prevent bypass.
+  delete updateData.stock;
+
   Object.assign(product, updateData);
+
+  // Derive status from InventoryItem totals (authoritative) rather than model.stock cache.
+  const inventoryItems = await InventoryItem.find({ productId: product._id });
+  const totalInventoryStock = inventoryItems.reduce((sum, inv) => sum + inv.quantity, 0);
+  if (totalInventoryStock === 0 && product.status === "active") {
+    product.status = "out_of_stock";
+  } else if (totalInventoryStock > 0 && product.status === "out_of_stock") {
+    product.status = "active";
+  }
+
   await product.save();
 
   return product;
@@ -720,7 +746,7 @@ export const checkStockAvailability = async (
 ) => {
   const product = await Product.findOne(
     { _id: productId, "models._id": modelId },
-    { "models.$": 1 }, // Only fetch the matching model
+    { "models.$": 1 },
   );
 
   if (!product || !product.models || product.models.length === 0) {
@@ -728,10 +754,20 @@ export const checkStockAvailability = async (
   }
 
   const model = product.models[0];
+
+  // Read stock from InventoryItem (single source of truth).
+  // Fall back to model.stock cache if no inventory record exists yet.
+  const inventoryItem = await InventoryItem.findOne({ sku: model.sku });
+  const availableStock = inventoryItem
+    ? inventoryItem.availableQuantity
+    : model.stock;
+
   return {
-    available: model.stock >= quantity,
-    stock: model.stock,
+    available: availableStock >= quantity,
+    stock: availableStock,
     price: model.price,
+    // Expose breakdown for debugging
+    source: inventoryItem ? "inventory" : "product_cache",
   };
 };
 
@@ -1150,4 +1186,19 @@ export const getShopProgramPriceForVariant = async (productId, modelIndex, origi
   }
 
   return { price: originalPrice, isShopProgram: false, originalPrice };
+};
+
+/**
+ * Toggle product status (hide = inactive, unhide = active)
+ * Only affects products owned by the seller.
+ */
+export const toggleProductStatus = async (productId, sellerId, newStatus) => {
+  const product = await Product.findOne({ _id: productId, sellerId });
+  if (!product) {
+    throw new ErrorResponse("Product not found or access denied", 404);
+  }
+
+  product.status = newStatus;
+  await product.save({ validateBeforeSave: false });
+  return product;
 };

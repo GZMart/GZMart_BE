@@ -265,8 +265,8 @@ returnRequestSchema.virtual("isRefundEligible").get(function () {
   }
 });
 
-// Pre-save: Generate request number
-returnRequestSchema.pre("save", async function (next) {
+// Pre-save: Generate request number (backup, mainly for timeline)
+returnRequestSchema.pre("save", async function () {
   if (!this.requestNumber) {
     // Format: RMA-YYYYMMDD-XXXXX
     const date = new Date();
@@ -283,8 +283,6 @@ returnRequestSchema.pre("save", async function (next) {
       updatedAt: new Date(),
     });
   }
-
-  next();
 });
 
 // Static method: Check eligibility

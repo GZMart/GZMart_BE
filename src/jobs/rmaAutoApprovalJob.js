@@ -40,8 +40,6 @@ const runAutoApproval = async () => {
  * Start the RMA auto-approval cron job
  */
 export const startRmaAutoApprovalJob = () => {
-  console.log(`[RMA AutoApproval] Starting cron job: ${CRON_SCHEDULE}`);
-
   // Schedule the job
   cron.schedule(CRON_SCHEDULE, async () => {
     console.log("\n[RMA AutoApproval] Running scheduled auto-approval...");
@@ -51,11 +49,6 @@ export const startRmaAutoApprovalJob = () => {
       console.error("[RMA AutoApproval] Scheduled job error:", error);
     }
   });
-
-  console.log("[RMA AutoApproval] Cron job started successfully");
-  console.log(
-    "[RMA AutoApproval] Will auto-approve requests if seller doesn't respond within 3 days",
-  );
 };
 
 /**
