@@ -74,6 +74,17 @@ const modelSchema = new mongoose.Schema(
       default: 0,
       min: [0, "Cost price must be non-negative"],
     },
+    // Synced from InventoryItem — tracks whether cost came from a PO or was set manually
+    costSource: {
+      type: String,
+      enum: ["manual", "po"],
+      default: "manual",
+    },
+    costSourcePoId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PurchaseOrder",
+      default: null,
+    },
     stock: {
       type: Number,
       required: [true, "Stock is required"],

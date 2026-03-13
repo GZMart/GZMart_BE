@@ -65,6 +65,7 @@ export const getPurchaseOrders = asyncHandler(async (req, res) => {
     supplierId: req.query.supplierId,
     startDate: req.query.startDate,
     endDate: req.query.endDate,
+    search: req.query.search,
     page: parseInt(req.query.page) || 1,
     limit: parseInt(req.query.limit) || 20,
     sortBy: req.query.sortBy || "createdAt",
@@ -267,10 +268,13 @@ export const deleteSupplier = asyncHandler(async (req, res) => {
 export const getLowStockItems = asyncHandler(async (req, res) => {
   const warehouseId = req.query.warehouseId || null;
   const limit = parseInt(req.query.limit) || 50;
+  // Admin sees all; sellers only see their own products
+  const sellerId = req.user.role === "seller" ? req.user._id : null;
 
   const lowStockItems = await purchaseOrderService.getLowStockItems(
     warehouseId,
     limit,
+    sellerId,
   );
 
   res.status(200).json({
@@ -287,9 +291,11 @@ export const getLowStockItems = asyncHandler(async (req, res) => {
  */
 export const getInventoryValuation = asyncHandler(async (req, res) => {
   const warehouseId = req.query.warehouseId || null;
+  // Sellers only see their own inventory
+  const sellerId = req.user.role === "seller" ? req.user._id : null;
 
   const valuation =
-    await purchaseOrderService.getInventoryValuation(warehouseId);
+    await purchaseOrderService.getInventoryValuation(warehouseId, sellerId);
 
   res.status(200).json({
     success: true,

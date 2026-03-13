@@ -31,6 +31,17 @@ const inventoryItemSchema = new mongoose.Schema(
       default: 0,
       min: [0, "Cost price cannot be negative"],
     },
+    // Tracks whether the cost was set manually or auto-pushed from a completed PO
+    costSource: {
+      type: String,
+      enum: ["manual", "po"],
+      default: "manual",
+    },
+    costSourcePoId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PurchaseOrder",
+      default: null,
+    },
     reservedQuantity: {
       type: Number,
       default: 0,

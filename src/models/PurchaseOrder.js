@@ -91,7 +91,7 @@ const purchaseOrderSchema = new mongoose.Schema(
         message:
           "Status must be one of: Draft, Pending, Completed, or Cancelled",
       },
-      default: "Draft",
+      default: "Pending",
     },
     items: {
       type: [purchaseOrderItemSchema],

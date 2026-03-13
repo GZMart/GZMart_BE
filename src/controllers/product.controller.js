@@ -578,3 +578,33 @@ export const getAvailableOptionsForSelection = asyncHandler(
     });
   },
 );
+
+/**
+ * @desc    Toggle product visibility (hide/unhide)
+ * @route   PATCH /api/products/:id/status
+ * @access  Private (Seller only)
+ */
+export const toggleProductStatus = asyncHandler(async (req, res, next) => {
+  const sellerId = req.user._id;
+  const productId = req.params.id;
+  const { status } = req.body;
+
+  const ALLOWED = ["active", "inactive", "draft"];
+  if (!ALLOWED.includes(status)) {
+    return next(
+      new ErrorResponse(`Status must be one of: ${ALLOWED.join(", ")}`, 400),
+    );
+  }
+
+  const product = await productService.toggleProductStatus(
+    productId,
+    sellerId,
+    status,
+  );
+
+  res.status(200).json({
+    success: true,
+    message: `Product ${status === "inactive" ? "hidden" : "made " + status} successfully`,
+    data: product,
+  });
+});

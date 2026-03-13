@@ -42,6 +42,7 @@ export const stockIn = async (transactionData, userId) => {
     }).session(session);
 
     if (!inventoryItem) {
+      // Seed costPrice from Product.models so the first record isn't hardcoded 0
       inventoryItem = await InventoryItem.create(
         [
           {
@@ -49,7 +50,7 @@ export const stockIn = async (transactionData, userId) => {
             modelId,
             sku: sku.toUpperCase(),
             quantity: 0,
-            costPrice: 0,
+            costPrice: model.costPrice || 0,
             warehouseId,
           },
         ],
@@ -61,7 +62,8 @@ export const stockIn = async (transactionData, userId) => {
     const stockBefore = inventoryItem.quantity;
 
     // Update stock with weighted average cost
-    inventoryItem.addStock(quantity, costPrice || 0);
+    // Use provided costPrice, fall back to model's existing costPrice
+    inventoryItem.addStock(quantity, costPrice || model.costPrice || 0);
     await inventoryItem.save({ session });
 
     const stockAfter = inventoryItem.quantity;
@@ -192,9 +194,10 @@ export const stockOut = async (transactionData, userId) => {
 
 /**
  * Adjust stock - Direct adjustment
+ * Optionally updates costPrice if provided.
  */
 export const adjustStock = async (transactionData, userId) => {
-  const { productId, modelId, sku, newStock, note, warehouseId } =
+  const { productId, modelId, sku, newStock, costPrice, note, warehouseId } =
     transactionData;
 
   if (newStock < 0) {
@@ -250,11 +253,33 @@ export const adjustStock = async (transactionData, userId) => {
 
     // Set new stock
     inventoryItem.setStock(stockAfter);
+
+    // Update cost price if explicitly provided
+    const costPriceBefore = inventoryItem.costPrice;
+    if (costPrice !== undefined && costPrice !== null && Number(costPrice) >= 0) {
+      inventoryItem.costPrice = Number(costPrice);
+      inventoryItem.costSource = "manual";
+      inventoryItem.costSourcePoId = null;
+    }
+
     await inventoryItem.save({ session });
 
-    // Sync stock back to Product.models for backward compatibility (optional)
+    // Sync stock and costPrice back to Product.models
     model.stock = stockAfter;
+    if (costPrice !== undefined && costPrice !== null && Number(costPrice) >= 0) {
+      model.costPrice = Number(costPrice);
+      model.costSource = "manual";
+      model.costSourcePoId = null;
+    }
     await product.save({ session });
+
+    const effectiveCostPrice = inventoryItem.costPrice || 0;
+    const noteText = note || [
+      `Stock adjusted from ${stockBefore} to ${stockAfter}`,
+      costPrice !== undefined && Number(costPrice) !== costPriceBefore
+        ? `Cost price updated from ${costPriceBefore} to ${costPrice}`
+        : null,
+    ].filter(Boolean).join("; ");
 
     // Create transaction record
     const transaction = await InventoryTransaction.create(
@@ -267,8 +292,8 @@ export const adjustStock = async (transactionData, userId) => {
           quantity,
           stockBefore,
           stockAfter,
-          costPrice: inventoryItem.costPrice || 0,
-          note: note || `Stock adjusted from ${stockBefore} to ${stockAfter}`,
+          costPrice: effectiveCostPrice,
+          note: noteText,
           warehouseId,
           referenceType: "adjustment",
           createdBy: userId,

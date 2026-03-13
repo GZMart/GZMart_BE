@@ -48,6 +48,8 @@ import rmaRoutes from "./routes/rma.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
 import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
+import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
+import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
 // Load environment variables
 dotenv.config();
 
@@ -206,6 +208,7 @@ app.use("/api/seller/addons", addOnDealRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
+app.use("/api/exchange-rate", exchangeRateRoutes);
 app.use("/api/ghn", ghnRoutes);
 app.use("/api/rma", rmaRoutes);
 app.use("/api/reviews", reviewRoutes);
@@ -277,6 +280,7 @@ server.listen(PORT, HOST, () => {
   initShopStatisticJobs();
   startOrderCleanupJob();
   startRmaAutoApprovalJob();
+  startExchangeRateJob();
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s
