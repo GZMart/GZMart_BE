@@ -355,6 +355,10 @@ const options = {
         name: "Upload",
         description: "File upload endpoints",
       },
+      {
+        name: "Seller Applications",
+        description: "Buyer-to-seller application flow endpoints",
+      },
     ],
   },
   apis: ["./src/routes/*.js", "./src/controllers/*.js"], // Đường dẫn đến các file chứa JSDoc comments
