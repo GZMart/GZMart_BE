@@ -1,6 +1,8 @@
 import * as flashSaleService from "../services/flashsale.service.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
+import NotificationService from "../services/notification.service.js";
+import User from "../models/User.js";
 
 /**
  * @desc    Create multiple flash-sale deals for one product in a single request
@@ -27,6 +29,20 @@ export const createBatchFlashSale = asyncHandler(async (req, res) => {
     ...req.body,
     sellerId: req.user?._id,
   });
+
+  // Notify followers (fire-and-forget)
+  if (req.user?._id) {
+    const seller = await User.findById(req.user._id, 'shopName fullName').lean();
+    const shopName = seller?.shopName || seller?.fullName || 'Shop';
+    const startFormatted = new Date(startAt).toLocaleString('vi-VN');
+    NotificationService.notifyShopFollowers(
+      req.user._id,
+      `⚡ Flash Sale mới tại ${shopName}!`,
+      `Flash Sale bắt đầu lúc ${startFormatted} — Đừng bỏ lỡ ưu đãi hấp dẫn!`,
+      'FLASH_SALE',
+      { shopId: req.user._id.toString(), startAt }
+    );
+  }
 
   res.status(201).json({
     success: true,
@@ -58,6 +74,20 @@ export const createFlashSale = asyncHandler(async (req, res) => {
   }
 
   const flashSale = await flashSaleService.createFlashSale(req.body);
+
+  // Notify followers (fire-and-forget)
+  if (req.user?._id) {
+    const seller = await User.findById(req.user._id, 'shopName fullName').lean();
+    const shopName = seller?.shopName || seller?.fullName || 'Shop';
+    const startFormatted = new Date(startAt).toLocaleString('vi-VN');
+    NotificationService.notifyShopFollowers(
+      req.user._id,
+      `⚡ Flash Sale mới tại ${shopName}!`,
+      `Flash Sale bắt đầu lúc ${startFormatted} — Đừng bỏ lỡ ưu đãi hấp dẫn!`,
+      'FLASH_SALE',
+      { shopId: req.user._id.toString(), startAt }
+    );
+  }
 
   res.status(201).json({
     success: true,

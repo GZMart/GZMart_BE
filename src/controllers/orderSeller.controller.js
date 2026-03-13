@@ -1,6 +1,7 @@
 import * as orderSellerService from "../services/orderSeller.service.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import * as orderTrackingService from "../services/orderTracking.service.js";
+import NotificationService from "../services/notification.service.js";
 import Order from "../models/Order.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
@@ -128,6 +129,16 @@ export const cancelOrder = asyncHandler(async (req, res) => {
     cancellationReason,
   );
 
+  try {
+     await NotificationService.createNotification(
+       order.userId,
+       "Đơn hàng đã bị hủy",
+       `Đơn hàng ${order.orderNumber} của bạn đã bị hủy. Lý do: ${cancellationReason}`,
+       "ORDER",
+       { orderId: order._id.toString() }
+     );
+  } catch(e) { console.error(e) }
+
   res.status(200).json({
     success: true,
     message: "Order cancelled successfully",
@@ -192,6 +203,16 @@ export const confirmOrder = asyncHandler(async (req, res, next) => {
       orderNumber: order.orderNumber,
     },
   );
+
+  try {
+    await NotificationService.createNotification(
+      order.userId,
+      "Đơn hàng đã được xác nhận",
+      `Đơn hàng ${order.orderNumber} của bạn đã được người bán xác nhận và đang chuẩn bị hàng.`,
+      "ORDER",
+      { orderId: order._id.toString() }
+    );
+  } catch(e) { console.error(e) }
 
   res.status(200).json({
     success: true,
@@ -260,6 +281,16 @@ export const startShipping = asyncHandler(async (req, res, next) => {
     coordinates,
   );
 
+  try {
+    await NotificationService.createNotification(
+      order.userId,
+      "Đơn hàng đang giao",
+      `Đơn hàng ${order.orderNumber} của bạn đã được giao cho đơn vị vận chuyển.`,
+      "ORDER",
+      { orderId: order._id.toString() }
+    );
+  } catch(e) { console.error(e) }
+
   res.status(200).json({
     success: true,
     message:
@@ -321,6 +352,16 @@ export const completeOrder = asyncHandler(async (req, res, next) => {
       completedAt: order.completedAt,
     },
   );
+
+  try {
+    await NotificationService.createNotification(
+      order.userId,
+      "Giao hàng thành công",
+      `Tuyệt vời! Đơn hàng ${order.orderNumber} đã được giao thành công. Mong bạn hài lòng với sản phẩm.`,
+      "ORDER",
+      { orderId: order._id.toString() }
+    );
+  } catch(e) { console.error(e) }
 
   res.status(200).json({
     success: true,

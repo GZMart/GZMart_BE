@@ -96,6 +96,14 @@ const userSchema = new mongoose.Schema(
         message: "Please enter a valid phone number (10-11 digits)",
       },
     },
+    taxId: {
+      type: String,
+      trim: true,
+    },
+    citizenId: {
+      type: String,
+      trim: true,
+    },
     reward_point: {
       type: Number,
       default: 0,
@@ -151,6 +159,17 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: [0, "Delivery count cannot be negative"],
+    },
+    chatSettings: {
+      autoReply: {
+        isEnabled: { type: Boolean, default: false },
+        message: {
+          type: String,
+          default:
+            "Xin chào, cảm ơn bạn đã nhắn tin. Chúng tôi sẽ phản hồi trong giây lát.",
+        },
+        cooldownHours: { type: Number, default: 24 }, // 24 hours cooldown before sending another auto-reply
+      },
     },
   },
   {

@@ -279,6 +279,8 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
               sku: item.sku,
               quantity: item.quantity,
               costPrice: landedCostPerUnit,
+              costSource: "po",
+              costSourcePoId: purchaseOrder._id,
               warehouseId: purchaseOrder.warehouseId,
               lastRestockDate: new Date(),
             },
@@ -288,6 +290,8 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
         inventoryItem = inventoryItem[0];
       } else {
         inventoryItem.addStock(item.quantity, landedCostPerUnit);
+        inventoryItem.costSource = "po";
+        inventoryItem.costSourcePoId = purchaseOrder._id;
         await inventoryItem.save({ session });
       }
 
@@ -299,6 +303,8 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
       // ============================================================
       model.stock = stockAfter;
       model.costPrice = costPriceAfter;
+      model.costSource = "po";
+      model.costSourcePoId = purchaseOrder._id;
       await product.save({ session });
 
       updatedProducts.push({
@@ -498,6 +504,7 @@ export const getPurchaseOrders = async (filters = {}, user = null) => {
     supplierId,
     startDate,
     endDate,
+    search,
     page = 1,
     limit = 20,
     sortBy = "createdAt",
@@ -519,20 +526,31 @@ export const getPurchaseOrders = async (filters = {}, user = null) => {
     query.supplierId = supplierId;
   }
 
+  if (search && search.trim()) {
+    query.code = { $regex: search.trim(), $options: "i" };
+  }
+
   if (startDate || endDate) {
     query.createdAt = {};
     if (startDate) {
       query.createdAt.$gte = new Date(startDate);
     }
     if (endDate) {
-      query.createdAt.$lte = new Date(endDate);
+      // include full day: set to end of day
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt.$lte = end;
     }
   }
 
   const skip = (page - 1) * limit;
   const sort = { [sortBy]: sortOrder === "desc" ? -1 : 1 };
 
-  const [purchaseOrders, total] = await Promise.all([
+  // Base query without status filter — used for accurate status counts
+  const baseQuery = { ...query };
+  delete baseQuery.status;
+
+  const [purchaseOrders, total, pendingCount, completedCount, cancelledCount, draftCount] = await Promise.all([
     PurchaseOrder.find(query)
       .populate("supplierId", "name")
       .populate("createdBy", "name")
@@ -540,7 +558,13 @@ export const getPurchaseOrders = async (filters = {}, user = null) => {
       .skip(skip)
       .limit(limit),
     PurchaseOrder.countDocuments(query),
+    PurchaseOrder.countDocuments({ ...baseQuery, status: "Pending" }),
+    PurchaseOrder.countDocuments({ ...baseQuery, status: "Completed" }),
+    PurchaseOrder.countDocuments({ ...baseQuery, status: "Cancelled" }),
+    PurchaseOrder.countDocuments({ ...baseQuery, status: "Draft" }),
   ]);
+
+  const totalAll = pendingCount + completedCount + cancelledCount + draftCount;
 
   return {
     purchaseOrders,
@@ -549,6 +573,13 @@ export const getPurchaseOrders = async (filters = {}, user = null) => {
       page,
       limit,
       totalPages: Math.ceil(total / limit),
+      statusCounts: {
+        total: totalAll,
+        Pending: pendingCount,
+        Completed: completedCount,
+        Cancelled: cancelledCount,
+        Draft: draftCount,
+      },
     },
   };
 };
@@ -815,9 +846,10 @@ export const deleteSupplier = async (supplierId, user = null) => {
  *
  * @param {String} warehouseId - Warehouse ID (optional)
  * @param {Number} limit - Max results
+ * @param {String} sellerId - Filter to only this seller's products (optional)
  * @returns {Array} Low stock items
  */
-export const getLowStockItems = async (warehouseId = null, limit = 50) => {
+export const getLowStockItems = async (warehouseId = null, limit = 50, sellerId = null) => {
   const query = {
     status: "active",
     // Use MongoDB $expr to compare two fields in same document
@@ -826,6 +858,12 @@ export const getLowStockItems = async (warehouseId = null, limit = 50) => {
 
   if (warehouseId) {
     query.warehouseId = warehouseId;
+  }
+
+  // Filter by seller: look up productIds that belong to this seller
+  if (sellerId) {
+    const sellerProductIds = await Product.find({ sellerId }, "_id").lean();
+    query.productId = { $in: sellerProductIds.map((p) => p._id) };
   }
 
   // Find items where quantity <= lowStockThreshold
@@ -853,13 +891,19 @@ export const getLowStockItems = async (warehouseId = null, limit = 50) => {
  * @param {String} warehouseId - Warehouse ID (optional)
  * @returns {Object} Valuation summary
  */
-export const getInventoryValuation = async (warehouseId = null) => {
+export const getInventoryValuation = async (warehouseId = null, sellerId = null) => {
   const query = {
     status: "active",
   };
 
   if (warehouseId) {
     query.warehouseId = warehouseId;
+  }
+
+  // Filter by seller's own products only
+  if (sellerId) {
+    const sellerProductIds = await Product.find({ sellerId }, "_id").lean();
+    query.productId = { $in: sellerProductIds.map((p) => p._id) };
   }
 
   const items = await InventoryItem.find(query);

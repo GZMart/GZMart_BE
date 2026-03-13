@@ -45,9 +45,15 @@ import followRoutes from "./routes/follow.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
+import sellerApplicationRoutes from "./routes/sellerApplication.routes.js";
+import coinRoutes from "./routes/coin.routes.js";
+import notificationRoutes from "./routes/notification.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
 import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
+import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
+import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
+import { startCoinJobs } from "./jobs/coinExpirationJob.js";
 // Load environment variables
 dotenv.config();
 
@@ -206,9 +212,13 @@ app.use("/api/seller/addons", addOnDealRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
+app.use("/api/exchange-rate", exchangeRateRoutes);
 app.use("/api/ghn", ghnRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/follows", followRoutes);
+app.use("/api/coins", coinRoutes);
+app.use("/api/seller-applications", sellerApplicationRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 // Error handler
 app.use(errorHandler);
@@ -276,6 +286,8 @@ server.listen(PORT, HOST, () => {
   initShopStatisticJobs();
   startOrderCleanupJob();
   startRmaAutoApprovalJob();
+  startExchangeRateJob();
+  startCoinJobs(); // Start coin expiration jobs
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s

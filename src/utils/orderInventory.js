@@ -49,6 +49,27 @@ export const deductOrderResources = async (
     if (inventoryItem) {
       inventoryItem.reduceStock(cartItem.quantity);
       await inventoryItem.save();
+      console.log(
+        `[OrderInventory] COD - Deducted inventory: ${model.sku} -${cartItem.quantity} (${currentStock} → ${inventoryItem.quantity})`,
+      );
+
+      // CRITICAL FIX: Sync stock with Product.models[].stock
+      const modelInProduct = product.models.id(model._id);
+      if (modelInProduct) {
+        modelInProduct.stock = Math.max(0, inventoryItem.quantity);
+        await product.save();
+        console.log(
+          `[OrderInventory] COD - Synced Product.models[].stock for SKU: ${model.sku} → ${modelInProduct.stock}`,
+        );
+      } else {
+        console.warn(
+          `[OrderInventory] COD - Model not found in Product.models for modelId: ${model._id}`,
+        );
+      }
+    } else {
+      console.warn(
+        `[OrderInventory] COD - No inventory item found for SKU: ${model.sku}`,
+      );
     }
 
     // Create transaction log
@@ -126,6 +147,30 @@ export const rollbackOrderResources = async (order) => {
       const currentStock = inventoryItem.quantity;
       inventoryItem.quantity += item.quantity;
       await inventoryItem.save();
+      console.log(
+        `[OrderInventory] Rollback - Restored inventory: ${item.sku} +${item.quantity} (${currentStock} → ${inventoryItem.quantity})`,
+      );
+
+      // CRITICAL FIX: Sync stock with Product.models[].stock
+      const product = await Product.findById(item.productId);
+      if (product) {
+        const model = product.models.id(item.modelId);
+        if (model) {
+          model.stock = Math.max(0, inventoryItem.quantity);
+          await product.save();
+          console.log(
+            `[OrderInventory] Rollback - Synced Product.models[].stock for SKU: ${item.sku} → ${model.stock}`,
+          );
+        } else {
+          console.warn(
+            `[OrderInventory] Rollback - Model not found in Product.models for modelId: ${item.modelId}`,
+          );
+        }
+      } else {
+        console.warn(
+          `[OrderInventory] Rollback - Product not found: ${item.productId}`,
+        );
+      }
 
       // Create rollback transaction log
       await InventoryTransaction.create({
@@ -226,6 +271,19 @@ export const deductOrderResourcesFromOrder = async (order) => {
       console.log(
         `[OrderInventory] Deducted inventory: ${item.sku} -${item.quantity} (${currentStock} → ${currentStock - item.quantity})`,
       );
+
+      // CRITICAL FIX: Sync stock with Product.models[].stock
+      const product = await Product.findById(item.productId);
+      if (product) {
+        const model = product.models.id(item.modelId);
+        if (model) {
+          model.stock = Math.max(0, inventoryItem.quantity);
+          await product.save();
+          console.log(
+            `[OrderInventory] Synced Product.models[].stock for SKU: ${item.sku} → ${model.stock}`,
+          );
+        }
+      }
 
       // Create transaction log
       await InventoryTransaction.create({

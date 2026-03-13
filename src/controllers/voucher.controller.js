@@ -6,6 +6,7 @@ import User from "../models/User.js";
 import Order from "../models/Order.js";
 import { ErrorResponse as ApiError } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
+import NotificationService from "../services/notification.service.js";
 
 // @desc    Create a new voucher
 // @route   POST /api/vouchers
@@ -56,6 +57,22 @@ export const createVoucher = asyncHandler(async (req, res) => {
     appliedProducts: applyTo === "specific" ? appliedProducts : [],
     shopId: req.user._id, // Save Creator ID
   });
+
+  // 4. Notify followers (fire-and-forget, non-blocking)
+  if (displaySetting !== 'private') {
+    const seller = await User.findById(req.user._id, 'shopName fullName').lean();
+    const shopName = seller?.shopName || seller?.fullName || 'Shop';
+    const discountLabel = discountType === 'percent'
+      ? `${discountValue}%`
+      : new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(discountValue);
+    NotificationService.notifyShopFollowers(
+      req.user._id,
+      `🎟️ ${shopName} vừa phát hành voucher mới!`,
+      `Voucher "${voucher.name}" — Giảm ${discountLabel}. Lưu ngay trước khi hết!`,
+      'VOUCHER',
+      { shopId: req.user._id.toString(), voucherCode: voucher.code }
+    );
+  }
 
   res.status(201).json({
     success: true,
@@ -226,7 +243,6 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
     type: { $in: ["shop", "product"] },
     shopId: { $in: sellerIds },
     $expr: { $lt: ["$usageCount", "$usageLimit"] },
-    _id: { $in: savedVoucherIds },
   })
     .populate("appliedProducts", "name")
     .lean();
@@ -331,6 +347,7 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
       ineligibleReason: !meetsMinBasket
         ? `Minimum order ${voucher.minBasketPrice?.toLocaleString()}₫`
         : null,
+      isSaved: savedVoucherIds.includes(voucher._id.toString()),
     });
   }
 

@@ -12,9 +12,8 @@ router.use(protect);
  * ===================================================================
  * PURCHASE ORDER ROUTES
  * Role Policy:
- *   - seller  : tạo PO, xem PO, cancel PO
- *   - manager : xem PO, update PO, complete PO, cancel PO
- *   - admin   : full access
+ *   - seller : tạo PO, xem PO, sửa PO, xác nhận nhận hàng, cancel PO
+ *   - admin  : full access
  * NOTE: Named routes MUST come before /:id to avoid wildcard collision
  * ===================================================================
  */
@@ -23,7 +22,7 @@ router.use(protect);
 router
   .route("/calculate")
   .post(
-    requireRoles("admin", "manager", "seller"),
+    requireRoles("admin", "seller"),
     purchaseOrderController.calculateLandedCost,
   );
 
@@ -31,11 +30,11 @@ router
 router
   .route("/")
   .post(
-    requireRoles("admin", "manager", "seller"),   // seller tạo PO
+    requireRoles("admin", "seller"),
     purchaseOrderController.createPurchaseOrder,
   )
   .get(
-    requireRoles("admin", "manager", "seller"),
+    requireRoles("admin", "seller"),
     purchaseOrderController.getPurchaseOrders,
   );
 
@@ -47,22 +46,22 @@ router
 
 router
   .route("/suppliers")
-  .post(requireRoles("admin", "manager", "seller"), purchaseOrderController.createSupplier)
-  .get(requireRoles("admin", "manager", "seller"), purchaseOrderController.getSuppliers);
+  .post(requireRoles("admin", "seller"), purchaseOrderController.createSupplier)
+  .get(requireRoles("admin", "seller"), purchaseOrderController.getSuppliers);
 
 // Get supplier purchase history with analytics (before /suppliers/:id to avoid conflict)
 router
   .route("/suppliers/:id/purchase-history")
   .get(
-    requireRoles("admin", "manager", "seller"),
+    requireRoles("admin", "seller"),
     purchaseOrderController.getSupplierPurchaseHistory,
   );
 
 router
   .route("/suppliers/:id")
-  .get(requireRoles("admin", "manager", "seller"), purchaseOrderController.getSupplierById)
-  .put(requireRoles("admin", "manager"), purchaseOrderController.updateSupplier)
-  .delete(requireRoles("admin", "manager"), purchaseOrderController.deleteSupplier);
+  .get(requireRoles("admin", "seller"), purchaseOrderController.getSupplierById)
+  .put(requireRoles("admin", "seller"), purchaseOrderController.updateSupplier)
+  .delete(requireRoles("admin", "seller"), purchaseOrderController.deleteSupplier);
 
 /**
  * ===================================================================
@@ -73,14 +72,14 @@ router
 router
   .route("/inventory/low-stock")
   .get(
-    requireRoles("admin", "manager", "seller"),
+    requireRoles("admin", "seller"),
     purchaseOrderController.getLowStockItems,
   );
 
 router
   .route("/inventory/valuation")
   .get(
-    requireRoles("admin", "manager"),
+    requireRoles("admin", "seller"),
     purchaseOrderController.getInventoryValuation,
   );
 
@@ -103,27 +102,27 @@ router
 router
   .route("/:id")
   .get(
-    requireRoles("admin", "manager", "seller"),
+    requireRoles("admin", "seller"),
     purchaseOrderController.getPurchaseOrderById,
   )
   .put(
-    requireRoles("admin", "manager", "seller"),   // seller sửa PO của mình (service kiểm tra status)
+    requireRoles("admin", "seller"),
     purchaseOrderController.updatePurchaseOrder,
   );
 
-// Complete purchase order – chỉ admin/manager mới nhập kho
+// Complete purchase order – seller xác nhận đã nhận hàng
 router
   .route("/:id/complete")
   .post(
-    requireRoles("admin", "manager"),
+    requireRoles("admin", "seller"),
     purchaseOrderController.completePurchaseOrder,
   );
 
-// Cancel purchase order – seller cũng có thể cancel PO của mình
+// Cancel purchase order – seller có thể cancel PO của mình
 router
   .route("/:id/cancel")
   .post(
-    requireRoles("admin", "manager", "seller"),
+    requireRoles("admin", "seller"),
     purchaseOrderController.cancelPurchaseOrder,
   );
 

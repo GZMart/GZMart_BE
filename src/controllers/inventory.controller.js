@@ -69,7 +69,7 @@ export const stockOut = asyncHandler(async (req, res, next) => {
 export const adjustStock = asyncHandler(async (req, res, next) => {
   const userId = req.user?._id || "695dd45041f5e32466527d93"; // Temporary
 
-  const { productId, modelId, sku, newStock, note, warehouseId } = req.body;
+  const { productId, modelId, sku, newStock, costPrice, note, warehouseId } = req.body;
 
   if (!productId || !modelId || !sku || newStock === undefined) {
     throw new ErrorResponse(
@@ -79,13 +79,16 @@ export const adjustStock = asyncHandler(async (req, res, next) => {
   }
 
   const transaction = await inventoryService.adjustStock(
-    { productId, modelId, sku, newStock, note, warehouseId },
+    { productId, modelId, sku, newStock, costPrice, note, warehouseId },
     userId
   );
 
+  const msgs = [`Stock adjusted to ${newStock}`];
+  if (costPrice !== undefined) msgs.push(`cost price updated to ${costPrice}`);
+
   res.status(201).json({
     success: true,
-    message: `Stock adjusted to ${newStock}`,
+    message: msgs.join(", "),
     data: transaction,
   });
 });

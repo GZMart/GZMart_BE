@@ -1,6 +1,7 @@
 import paymentService from "../services/payment.service.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
+import NotificationService from "../services/notification.service.js";
 
 /**
  * @desc    Tạo link thanh toán PayOS cho đơn hàng
@@ -45,6 +46,22 @@ export const handlePayOsWebhook = asyncHandler(async (req, res, next) => {
 
     if (result.processed) {
       console.log(`[PayOS Webhook] Payment successful: ${result.orderNumber}`);
+      
+      try {
+         // Assuming result contains order details, fetch to get userId if necessary,
+         // or if result already has userId. Let's lookup the Order to get the userId.
+         const Order = (await import('../models/Order.js')).default;
+         const order = await Order.findOne({ orderNumber: result.orderNumber });
+         if (order) {
+            await NotificationService.createNotification(
+              order.userId,
+              "Thanh toán thành công",
+              `Đơn hàng ${result.orderNumber} của bạn đã được thanh toán trực tuyến thành công bằng PayOS. Vui lòng chờ giao hàng!`,
+              "WALLET",
+              { orderId: order._id.toString() }
+            );
+         }
+      } catch(e) { console.error("Webhook notification error:", e) }
     } else {
       console.log(`[PayOS Webhook] ${result.reason}`);
     }

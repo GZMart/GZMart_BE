@@ -15,6 +15,7 @@ import * as flashSaleService from "../services/flashsale.service.js";
 import { getShopProgramPriceForVariant } from "../services/product.service.js";
 import { validateAndCalculateVouchers } from "../utils/voucherValidator.js";
 import * as orderTrackingService from "../services/orderTracking.service.js";
+import NotificationService from "../services/notification.service.js";
 import {
   deductOrderResources,
   clearUserCart,
@@ -437,7 +438,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         req.user._id,
       );
       createdOrder.resourcesDeducted = true;
-      createdOrder.paymentStatus = "paid"; // COD is considered paid upon delivery confirmation
+      createdOrder.paymentStatus = "pending"; // COD will be marked as paid when buyer confirms receipt
       await createdOrder.save({ session });
 
       // Clear cart for COD using utility function with transaction support
@@ -459,6 +460,19 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       createdAt: createdOrder.createdAt,
       customerName: user?.fullName || "Customer",
     });
+
+    // Notify Buyer via New Notification System
+    try {
+      await NotificationService.createNotification(
+        req.user._id,
+        "Đặt hàng thành công",
+        `Đơn hàng ${createdOrder.orderNumber} của bạn đã được tiếp nhận và đang chờ xác nhận.`,
+        "ORDER",
+        { orderId: createdOrder._id.toString() }
+      );
+    } catch (notifErr) {
+      console.error("Failed to send buyer notification:", notifErr);
+    }
 
     // Populate order items before sending response
     await createdOrder.populate("items");
@@ -497,15 +511,34 @@ export const getMyOrders = asyncHandler(async (req, res, next) => {
 
   const total = await Order.countDocuments({ userId: req.user._id });
 
+  // Populate items with productId and sellerId for each order
+  const ordersWithItems = await Promise.all(
+    orders.map(async (order) => {
+      const items = await OrderItem.find({ orderId: order._id }).populate({
+        path: "productId",
+        select: "name slug images sellerId",
+        populate: {
+          path: "sellerId",
+          select: "fullName email avatar",
+        },
+      });
+
+      return {
+        ...order.toObject(),
+        items,
+      };
+    }),
+  );
+
   res.status(200).json({
     success: true,
-    count: orders.length,
+    count: ordersWithItems.length,
     pagination: {
       total,
       page,
       pages: Math.ceil(total / limit),
     },
-    data: orders,
+    data: ordersWithItems,
   });
 });
 
@@ -515,9 +548,10 @@ export const getMyOrders = asyncHandler(async (req, res, next) => {
  * @access  Private
  */
 export const generateInvoice = asyncHandler(async (req, res, next) => {
-  const order = await Order.findById(req.params.id)
-    .populate("userId", "fullName email phone address location")
-    .populate("items");
+  const order = await Order.findById(req.params.id).populate(
+    "userId",
+    "fullName email phone address location",
+  );
 
   if (!order) {
     return next(new ErrorResponse("Order not found", 404));
@@ -531,12 +565,18 @@ export const generateInvoice = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse("Not authorized", 401));
   }
 
+  // Fetch items separately with populate
+  const items = await OrderItem.find({ orderId: order._id }).populate({
+    path: "productId",
+    select: "name slug images",
+  });
+
   // Generate simple HTML invoice
-  const itemsHTML = order.items
+  const itemsHTML = items
     .map(
       (item) => `
     <tr>
-      <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.sku}</td>
+      <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.productId?.name || item.sku}</td>
       <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
       <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">$${item.price.toLocaleString()}</td>
       <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">$${item.subtotal.toLocaleString()}</td>
@@ -665,10 +705,14 @@ export const getOrderById = asyncHandler(async (req, res, next) => {
   }
 
   try {
-    const items = await OrderItem.find({ orderId: order._id }).populate(
-      "productId",
-      "name slug images",
-    );
+    const items = await OrderItem.find({ orderId: order._id }).populate({
+      path: "productId",
+      select: "name slug images sellerId",
+      populate: {
+        path: "sellerId",
+        select: "fullName email avatar",
+      },
+    });
     console.log(`[DEBUG] Items found: ${items.length}`);
 
     res.status(200).json({
@@ -821,6 +865,16 @@ export const confirmReceipt = asyncHandler(async (req, res, next) => {
   order.status = "completed";
   order.completedAt = new Date();
   order.customerConfirmedAt = new Date();
+
+  // CRITICAL FIX: Mark COD orders as paid when buyer confirms receipt
+  if (
+    order.paymentMethod === "cod" ||
+    order.paymentMethod === "cash_on_delivery"
+  ) {
+    order.paymentStatus = "paid";
+    order.paidAt = new Date();
+  }
+
   order.statusHistory.push({
     status: "completed",
     changedBy: req.user._id,
