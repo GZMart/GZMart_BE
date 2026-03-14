@@ -1,6 +1,6 @@
 import express from "express";
 import * as reviewController from "../controllers/review.controller.js";
-import { protect } from "../middlewares/auth.middleware.js";
+import { protect, optionalAuth } from "../middlewares/auth.middleware.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 
 const router = express.Router();
@@ -97,6 +97,7 @@ router.post("/", protect, asyncHandler(reviewController.createReview));
  */
 router.get(
   "/product/:productId",
+  optionalAuth,
   asyncHandler(reviewController.getProductReviews),
 );
 
@@ -124,6 +125,12 @@ router.get(
  *         description: User reviews retrieved successfully
  */
 router.get("/user", protect, asyncHandler(reviewController.getUserReviews));
+
+router.get(
+  "/order/:orderId",
+  protect,
+  asyncHandler(reviewController.getOrderReviews),
+);
 
 /**
  * @swagger
@@ -250,6 +257,7 @@ router.delete(
  */
 router.post(
   "/:reviewId/helpful",
+  protect,
   asyncHandler(reviewController.markHelpful),
 );
 
@@ -273,6 +281,7 @@ router.post(
  */
 router.post(
   "/:reviewId/unhelpful",
+  protect,
   asyncHandler(reviewController.markUnhelpful),
 );
 

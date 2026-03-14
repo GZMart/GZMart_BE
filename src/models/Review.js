@@ -39,6 +39,12 @@ const reviewSchema = new mongoose.Schema(
       minlength: [10, "Review content must be at least 10 characters"],
       maxlength: [5000, "Review content cannot exceed 5000 characters"],
     },
+    variant: {
+      type: String,
+      trim: true,
+      maxlength: [120, "Variant cannot exceed 120 characters"],
+      default: null,
+    },
     images: {
       type: [String],
       default: [],
@@ -58,6 +64,16 @@ const reviewSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+    },
+    helpfulBy: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: "User",
+      default: [],
+    },
+    unhelpfulBy: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: "User",
+      default: [],
     },
     status: {
       type: String,
@@ -81,6 +97,6 @@ reviewSchema.index({ productId: 1, status: 1 });
 reviewSchema.index({ userId: 1, createdAt: -1 });
 reviewSchema.index({ productId: 1, rating: 1 });
 reviewSchema.index({ createdAt: -1 });
-reviewSchema.index({ productId: 1, userId: 1 }, { unique: true }); // One review per product per user
+reviewSchema.index({ productId: 1, userId: 1, orderId: 1 }, { unique: true }); // One review per product per user per order
 
 export default mongoose.model("Review", reviewSchema);
