@@ -456,11 +456,12 @@ export const getMyProducts = asyncHandler(async (req, res, next) => {
  */
 export const getProductsBySeller = asyncHandler(async (req, res, next) => {
   const { sellerId } = req.params;
-  const { page, limit } = req.query;
+  const { page, limit, categoryId } = req.query;
 
   const result = await productService.getProductsBySeller(sellerId, {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
+    categoryId: categoryId || undefined,
   });
 
   res.status(200).json({

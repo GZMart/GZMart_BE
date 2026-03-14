@@ -461,7 +461,7 @@ export const getProductsAdvanced = async (options) => {
     sortOrder = "desc",
   } = options;
 
-  const query = { status: "active" };
+  const query = { status: { $in: ["active", "out_of_stock"] } };
 
   if (categoryId) query.categoryId = categoryId;
 
@@ -480,10 +480,8 @@ export const getProductsAdvanced = async (options) => {
     if (maxPrice) query["models.price"].$lte = Number(maxPrice);
   }
 
-  // Stock Filter: use Product.status as a proxy for InventoryItem availability.
-  // products are auto-set to 'out_of_stock' when inventory hits 0.
   if (inStock) {
-    query.status = "active"; // 'active' implies stock > 0 per our sync logic
+    query.status = "active";
   }
 
   // Attribute/Tier Filter (Colors/Sizes)
@@ -810,7 +808,7 @@ export const getAvailableFilters = async (categoryId = null) => {
  * Get products by seller ID
  */
 export const getProductsBySeller = async (sellerId, options = {}) => {
-  const { page = 1, limit = 20 } = options;
+  const { page = 1, limit = 20, categoryId } = options;
   const skip = (page - 1) * limit;
 
   // Validate Seller exists
@@ -823,6 +821,11 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
 
   const sellerObj = seller.toObject();
 
+  const productQuery = { sellerId, status: "active" };
+  if (categoryId) {
+    productQuery.categoryId = categoryId;
+  }
+
   const [
     products,
     total,
@@ -831,13 +834,13 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     followerCount,
     followingCount,
   ] = await Promise.all([
-    Product.find({ sellerId, status: "active" })
+    Product.find(productQuery)
       .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-    Product.countDocuments({ sellerId, status: "active" }),
+    Product.countDocuments(productQuery),
     import("../models/ShopStatistic.js").then((m) =>
       m.default.findOne({ sellerId }),
     ),
