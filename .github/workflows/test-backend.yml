@@ -51,12 +51,12 @@ jobs:
 
       # 3️⃣ Install dependencies
       - name: Install dependencies
-        working-directory: ./GZMart_BE
+        working-directory: .
         run: npm install
 
       # 4️⃣ Create test environment file
       - name: Create .env.test file
-        working-directory: ./GZMart_BE
+        working-directory: .
         run: |
           echo "NODE_ENV=test" > .env.test
           echo "MONGODB_URI=mongodb://root:root123@localhost:27017/gzmart_test?authSource=admin" >> .env.test
@@ -65,7 +65,7 @@ jobs:
 
       # 5️⃣ Run tests with coverage
       - name: Run tests
-        working-directory: ./GZMart_BE
+        working-directory: .
         run: npm test -- --coverage --detectOpenHandles --passWithNoTests
         continue-on-error: true
 
