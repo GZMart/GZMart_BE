@@ -48,13 +48,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: "GZMart_BE/package-lock.json"
 
       # 3️⃣ Install dependencies
       - name: Install dependencies
         working-directory: ./GZMart_BE
-        run: npm ci
+        run: npm install
 
       # 4️⃣ Create test environment file
       - name: Create .env.test file
