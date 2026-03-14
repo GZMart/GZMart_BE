@@ -216,7 +216,7 @@ export const deleteReview = asyncHandler(async (req, res, next) => {
 /**
  * @desc    Mark review as helpful
  * @route   POST /api/reviews/:reviewId/helpful
- * @access  Public
+ * @access  Private
  */
 export const markHelpful = asyncHandler(async (req, res, next) => {
   const { reviewId } = req.params;
@@ -233,7 +233,7 @@ export const markHelpful = asyncHandler(async (req, res, next) => {
 /**
  * @desc    Mark review as unhelpful
  * @route   POST /api/reviews/:reviewId/unhelpful
- * @access  Public
+ * @access  Private
  */
 export const markUnhelpful = asyncHandler(async (req, res, next) => {
   const { reviewId } = req.params;

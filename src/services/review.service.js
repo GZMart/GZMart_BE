@@ -46,33 +46,33 @@ class ReviewService {
     // If orderId provided, verify user purchased this product
     let verifiedPurchase = false;
     if (orderId) {
-      const order = await Order.findOne({
-        _id: orderId,
-        userId,
-      }).populate({
-        path: "items",
-        select: "productId",
-      });
+      console.log("=== DEBUG: Fetching order ===");
+      try {
+        const order = await Order.findOne({
+          _id: orderId,
+          userId,
+        }).populate({
+          path: "items",
+        });
 
-      if (!order) {
-        throw new ErrorResponse(
-          "Order not found or does not belong to you",
-          404,
-        );
+        if (!order) {
+          console.log("Order not found");
+          // Don't throw - allow review creation without verified purchase
+        } else if (order.items && order.items.length > 0) {
+          // Check if any item in the order has the requested productId
+          const hasProduct = order.items.some((item) => {
+            return item.productId && item.productId.toString() === productId.toString();
+          });
+
+          if (hasProduct) {
+            verifiedPurchase = true;
+            console.log("Verified purchase: true");
+          }
+        }
+      } catch (error) {
+        console.log("Error verifying purchase:", error.message);
+        // Don't throw - allow review creation even if order verification fails
       }
-
-      // Check if any item in the order has the requested productId
-      const hasProduct = order.items.some(
-        (item) => item.productId.toString() === productId.toString(),
-      );
-
-      if (!hasProduct) {
-        throw new ErrorResponse(
-          "You did not purchase this product in this order",
-          403,
-        );
-      }
-      verifiedPurchase = true;
     }
 
     let review;
@@ -515,40 +515,32 @@ class ReviewService {
       throw new ErrorResponse("Review not found", 404);
     }
 
-    const uid = userId.toString();
-    const alreadyHelpful = review.helpfulBy.some((id) => id.toString() === uid);
-    const alreadyUnhelpful = review.unhelpfulBy.some(
-      (id) => id.toString() === uid,
-    );
+    const userIdStr = userId.toString();
+    const helpfulByIndex = review.helpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+    const unhelpfulByIndex = review.unhelpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
 
-    // Toggle off if user clicks helpful again
-    if (alreadyHelpful) {
-      review.helpfulBy = review.helpfulBy.filter((id) => id.toString() !== uid);
-      review.helpful = Math.max(0, (review.helpful || 0) - 1);
-      await review.save();
-      const payload = review.toObject();
-      payload.userReaction = "none";
-      delete payload.helpfulBy;
-      delete payload.unhelpfulBy;
-      return payload;
+    if (helpfulByIndex !== -1) {
+      // User already marked helpful, toggle off
+      review.helpfulBy.splice(helpfulByIndex, 1);
+      review.helpful = Math.max(0, review.helpful - 1);
+    } else {
+      // User marking helpful
+      review.helpfulBy.push(userId);
+      review.helpful = (review.helpful || 0) + 1;
+
+      // If user had marked unhelpful, remove it
+      if (unhelpfulByIndex !== -1) {
+        review.unhelpfulBy.splice(unhelpfulByIndex, 1);
+        review.unhelpful = Math.max(0, review.unhelpful - 1);
+      }
     }
 
-    // Move reaction from unhelpful -> helpful if needed
-    if (alreadyUnhelpful) {
-      review.unhelpfulBy = review.unhelpfulBy.filter(
-        (id) => id.toString() !== uid,
-      );
-      review.unhelpful = Math.max(0, (review.unhelpful || 0) - 1);
-    }
-
-    review.helpfulBy.push(userId);
-    review.helpful = (review.helpful || 0) + 1;
     await review.save();
-    const payload = review.toObject();
-    payload.userReaction = "helpful";
-    delete payload.helpfulBy;
-    delete payload.unhelpfulBy;
-    return payload;
+    return review;
   }
 
   /**
@@ -561,40 +553,32 @@ class ReviewService {
       throw new ErrorResponse("Review not found", 404);
     }
 
-    const uid = userId.toString();
-    const alreadyUnhelpful = review.unhelpfulBy.some(
-      (id) => id.toString() === uid,
-    );
-    const alreadyHelpful = review.helpfulBy.some((id) => id.toString() === uid);
+    const userIdStr = userId.toString();
+    const helpfulByIndex = review.helpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+    const unhelpfulByIndex = review.unhelpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
 
-    // Toggle off if user clicks unhelpful again
-    if (alreadyUnhelpful) {
-      review.unhelpfulBy = review.unhelpfulBy.filter(
-        (id) => id.toString() !== uid,
-      );
-      review.unhelpful = Math.max(0, (review.unhelpful || 0) - 1);
-      await review.save();
-      const payload = review.toObject();
-      payload.userReaction = "none";
-      delete payload.helpfulBy;
-      delete payload.unhelpfulBy;
-      return payload;
+    if (unhelpfulByIndex !== -1) {
+      // User already marked unhelpful, toggle off
+      review.unhelpfulBy.splice(unhelpfulByIndex, 1);
+      review.unhelpful = Math.max(0, review.unhelpful - 1);
+    } else {
+      // User marking unhelpful
+      review.unhelpfulBy.push(userId);
+      review.unhelpful = (review.unhelpful || 0) + 1;
+
+      // If user had marked helpful, remove it
+      if (helpfulByIndex !== -1) {
+        review.helpfulBy.splice(helpfulByIndex, 1);
+        review.helpful = Math.max(0, review.helpful - 1);
+      }
     }
 
-    // Move reaction from helpful -> unhelpful if needed
-    if (alreadyHelpful) {
-      review.helpfulBy = review.helpfulBy.filter((id) => id.toString() !== uid);
-      review.helpful = Math.max(0, (review.helpful || 0) - 1);
-    }
-
-    review.unhelpfulBy.push(userId);
-    review.unhelpful = (review.unhelpful || 0) + 1;
     await review.save();
-    const payload = review.toObject();
-    payload.userReaction = "unhelpful";
-    delete payload.helpfulBy;
-    delete payload.unhelpfulBy;
-    return payload;
+    return review;
   }
 
   /**

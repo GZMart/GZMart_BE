@@ -216,7 +216,6 @@ app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
 app.use("/api/exchange-rate", exchangeRateRoutes);
 app.use("/api/ghn", ghnRoutes);
-app.use("/api/rma", rmaRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/follows", followRoutes);
 app.use("/api/coins", coinRoutes);
