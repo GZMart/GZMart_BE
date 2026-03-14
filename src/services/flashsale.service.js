@@ -1,0 +1,628 @@
+import Deal from "../models/Deal.js";
+import Product from "../models/Product.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
+
+// Helper to map DB Deal fields back to legacy Flash Sale API response
+function mapToFlashSaleShape(deal) {
+  if (!deal) return deal;
+
+  const originalPrice = deal.productId?.originalPrice || 0;
+
+  return {
+    _id: deal._id,
+    productId: deal.productId?.toJSON
+      ? deal.productId.toJSON()
+      : deal.productId,
+    campaignTitle: deal.title || null,
+    variantSku: deal.variantSku || null,
+    salePrice: deal.dealPrice || 0,
+    originalPrice,
+    discountAmount: originalPrice
+      ? Math.max(0, originalPrice - (deal.dealPrice || 0))
+      : 0,
+    discountPercent: originalPrice
+      ? Math.round(
+          ((originalPrice - (deal.dealPrice || 0)) / originalPrice) * 10000,
+        ) / 100
+      : 0,
+    totalQuantity: deal.quantityLimit || 0,
+    soldQuantity: deal.soldCount || 0,
+    remainingQuantity: Math.max(
+      0,
+      (deal.quantityLimit || 0) - (deal.soldCount || 0),
+    ),
+    soldPercentage:
+      deal.quantityLimit && deal.quantityLimit > 0
+        ? Math.round(((deal.soldCount || 0) / deal.quantityLimit) * 10000) / 100
+        : 0,
+    startAt: deal.startDate,
+    endAt: deal.endDate,
+    timeRemaining: Math.max(0, new Date(deal.endDate).getTime() - Date.now()),
+    status: deal.status,
+    createdAt: deal.createdAt,
+  };
+}
+
+/**
+ * Create a new flash sale for a product
+ */
+export const createFlashSale = async (flashSaleData) => {
+  const {
+    productId,
+    salePrice,
+    totalQuantity,
+    startAt,
+    endAt,
+    sellerId,
+    variantSku,
+    campaignTitle,
+    purchaseLimitPerOrder,
+    purchaseLimitPerUser,
+  } = flashSaleData;
+
+  // Required field validation
+  if (
+    !productId ||
+    salePrice === undefined ||
+    !totalQuantity ||
+    !startAt ||
+    !endAt
+  ) {
+    throw new ErrorResponse(
+      "Please provide productId, salePrice, totalQuantity, startAt, and endAt",
+      400,
+    );
+  }
+
+  // salePrice must be > 0
+  if (Number(salePrice) <= 0) {
+    throw new ErrorResponse("salePrice must be greater than 0", 400);
+  }
+
+  // totalQuantity must be >= 1
+  if (Number(totalQuantity) < 1) {
+    throw new ErrorResponse("totalQuantity must be at least 1", 400);
+  }
+
+  const start = new Date(startAt);
+  const end = new Date(endAt);
+
+  // startAt must be before endAt
+  if (start >= end) {
+    throw new ErrorResponse("startAt must be before endAt", 400);
+  }
+
+  // startAt must be in the future
+  if (start <= new Date()) {
+    throw new ErrorResponse("startAt must be in the future", 400);
+  }
+
+  // Check if product exists
+  const product = await Product.findById(productId);
+  if (!product) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
+  // Check for duplicate active/upcoming flash sale for this product
+  const existingFlashSale = await Deal.findOne({
+    productId,
+    type: "flash_sale",
+    status: { $in: ["pending", "active"] },
+  });
+  if (existingFlashSale) {
+    throw new ErrorResponse(
+      "An active or upcoming flash sale already exists for this product",
+      400,
+    );
+  }
+
+  // Calculate discount dynamically based on provided salePrice vs product originalPrice
+  const originalPrice = product.originalPrice || 0;
+  let discountPercent = 0;
+  if (originalPrice > 0) {
+    discountPercent = Math.max(
+      0,
+      Math.round(((originalPrice - salePrice) / originalPrice) * 10000) / 100,
+    );
+  }
+
+  const flashSale = await Deal.create({
+    type: "flash_sale",
+    productId,
+    variantSku: variantSku || null,
+    title: campaignTitle || null,
+    dealPrice: Number(salePrice),
+    discountPercent,
+    quantityLimit: Number(totalQuantity),
+    startDate: start,
+    endDate: end,
+    sellerId: sellerId || product.sellerId,
+    purchaseLimitPerOrder: purchaseLimitPerOrder || 1,
+    purchaseLimitPerUser: purchaseLimitPerUser || 1,
+  });
+
+  return mapToFlashSaleShape(flashSale);
+};
+
+/**
+ * Create multiple flash-sale deals in one batch for a single product.
+ * Each entry in `variants[]` becomes its own Deal document.
+ *
+ * Payload:
+ *   { productId, campaignTitle, startAt, endAt, sellerId,
+ *     variants: [{ variantSku, salePrice, totalQuantity,
+ *                  purchaseLimitPerOrder, purchaseLimitPerUser }] }
+ */
+export const createBatchFlashSale = async (batchData) => {
+  const { productId, campaignTitle, startAt, endAt, sellerId, variants } =
+    batchData;
+
+  if (
+    !productId ||
+    !startAt ||
+    !endAt ||
+    !Array.isArray(variants) ||
+    variants.length === 0
+  ) {
+    throw new ErrorResponse(
+      "Please provide productId, startAt, endAt, and at least one variant",
+      400,
+    );
+  }
+
+  const start = new Date(startAt);
+  const end = new Date(endAt);
+
+  if (start >= end) {
+    throw new ErrorResponse("startAt must be before endAt", 400);
+  }
+  if (start <= new Date()) {
+    throw new ErrorResponse("startAt must be in the future", 400);
+  }
+
+  const product = await Product.findById(productId);
+  if (!product) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
+  const originalPrice = product.originalPrice || 0;
+  const resolvedSellerId = sellerId || product.sellerId;
+
+  // Validate each variant and check for duplicates
+  for (const v of variants) {
+    if (v.salePrice === undefined || v.salePrice <= 0) {
+      throw new ErrorResponse(
+        `salePrice must be > 0 for variant ${v.variantSku || "(no sku)"}`,
+        400,
+      );
+    }
+    if (!v.totalQuantity || Number(v.totalQuantity) < 1) {
+      throw new ErrorResponse(
+        `totalQuantity must be >= 1 for variant ${v.variantSku || "(no sku)"}`,
+        400,
+      );
+    }
+
+    const dupQuery = {
+      productId,
+      type: "flash_sale",
+      status: { $in: ["pending", "active"] },
+    };
+    if (v.variantSku) dupQuery.variantSku = v.variantSku;
+
+    const existing = await Deal.findOne(dupQuery);
+    if (existing) {
+      throw new ErrorResponse(
+        `An active or upcoming flash sale already exists for ${
+          v.variantSku ? `variant ${v.variantSku}` : "this product"
+        }`,
+        400,
+      );
+    }
+  }
+
+  // Create one Deal per variant
+  const created = await Promise.all(
+    variants.map((v) => {
+      const salePrice = Number(v.salePrice);
+      const discountPercent =
+        originalPrice > 0
+          ? Math.max(
+              0,
+              Math.round(
+                ((originalPrice - salePrice) / originalPrice) * 10000,
+              ) / 100,
+            )
+          : 0;
+
+      return Deal.create({
+        type: "flash_sale",
+        productId,
+        variantSku: v.variantSku || null,
+        title: campaignTitle || null,
+        dealPrice: salePrice,
+        discountPercent,
+        quantityLimit: Number(v.totalQuantity),
+        startDate: start,
+        endDate: end,
+        sellerId: resolvedSellerId,
+        purchaseLimitPerOrder: v.purchaseLimitPerOrder || 1,
+        purchaseLimitPerUser: v.purchaseLimitPerUser || 1,
+      });
+    }),
+  );
+
+  return created.map(mapToFlashSaleShape);
+};
+
+/**
+ * Get all flash sales (with pagination, status filter, and sortBy)
+ */
+export const getFlashSales = async (filters = {}, user = null) => {
+  const { page = 1, limit = 10, status, sortBy = "createdAt" } = filters;
+  const skip = (page - 1) * limit;
+
+  const filterQuery = { type: "flash_sale" };
+
+  // Sellers can only see their own flash sales
+  if (user && user.role === "seller") {
+    filterQuery.sellerId = user._id;
+  }
+
+  // FlashSale status: upcoming mapped to Deal pending
+  if (status) {
+    if (status === "upcoming") filterQuery.status = "pending";
+    else filterQuery.status = status;
+  }
+
+  const sortOptions = {
+    createdAt: { createdAt: -1 },
+    "newest-first": { createdAt: -1 },
+    "oldest-first": { createdAt: 1 },
+    startDate: { startDate: 1 },
+    endDate: { endDate: 1 },
+    upcoming: { startDate: 1 },
+    "active-first": { status: -1 },
+  };
+
+  const flashSales = await Deal.find(filterQuery)
+    .populate("productId", "name sku originalPrice images models")
+    .sort(sortOptions[sortBy] || { createdAt: -1 })
+    .skip(skip)
+    .limit(Number(limit));
+
+  const total = await Deal.countDocuments(filterQuery);
+
+  return {
+    data: flashSales.map(mapToFlashSaleShape),
+    page: Number(page),
+    limit: Number(limit),
+    total,
+  };
+};
+
+/**
+ * Get flash sale detail by ID
+ */
+export const getFlashSaleDetail = async (flashSaleId) => {
+  const flashSale = await Deal.findOne({
+    _id: flashSaleId,
+    type: "flash_sale",
+  }).populate(
+    "productId",
+    "name sku slug images description originalPrice models",
+  );
+
+  if (!flashSale) {
+    throw new ErrorResponse("Flash sale not found", 404);
+  }
+
+  return mapToFlashSaleShape(flashSale);
+};
+
+/**
+ * Get active flash sales with countdown info
+ */
+export const getActiveFlashSales = async () => {
+  const flashSales = await Deal.find({
+    type: "flash_sale",
+    status: "active",
+  }).populate(
+    "productId",
+    "name sku slug images originalPrice rating reviewCount sold models",
+  );
+
+  return flashSales.map(mapToFlashSaleShape);
+};
+
+/**
+ * Get flash sale stats
+ */
+export const getFlashSaleStats = async (flashSaleId, user = null) => {
+  const flashSale = await Deal.findOne({
+    _id: flashSaleId,
+    type: "flash_sale",
+  }).populate("productId", "name sku originalPrice images models");
+
+  if (!flashSale) {
+    throw new ErrorResponse("Flash sale not found", 404);
+  }
+
+  // Sellers can only view stats for their own flash sales
+  if (user && user.role === "seller" && flashSale.sellerId?.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to access this flash sale", 403);
+  }
+
+  return mapToFlashSaleShape(flashSale);
+};
+
+/**
+ * Search flash sale products by keyword
+ */
+export const searchFlashSaleProducts = async (
+  flashSaleId,
+  searchTerm,
+  pagination = {},
+) => {
+  const flashSale = await Deal.findOne({
+    _id: flashSaleId,
+    type: "flash_sale",
+  }).populate("productId", "name sku slug images models");
+
+  if (!flashSale) {
+    throw new ErrorResponse("Flash sale not found", 404);
+  }
+
+  const product = flashSale.productId;
+  const term = (searchTerm || "").toLowerCase();
+  const matches =
+    product &&
+    (product.name?.toLowerCase().includes(term) ||
+      product.sku?.toLowerCase().includes(term) ||
+      product.slug?.toLowerCase().includes(term));
+
+  if (matches) {
+    return {
+      total: 1,
+      page: 1,
+      limit: 10,
+      data: [mapToFlashSaleShape(flashSale)],
+    };
+  }
+
+  return { total: 0, page: 1, limit: 10, data: [] };
+};
+
+/**
+ * Update flash sale
+ */
+export const updateFlashSale = async (flashSaleId, updateData, user = null) => {
+  const {
+    salePrice,
+    totalQuantity,
+    startAt,
+    endAt,
+    variantSku,
+    campaignTitle,
+    purchaseLimitPerOrder,
+    purchaseLimitPerUser,
+  } = updateData;
+
+  const flashSale = await Deal.findOne({
+    _id: flashSaleId,
+    type: "flash_sale",
+  });
+  if (!flashSale) {
+    throw new ErrorResponse("Flash sale not found", 404);
+  }
+
+  // Sellers can only update their own flash sales
+  if (user && user.role === "seller" && flashSale.sellerId?.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to update this flash sale", 403);
+  }
+
+  const now = new Date();
+  const isActive = flashSale.startDate <= now && flashSale.endDate >= now;
+  const isPending = flashSale.startDate > now;
+
+  // If flash sale already started, disallow changing startAt
+  if (startAt && isActive) {
+    const requestedStart = new Date(startAt);
+    // Only block if trying to change to a genuinely different value
+    if (
+      Math.abs(requestedStart.getTime() - flashSale.startDate.getTime()) > 1000
+    ) {
+      throw new ErrorResponse(
+        "Cannot change start time of an already active flash sale",
+        400,
+      );
+    }
+    // Same value sent back – just ignore it
+  }
+
+  // For pending flash sales, validate that new startAt is in the future
+  if (startAt && isPending) {
+    const newStart = new Date(startAt);
+    if (newStart <= now) {
+      throw new ErrorResponse("startAt must be in the future", 400);
+    }
+  }
+
+  if (endAt) {
+    const newStartAt =
+      startAt && isPending ? new Date(startAt) : flashSale.startDate;
+    const newEndAt = new Date(endAt);
+    if (newStartAt >= newEndAt) {
+      throw new ErrorResponse("startAt must be before endAt", 400);
+    }
+    if (newEndAt <= now) {
+      throw new ErrorResponse("endAt must be in the future", 400);
+    }
+  }
+
+  if (salePrice !== undefined) flashSale.dealPrice = Number(salePrice);
+  if (totalQuantity !== undefined)
+    flashSale.quantityLimit = Number(totalQuantity);
+  // Only update startAt when flash sale hasn't started yet
+  if (startAt && isPending) flashSale.startDate = new Date(startAt);
+  if (endAt) flashSale.endDate = new Date(endAt);
+  if (variantSku !== undefined) flashSale.variantSku = variantSku;
+  if (campaignTitle !== undefined) flashSale.title = campaignTitle;
+  if (purchaseLimitPerOrder !== undefined)
+    flashSale.purchaseLimitPerOrder = Number(purchaseLimitPerOrder);
+  if (purchaseLimitPerUser !== undefined)
+    flashSale.purchaseLimitPerUser = Number(purchaseLimitPerUser);
+
+  // Recalculate status based on dates (pre-save hook also does this)
+  const updatedNow = new Date();
+  if (flashSale.startDate > updatedNow) {
+    flashSale.status = "pending";
+  } else if (flashSale.endDate < updatedNow) {
+    flashSale.status = "expired";
+  } else {
+    flashSale.status = "active";
+  }
+
+  await flashSale.save();
+  return mapToFlashSaleShape(flashSale);
+};
+
+/**
+ * Delete flash sale
+ */
+export const deleteFlashSale = async (flashSaleId, user = null) => {
+  const flashSale = await Deal.findOne({
+    _id: flashSaleId,
+    type: "flash_sale",
+  });
+
+  if (!flashSale) {
+    throw new ErrorResponse("Flash sale not found", 404);
+  }
+
+  // Sellers can only delete their own flash sales
+  if (user && user.role === "seller" && flashSale.sellerId?.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to delete this flash sale", 403);
+  }
+
+  await flashSale.deleteOne();
+  return mapToFlashSaleShape(flashSale);
+};
+
+/**
+ * Get flash sale price for order (price override logic)
+ */
+export const getFlashSalePrice = async (productId, regularPrice) => {
+  const now = new Date();
+
+  const flashSaleDeal = await Deal.findOne({
+    productId,
+    type: "flash_sale",
+    status: "active",
+  }).lean();
+
+  if (
+    flashSaleDeal &&
+    now >= flashSaleDeal.startDate &&
+    now <= flashSaleDeal.endDate
+  ) {
+    const salePrice =
+      flashSaleDeal.dealPrice ||
+      regularPrice * (1 - (flashSaleDeal.discountPercent || 0) / 100);
+
+    return {
+      price: salePrice,
+      originalPrice: regularPrice,
+      discountPercent: Math.round(
+        ((regularPrice - salePrice) / regularPrice) * 100,
+      ),
+      isFlashSale: true,
+      flashSaleId: flashSaleDeal._id,
+    };
+  }
+
+  return {
+    price: regularPrice,
+    originalPrice: regularPrice,
+    discountPercent: 0,
+    isFlashSale: false,
+    flashSaleId: null,
+  };
+};
+
+/**
+ * Sync deal statuses based on current time.
+ * Activates pending deals whose startDate has passed, and expires
+ * active deals whose endDate has passed.
+ * Called by the background scheduler and on-demand.
+ */
+export const syncDealStatuses = async () => {
+  const now = new Date();
+
+  // pending → active
+  await Deal.updateMany(
+    {
+      type: "flash_sale",
+      status: "pending",
+      startDate: { $lte: now },
+      endDate: { $gt: now },
+    },
+    { $set: { status: "active" } },
+  );
+
+  // pending → expired (end date passed before ever going active, e.g. server was down)
+  await Deal.updateMany(
+    { type: "flash_sale", status: "pending", endDate: { $lte: now } },
+    { $set: { status: "expired" } },
+  );
+
+  // active → expired (time exceeded)
+  await Deal.updateMany(
+    { type: "flash_sale", status: "active", endDate: { $lte: now } },
+    { $set: { status: "expired" } },
+  );
+
+  // active → expired (quantity exhausted)
+  await Deal.updateMany(
+    {
+      type: "flash_sale",
+      status: "active",
+      $expr: {
+        $and: [
+          { $gt: ["$quantityLimit", 0] },
+          { $gte: ["$soldCount", "$quantityLimit"] },
+        ],
+      },
+    },
+    { $set: { status: "expired" } },
+  );
+};
+
+// ─── Unused / legacy stubs kept for backward-compat ──────────────────────────
+
+export const addProductsToFlashSale = async () => {
+  throw new ErrorResponse(
+    "Cannot add products to flash sale. Each flash sale is for one product only.",
+    400,
+  );
+};
+
+export const getFlashSaleProducts = async (flashSaleId) => {
+  const data = await getFlashSaleDetail(flashSaleId);
+  return { total: 1, page: 1, limit: 10, data: [data] };
+};
+
+export const getFlashSaleProduct = async (flashSaleProductId) => {
+  return getFlashSaleDetail(flashSaleProductId);
+};
+
+export const updateFlashSaleProduct = async (
+  flashSaleProductId,
+  updateData,
+) => {
+  return updateFlashSale(flashSaleProductId, updateData);
+};
+
+export const removeProductFromFlashSale = async (flashSaleProductId) => {
+  return deleteFlashSale(flashSaleProductId);
+};
