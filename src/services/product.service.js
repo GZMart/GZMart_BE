@@ -199,7 +199,10 @@ export const createProduct = async (productData, sellerId) => {
     counter++;
   }
 
-  const totalStock = models.reduce((sum, model) => sum + model.stock, 0);
+  const totalStock = models.reduce(
+    (sum, model) => sum + (Number(model.stock) || 0),
+    0,
+  );
   const status = totalStock > 0 ? "active" : "out_of_stock";
 
   const product = new Product({
@@ -228,9 +231,9 @@ export const createProduct = async (productData, sellerId) => {
     if (!existing) {
       await InventoryItem.create({
         productId: product._id,
-        modelId:   model._id,
-        sku:       model.sku,
-        quantity:  model.stock   || 0,
+        modelId: model._id,
+        sku: model.sku,
+        quantity: model.stock || 0,
         costPrice: model.costPrice || 0,
         lastRestockDate: model.stock > 0 ? new Date() : null,
       });
@@ -448,6 +451,7 @@ export const getProductsAdvanced = async (options) => {
     page = 1,
     limit = 20,
     categoryId,
+    categorySlug, // Slug-based lookup (alternative to categoryId)
     brands, // Array
     minPrice,
     maxPrice,
@@ -461,9 +465,18 @@ export const getProductsAdvanced = async (options) => {
     sortOrder = "desc",
   } = options;
 
-  const query = { status: "active" };
+  const query = { status: { $in: ["active", "out_of_stock"] } };
 
-  if (categoryId) query.categoryId = categoryId;
+  // Resolve categorySlug to categoryId if slug provided instead of ID
+  let resolvedCategoryId = categoryId;
+  if (!resolvedCategoryId && categorySlug) {
+    const cat = await Category.findOne({ slug: categorySlug })
+      .select("_id")
+      .lean();
+    resolvedCategoryId = cat?._id;
+  }
+
+  if (resolvedCategoryId) query.categoryId = resolvedCategoryId;
 
   if (brands && brands.length > 0) {
     query.brand = { $in: brands };
@@ -480,10 +493,8 @@ export const getProductsAdvanced = async (options) => {
     if (maxPrice) query["models.price"].$lte = Number(maxPrice);
   }
 
-  // Stock Filter: use Product.status as a proxy for InventoryItem availability.
-  // products are auto-set to 'out_of_stock' when inventory hits 0.
   if (inStock) {
-    query.status = "active"; // 'active' implies stock > 0 per our sync logic
+    query.status = "active";
   }
 
   // Attribute/Tier Filter (Colors/Sizes)
@@ -648,9 +659,10 @@ export const updateProduct = async (productId, updateData, sellerId) => {
       // STOCK GUARD: preserve existing stock from DB — stock is owned by InventoryItem.
       // Never allow the product edit form to overwrite stock directly.
       const existingModel = existingModels.find(
-        (em) => em.sku === model.sku || em._id?.toString() === model._id?.toString(),
+        (em) =>
+          em.sku === model.sku || em._id?.toString() === model._id?.toString(),
       );
-      model.stock = existingModel ? existingModel.stock : (model.stock || 0);
+      model.stock = existingModel ? existingModel.stock : model.stock || 0;
 
       return model;
     });
@@ -663,7 +675,10 @@ export const updateProduct = async (productId, updateData, sellerId) => {
 
   // Derive status from InventoryItem totals (authoritative) rather than model.stock cache.
   const inventoryItems = await InventoryItem.find({ productId: product._id });
-  const totalInventoryStock = inventoryItems.reduce((sum, inv) => sum + inv.quantity, 0);
+  const totalInventoryStock = inventoryItems.reduce(
+    (sum, inv) => sum + inv.quantity,
+    0,
+  );
   if (totalInventoryStock === 0 && product.status === "active") {
     product.status = "out_of_stock";
   } else if (totalInventoryStock > 0 && product.status === "out_of_stock") {
@@ -810,7 +825,7 @@ export const getAvailableFilters = async (categoryId = null) => {
  * Get products by seller ID
  */
 export const getProductsBySeller = async (sellerId, options = {}) => {
-  const { page = 1, limit = 20 } = options;
+  const { page = 1, limit = 20, categoryId } = options;
   const skip = (page - 1) * limit;
 
   // Validate Seller exists
@@ -823,6 +838,11 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
 
   const sellerObj = seller.toObject();
 
+  const productQuery = { sellerId, status: "active" };
+  if (categoryId) {
+    productQuery.categoryId = categoryId;
+  }
+
   const [
     products,
     total,
@@ -831,13 +851,13 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     followerCount,
     followingCount,
   ] = await Promise.all([
-    Product.find({ sellerId, status: "active" })
+    Product.find(productQuery)
       .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-    Product.countDocuments({ sellerId, status: "active" }),
+    Product.countDocuments(productQuery),
     import("../models/ShopStatistic.js").then((m) =>
       m.default.findOne({ sellerId }),
     ),
@@ -1025,7 +1045,7 @@ export const getActivePromotionsForProduct = async (productId) => {
   ) {
     // Find the first enabled variant with a real discount
     const enabledVariant = programProduct.variants.find(
-      (v) => v.enabled && v.salePrice < v.originalPrice
+      (v) => v.enabled && v.salePrice < v.originalPrice,
     );
 
     if (enabledVariant) {
@@ -1035,7 +1055,7 @@ export const getActivePromotionsForProduct = async (productId) => {
           : Math.round(
               ((enabledVariant.originalPrice - enabledVariant.salePrice) /
                 enabledVariant.originalPrice) *
-                100
+                100,
             );
 
       shopProgram = {
@@ -1057,7 +1077,7 @@ export const getActivePromotionsForProduct = async (productId) => {
               v.discountType === "percent"
                 ? v.discount
                 : Math.round(
-                    ((v.originalPrice - v.salePrice) / v.originalPrice) * 100
+                    ((v.originalPrice - v.salePrice) / v.originalPrice) * 100,
                   ),
           })),
       };
@@ -1068,11 +1088,11 @@ export const getActivePromotionsForProduct = async (productId) => {
   // Sync statuses
   await ComboPromotion.updateMany(
     { status: "upcoming", startDate: { $lte: now } },
-    { status: "active" }
+    { status: "active" },
   );
   await ComboPromotion.updateMany(
     { status: { $in: ["active", "upcoming"] }, endDate: { $lte: now } },
-    { status: "ended" }
+    { status: "ended" },
   );
 
   const comboPromotions = await ComboPromotion.find({
@@ -1086,11 +1106,11 @@ export const getActivePromotionsForProduct = async (productId) => {
   // Sync statuses
   await AddOnDeal.updateMany(
     { status: "upcoming", startDate: { $lte: now } },
-    { status: "active" }
+    { status: "active" },
   );
   await AddOnDeal.updateMany(
     { status: { $in: ["active", "upcoming"] }, endDate: { $lte: now } },
-    { status: "ended" }
+    { status: "ended" },
   );
 
   const addOnDeals = await AddOnDeal.find({
@@ -1110,8 +1130,7 @@ export const getActivePromotionsForProduct = async (productId) => {
     subProducts: deal.subProducts.map((sp) => {
       const productData = sp.productId;
       const originalPrice =
-        productData?.originalPrice ||
-        (productData?.models?.[0]?.price ?? 0);
+        productData?.originalPrice || (productData?.models?.[0]?.price ?? 0);
       return {
         product: productData
           ? {
@@ -1152,7 +1171,11 @@ export const getActivePromotionsForProduct = async (productId) => {
  * @param {number} originalPrice - Fallback price (model.price)
  * @returns {{ price: number, isShopProgram: boolean, originalPrice: number, programName?: string }}
  */
-export const getShopProgramPriceForVariant = async (productId, modelIndex, originalPrice) => {
+export const getShopProgramPriceForVariant = async (
+  productId,
+  modelIndex,
+  originalPrice,
+) => {
   try {
     const programProduct = await ShopProgramProduct.findOne({
       productId,
@@ -1169,7 +1192,10 @@ export const getShopProgramPriceForVariant = async (productId, modelIndex, origi
       // variantId format: "productId-modelIndex"
       const targetVariantId = `${productId.toString()}-${modelIndex}`;
       const variant = programProduct.variants.find(
-        (v) => v.enabled && v.variantId === targetVariantId && v.salePrice < v.originalPrice
+        (v) =>
+          v.enabled &&
+          v.variantId === targetVariantId &&
+          v.salePrice < v.originalPrice,
       );
 
       if (variant) {

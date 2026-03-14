@@ -18,7 +18,7 @@ import homeRoutes from "./routes/home.routes.js";
 import brandRoutes from "./routes/brand.routes.js";
 import dealRoutes from "./routes/deal.routes.js";
 import searchRoutes from "./routes/search.routes.js";
-import favouriteRoutes from "./routes/favourite.routes.js";
+import wishlistRoutes from "./routes/wishlist.routes.js";
 import userRoutes from "./routes/user.routes.js";
 import logger from "./utils/logger.js";
 import { setupUploadDirectories } from "./utils/setupUploads.js";
@@ -101,6 +101,8 @@ app.use((req, res, next) => {
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
+    "https://www.vic-sport.site",
+    "https://gzmart.vercel.app",
     // Azure App Service domains
     process.env.WEBSITE_HOSTNAME
       ? `https://${process.env.WEBSITE_HOSTNAME}`
@@ -196,7 +198,7 @@ app.use("/api/home", homeRoutes);
 app.use("/api/brands", brandRoutes);
 app.use("/api/deals", dealRoutes);
 app.use("/api/search", searchRoutes);
-app.use("/api/favourites", favouriteRoutes);
+app.use("/api/wishlists", wishlistRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/orders", orderRoutes);
