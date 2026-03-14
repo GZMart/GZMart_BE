@@ -23,11 +23,11 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        working-directory: ./GZMart_BE
+        working-directory: .
         run: npm install
 
       - name: Run tests
-        working-directory: ./GZMart_BE
+        working-directory: .
         run: npm test -- --coverage --detectOpenHandles --passWithNoTests
         continue-on-error: true
 
@@ -50,12 +50,12 @@ jobs:
 
       # 3️⃣ Cài dependencies và build
       - name: Install dependencies
-        working-directory: ./GZMart_BE
+        working-directory: .
         run: npm install
 
       # 4️⃣ Setup environment file (optional - nếu cần)
       - name: Create .env file
-        working-directory: ./GZMart_BE
+        working-directory: .
         run: |
           echo "NODE_ENV=production" > .env
           # Thêm các biến môi trường khác tại đây nếu cần
@@ -63,9 +63,8 @@ jobs:
       # 5️⃣ Đóng gói dự án thành file release.zip
       - name: Zip backend folder for deployment
         run: |
-          cd GZMart_BE
           # Không loại trừ node_modules (đã install rồi)
-          zip -r ../release.zip . \
+          zip -r release.zip . \
             -x "*.git*" \
             -x "*.github*" \
             -x "logs/*" \
