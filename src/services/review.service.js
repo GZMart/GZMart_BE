@@ -299,34 +299,76 @@ class ReviewService {
   /**
    * Mark review as helpful
    */
-  async markHelpful(reviewId) {
-    const review = await Review.findByIdAndUpdate(
-      reviewId,
-      { $inc: { helpful: 1 } },
-      { new: true },
-    );
+  async markHelpful(reviewId, userId) {
+    const review = await Review.findById(reviewId);
 
     if (!review) {
       throw new ErrorResponse("Review not found", 404);
     }
 
+    const userIdStr = userId.toString();
+    const helpfulByIndex = review.helpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+    const unhelpfulByIndex = review.unhelpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+
+    if (helpfulByIndex !== -1) {
+      // User already marked helpful, toggle off
+      review.helpfulBy.splice(helpfulByIndex, 1);
+      review.helpful = Math.max(0, review.helpful - 1);
+    } else {
+      // User marking helpful
+      review.helpfulBy.push(userId);
+      review.helpful = (review.helpful || 0) + 1;
+
+      // If user had marked unhelpful, remove it
+      if (unhelpfulByIndex !== -1) {
+        review.unhelpfulBy.splice(unhelpfulByIndex, 1);
+        review.unhelpful = Math.max(0, review.unhelpful - 1);
+      }
+    }
+
+    await review.save();
     return review;
   }
 
   /**
    * Mark review as unhelpful
    */
-  async markUnhelpful(reviewId) {
-    const review = await Review.findByIdAndUpdate(
-      reviewId,
-      { $inc: { unhelpful: 1 } },
-      { new: true },
-    );
+  async markUnhelpful(reviewId, userId) {
+    const review = await Review.findById(reviewId);
 
     if (!review) {
       throw new ErrorResponse("Review not found", 404);
     }
 
+    const userIdStr = userId.toString();
+    const helpfulByIndex = review.helpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+    const unhelpfulByIndex = review.unhelpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+
+    if (unhelpfulByIndex !== -1) {
+      // User already marked unhelpful, toggle off
+      review.unhelpfulBy.splice(unhelpfulByIndex, 1);
+      review.unhelpful = Math.max(0, review.unhelpful - 1);
+    } else {
+      // User marking unhelpful
+      review.unhelpfulBy.push(userId);
+      review.unhelpful = (review.unhelpful || 0) + 1;
+
+      // If user had marked helpful, remove it
+      if (helpfulByIndex !== -1) {
+        review.helpfulBy.splice(helpfulByIndex, 1);
+        review.helpful = Math.max(0, review.helpful - 1);
+      }
+    }
+
+    await review.save();
     return review;
   }
 

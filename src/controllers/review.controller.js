@@ -184,12 +184,12 @@ export const deleteReview = asyncHandler(async (req, res, next) => {
 /**
  * @desc    Mark review as helpful
  * @route   POST /api/reviews/:reviewId/helpful
- * @access  Public
+ * @access  Private
  */
 export const markHelpful = asyncHandler(async (req, res, next) => {
   const { reviewId } = req.params;
 
-  const review = await reviewService.markHelpful(reviewId);
+  const review = await reviewService.markHelpful(reviewId, req.user._id);
 
   res.status(200).json({
     success: true,
@@ -201,12 +201,12 @@ export const markHelpful = asyncHandler(async (req, res, next) => {
 /**
  * @desc    Mark review as unhelpful
  * @route   POST /api/reviews/:reviewId/unhelpful
- * @access  Public
+ * @access  Private
  */
 export const markUnhelpful = asyncHandler(async (req, res, next) => {
   const { reviewId } = req.params;
 
-  const review = await reviewService.markUnhelpful(reviewId);
+  const review = await reviewService.markUnhelpful(reviewId, req.user._id);
 
   res.status(200).json({
     success: true,

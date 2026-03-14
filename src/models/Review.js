@@ -59,6 +59,16 @@ const reviewSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    helpfulBy: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: "User",
+      default: [],
+    },
+    unhelpfulBy: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: "User",
+      default: [],
+    },
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
