@@ -104,26 +104,47 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
     const product = item.productId;
 
     // Find model for this variant
-    const colorTierIndex = product.tiers?.findIndex(
-      (t) => t.name.toLowerCase() === "color" || t.name.toLowerCase() === "màu sắc",
-    ) ?? -1;
-    const sizeTierIndex = product.tiers?.findIndex(
-      (t) => t.name.toLowerCase() === "size" || t.name.toLowerCase() === "kích thước",
-    ) ?? -1;
+    const colorTierIndex =
+      product.tiers?.findIndex(
+        (t) =>
+          t.name.toLowerCase() === "color" ||
+          t.name.toLowerCase() === "màu sắc",
+      ) ?? -1;
+    const sizeTierIndex =
+      product.tiers?.findIndex(
+        (t) =>
+          t.name.toLowerCase() === "size" ||
+          t.name.toLowerCase() === "kích thước",
+      ) ?? -1;
     const model = product.models?.find((m) => {
-      const colorMatch = colorTierIndex === -1 || product.tiers[colorTierIndex].options[m.tierIndex[colorTierIndex]] === item.color;
-      const sizeMatch = sizeTierIndex === -1 || product.tiers[sizeTierIndex].options[m.tierIndex[sizeTierIndex]] === item.size;
+      const colorMatch =
+        colorTierIndex === -1 ||
+        product.tiers[colorTierIndex].options[m.tierIndex[colorTierIndex]] ===
+          item.color;
+      const sizeMatch =
+        sizeTierIndex === -1 ||
+        product.tiers[sizeTierIndex].options[m.tierIndex[sizeTierIndex]] ===
+          item.size;
       return colorMatch && sizeMatch;
     });
 
     let unitPrice = item.price;
     if (model) {
-      const modelIdx = product.models.findIndex((m) => m._id.toString() === model._id.toString());
-      const flashSaleInfo = await flashSaleService.getFlashSalePrice(product._id, model.price);
+      const modelIdx = product.models.findIndex(
+        (m) => m._id.toString() === model._id.toString(),
+      );
+      const flashSaleInfo = await flashSaleService.getFlashSalePrice(
+        product._id,
+        model.price,
+      );
       if (flashSaleInfo.isFlashSale) {
         unitPrice = flashSaleInfo.price;
       } else {
-        const spInfo = await getShopProgramPriceForVariant(product._id, modelIdx, model.price);
+        const spInfo = await getShopProgramPriceForVariant(
+          product._id,
+          modelIdx,
+          model.price,
+        );
         if (spInfo.isShopProgram) {
           unitPrice = spInfo.price;
         }
@@ -311,7 +332,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     );
     let finalPrice = model.price;
     let isShopProgram = false;
-    const modelIdx = product.models.findIndex((m) => m._id.toString() === model._id.toString());
+    const modelIdx = product.models.findIndex(
+      (m) => m._id.toString() === model._id.toString(),
+    );
 
     if (flashSaleInfo.isFlashSale) {
       finalPrice = flashSaleInfo.price;
@@ -333,6 +356,8 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       model: model,
       product: product,
       flashSaleInfo: flashSaleInfo,
+      finalPrice,
+      isShopProgram,
     });
   }
 
@@ -393,7 +418,14 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 
     // 5. Create Order Items
     const orderItemIds = [];
-    for (const { cartItem, model, product, flashSaleInfo } of validItems) {
+    for (const {
+      cartItem,
+      model,
+      product,
+      flashSaleInfo,
+      finalPrice,
+      isShopProgram,
+    } of validItems) {
       // Create Order Item
       const orderItem = await OrderItem.create(
         [
@@ -468,7 +500,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         "Đặt hàng thành công",
         `Đơn hàng ${createdOrder.orderNumber} của bạn đã được tiếp nhận và đang chờ xác nhận.`,
         "ORDER",
-        { orderId: createdOrder._id.toString() }
+        { orderId: createdOrder._id.toString() },
       );
     } catch (notifErr) {
       console.error("Failed to send buyer notification:", notifErr);

@@ -8,11 +8,12 @@ import { ErrorResponse } from "../utils/errorResponse.js";
  * @access  Private
  */
 export const createReview = asyncHandler(async (req, res, next) => {
-  const { productId, rating, title, content, images, orderId } = req.body;
+  const { productId, rating, title, content, images, orderId, variant } =
+    req.body;
 
   // Validation
-  if (!productId) {
-    return next(new ErrorResponse("Product ID is required", 400));
+  if (!productId && !orderId) {
+    return next(new ErrorResponse("Product ID or Order ID is required", 400));
   }
 
   if (!rating || rating < 1 || rating > 5) {
@@ -34,8 +35,23 @@ export const createReview = asyncHandler(async (req, res, next) => {
     rating: parseInt(rating),
     title: title || null,
     content: content.trim(),
+    variant: variant || null,
     images: images || [],
   };
+
+  if (orderId) {
+    const reviews = await reviewService.createOrUpdateOrderReviews(
+      req.user._id,
+      orderId,
+      reviewData,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Order reviews saved successfully",
+      data: reviews,
+    });
+  }
 
   const review = await reviewService.createReview(
     req.user._id,
@@ -44,10 +60,27 @@ export const createReview = asyncHandler(async (req, res, next) => {
     orderId,
   );
 
-  res.status(201).json({
+  return res.status(201).json({
     success: true,
     message: "Review created successfully",
     data: review,
+  });
+});
+
+/**
+ * @desc    Get current user's reviews for an order
+ * @route   GET /api/reviews/order/:orderId
+ * @access  Private
+ */
+export const getOrderReviews = asyncHandler(async (req, res, next) => {
+  const { orderId } = req.params;
+
+  const reviews = await reviewService.getOrderReviews(req.user._id, orderId);
+
+  res.status(200).json({
+    success: true,
+    message: "Order reviews retrieved successfully",
+    data: reviews,
   });
 });
 
@@ -67,7 +100,11 @@ export const getProductReviews = asyncHandler(async (req, res, next) => {
     sortBy: sortBy || "recent",
   };
 
-  const result = await reviewService.getProductReviews(productId, filters);
+  const result = await reviewService.getProductReviews(
+    productId,
+    filters,
+    req.user?._id || null,
+  );
 
   res.status(200).json({
     success: true,
@@ -126,23 +163,18 @@ export const updateReview = asyncHandler(async (req, res, next) => {
 
   // Basic validation
   if (rating && (rating < 1 || rating > 5)) {
-    return next(
-      new ErrorResponse("Rating must be between 1 and 5", 400),
-    );
+    return next(new ErrorResponse("Rating must be between 1 and 5", 400));
   }
 
   if (content && content.trim().length < 10) {
     return next(
-      new ErrorResponse(
-        "Review content must be at least 10 characters",
-        400,
-      ),
+      new ErrorResponse("Review content must be at least 10 characters", 400),
     );
   }
 
   const updateData = {
     rating: rating ? parseInt(rating) : undefined,
-    title: title !== undefined ? (title || null) : undefined,
+    title: title !== undefined ? title || null : undefined,
     content: content ? content.trim() : undefined,
     images: images || undefined,
   };
@@ -184,12 +216,12 @@ export const deleteReview = asyncHandler(async (req, res, next) => {
 /**
  * @desc    Mark review as helpful
  * @route   POST /api/reviews/:reviewId/helpful
- * @access  Public
+ * @access  Private
  */
 export const markHelpful = asyncHandler(async (req, res, next) => {
   const { reviewId } = req.params;
 
-  const review = await reviewService.markHelpful(reviewId);
+  const review = await reviewService.markHelpful(reviewId, req.user._id);
 
   res.status(200).json({
     success: true,
@@ -201,12 +233,12 @@ export const markHelpful = asyncHandler(async (req, res, next) => {
 /**
  * @desc    Mark review as unhelpful
  * @route   POST /api/reviews/:reviewId/unhelpful
- * @access  Public
+ * @access  Private
  */
 export const markUnhelpful = asyncHandler(async (req, res, next) => {
   const { reviewId } = req.params;
 
-  const review = await reviewService.markUnhelpful(reviewId);
+  const review = await reviewService.markUnhelpful(reviewId, req.user._id);
 
   res.status(200).json({
     success: true,

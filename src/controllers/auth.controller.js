@@ -370,6 +370,7 @@ export const loginWithGoogle = async (req, res) => {
         phone: "",
         reward_point: 0,
         gender: "other",
+        hasPassword: false,
       });
       await user.save();
       console.log("New Google user created:", { avatar: user.avatar, picture });
@@ -395,12 +396,18 @@ export const loginWithGoogle = async (req, res) => {
       } else {
         console.log("Skipping avatar update (custom avatar exists).");
       }
+
+      // Ensure hasPassword is set for existing social users
+      if (user.hasPassword === undefined) {
+        user.hasPassword = false;
+        await user.save();
+        console.log("Initialized hasPassword: false for existing Google user.");
+      }
     }
 
     const { token, refreshToken } = createTokens(user._id, rememberMe);
-    const userObj = user.toObject();
+    const userObj = user.toObject({ defaults: true, versionKey: false });
     delete userObj.password;
-    delete userObj.__v;
 
     res.status(200).json({
       success: true,
@@ -453,6 +460,7 @@ export const loginWithFacebook = async (req, res) => {
         phone: "",
         reward_point: 0,
         gender: "other",
+        hasPassword: false,
       });
 
       await user.save();
@@ -461,12 +469,18 @@ export const loginWithFacebook = async (req, res) => {
         user.avatar = picture;
         await user.save();
       }
+
+      // Ensure hasPassword is set for existing social users
+      if (user.hasPassword === undefined) {
+        user.hasPassword = false;
+        await user.save();
+        console.log("Initialized hasPassword: false for existing Facebook user.");
+      }
     }
 
     const { token, refreshToken } = createTokens(user._id, rememberMe);
-    const userObj = user.toObject();
+    const userObj = user.toObject({ defaults: true, versionKey: false });
     delete userObj.password;
-    delete userObj.__v;
 
     return res.status(200).json({
       success: true,
@@ -637,16 +651,6 @@ export const updateProfile = async (req, res, next) => {
 export const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    logger.info("Change password request", req.body);
-
-    if (!currentPassword || !newPassword) {
-      return next(
-        new ErrorResponse(
-          "Please provide current password and new password",
-          400,
-        ),
-      );
-    }
 
     const user = await User.findById(req.user.id).select("+password");
 
@@ -654,14 +658,20 @@ export const changePassword = async (req, res, next) => {
       return next(new ErrorResponse("User not found", 404));
     }
 
-    // Check current password
-    const isMatch = await user.matchPassword(currentPassword);
-    if (!isMatch) {
-      return next(new ErrorResponse("Current password is incorrect", 401));
+    // Check current password only if user has one
+    if (user.hasPassword) {
+      if (!currentPassword) {
+        return next(new ErrorResponse("Please provide current password", 400));
+      }
+      const isMatch = await user.matchPassword(currentPassword);
+      if (!isMatch) {
+        return next(new ErrorResponse("Current password is incorrect", 401));
+      }
     }
 
     // Update password
     user.password = newPassword;
+    user.hasPassword = true;
     await user.save();
 
     logger.info("User password changed successfully", { userId: user._id });
@@ -672,6 +682,48 @@ export const changePassword = async (req, res, next) => {
     });
   } catch (error) {
     logger.error("Error in changePassword controller", {
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  }
+};
+
+/**
+ * @desc    Set password for first time (social login users)
+ * @route   POST /api/auth/set-password
+ * @access  Private
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ * @returns {Object} Response with success message
+ */
+export const setPassword = async (req, res, next) => {
+  try {
+    const { password } = req.body;
+
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return next(new ErrorResponse("User not found", 404));
+    }
+
+    if (user.hasPassword) {
+      return next(new ErrorResponse("Password already set. Use change password instead.", 400));
+    }
+
+    user.password = password;
+    user.hasPassword = true;
+    await user.save();
+
+    logger.info("User password set successfully", { userId: user._id });
+
+    res.status(200).json({
+      success: true,
+      message: "Password set successfully",
+    });
+  } catch (error) {
+    logger.error("Error in setPassword controller", {
       error: error.message,
       stack: error.stack,
     });
@@ -778,28 +830,6 @@ export const resetPassword = async (req, res, next) => {
       stack: error.stack,
     });
     next(error);
-  }
-};
-
-export const setPassword = async (req, res) => {
-  try {
-    const { password } = req.body;
-    if (!password || password.length < 6) {
-      return res
-        .status(400)
-        .json({ message: "Password must be at least 6 characters" });
-    }
-
-    const user = req.user;
-    user.password = password;
-    await user.save();
-
-    res
-      .status(200)
-      .json({ success: true, message: "Set password successfully" });
-  } catch (error) {
-    console.error("Set password error:", error);
-    res.status(500).json({ message: "Set password failed" });
   }
 };
 
