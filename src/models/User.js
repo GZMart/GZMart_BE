@@ -171,6 +171,10 @@ const userSchema = new mongoose.Schema(
         cooldownHours: { type: Number, default: 24 }, // 24 hours cooldown before sending another auto-reply
       },
     },
+    hasPassword: {
+      type: Boolean,
+      default: true,
+    },
   },
   {
     timestamps: true,
