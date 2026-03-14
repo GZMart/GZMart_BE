@@ -199,7 +199,10 @@ export const createProduct = async (productData, sellerId) => {
     counter++;
   }
 
-  const totalStock = models.reduce((sum, model) => sum + model.stock, 0);
+  const totalStock = models.reduce(
+    (sum, model) => sum + (Number(model.stock) || 0),
+    0,
+  );
   const status = totalStock > 0 ? "active" : "out_of_stock";
 
   const product = new Product({
