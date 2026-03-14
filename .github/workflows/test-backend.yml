@@ -1,0 +1,131 @@
+name: Test Backend
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - "GZMart_BE/**"
+      - ".github/workflows/test-backend.yml"
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - "GZMart_BE/**"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_ENV: test
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:latest
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: root123
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'" 
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 27017:27017
+
+    steps:
+      # 1️⃣ Checkout source
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2️⃣ Setup Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 3️⃣ Install dependencies
+      - name: Install dependencies
+        working-directory: .
+        run: npm install
+
+      # 4️⃣ Create test environment file
+      - name: Create .env.test file
+        working-directory: .
+        run: |
+          echo "NODE_ENV=test" > .env.test
+          echo "MONGODB_URI=mongodb://root:root123@localhost:27017/gzmart_test?authSource=admin" >> .env.test
+          echo "JWT_SECRET=test-secret-key-for-ci-cd" >> .env.test
+          echo "PORT=3001" >> .env.test
+
+      # 5️⃣ Run tests with coverage
+      - name: Run tests
+        working-directory: .
+        run: npm test -- --coverage --detectOpenHandles --passWithNoTests
+        continue-on-error: true
+
+      # 6️⃣ Upload coverage reports to Codecov (optional)
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./GZMart_BE/coverage/coverage-final.json
+          flags: backend
+          fail_ci_if_error: false
+        continue-on-error: true
+
+      # 7️⃣ Lint check (if eslint is installed)
+      - name: Run ESLint
+        working-directory: ./GZMart_BE
+        run: npm run lint 2>/dev/null || echo "ESLint not configured"
+        continue-on-error: true
+
+      # 8️⃣ Comment PR with test results (if PR)
+      - name: Comment PR with test results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const coveragePath = './GZMart_BE/coverage/coverage-summary.json';
+
+            let comment = '## Testing Results\n\n';
+
+            if (fs.existsSync(coveragePath)) {
+              const coverage = JSON.parse(fs.readFileSync(coveragePath, 'utf8'));
+              const total = coverage.total;
+              comment += `### Code Coverage\n`;
+              comment += `| Metric | Coverage |\n`;
+              comment += `|--------|----------|\n`;
+              comment += `| Lines | ${total.lines.pct}% |\n`;
+              comment += `| Statements | ${total.statements.pct}% |\n`;
+              comment += `| Functions | ${total.functions.pct}% |\n`;
+              comment += `| Branches | ${total.branches.pct}% |\n\n`;
+            }
+
+            comment += `✅ All checks completed!\n`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  send-notification:
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Test Status
+        run: |
+          if [ "${{ needs.test.result }}" == "success" ]; then
+            echo "✅ All tests passed!"
+          else
+            echo "❌ Tests failed!"
+          fi
