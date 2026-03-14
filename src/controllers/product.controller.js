@@ -148,6 +148,7 @@ export const getProductsAdvanced = asyncHandler(async (req, res, next) => {
     page,
     limit,
     categoryId,
+    category, // slug-based filter from storefront
     brand,
     color,
   } = req.query;
@@ -159,6 +160,7 @@ export const getProductsAdvanced = asyncHandler(async (req, res, next) => {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
     categoryId,
+    categorySlug: category, // resolve slug → _id in service
     brands: brand ? (Array.isArray(brand) ? brand : [brand]) : [],
     colors: color ? (Array.isArray(color) ? color : [color]) : [],
     sizes: size ? (Array.isArray(size) ? size : [size]) : [],
@@ -473,7 +475,7 @@ export const getProductsBySeller = asyncHandler(async (req, res, next) => {
     },
     data: {
       seller: result.seller,
-      products: result.products
+      products: result.products,
     },
   });
 });

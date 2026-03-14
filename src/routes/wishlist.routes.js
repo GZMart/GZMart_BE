@@ -1,5 +1,5 @@
 import express from "express";
-import * as favouriteController from "../controllers/favourite.controller.js";
+import * as wishlistController from "../controllers/wishlist.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 
@@ -9,42 +9,42 @@ router.use(protect);
 
 /**
  * @swagger
- * /api/favourites:
+ * /api/wishlists:
  *   get:
- *     tags: [Favourites]
- *     summary: Get user favourites
+ *     tags: [Wishlists]
+ *     summary: Get user wishlists
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
  *         description: Success
  *   post:
- *     tags: [Favourites]
- *     summary: Add to favourites
+ *     tags: [Wishlists]
+ *     summary: Add to wishlists
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
  *         description: Success
  *   delete:
- *     tags: [Favourites]
- *     summary: Clear all favourites
+ *     tags: [Wishlists]
+ *     summary: Clear all wishlists
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
  *         description: Success
  */
-router.get("/", asyncHandler(favouriteController.getUserFavourites));
-router.post("/", asyncHandler(favouriteController.addToFavourites));
-router.delete("/", asyncHandler(favouriteController.clearFavourites));
+router.get("/", asyncHandler(wishlistController.getUserWishlists));
+router.post("/", asyncHandler(wishlistController.addToWishlists));
+router.delete("/", asyncHandler(wishlistController.clearWishlists));
 
 /**
  * @swagger
- * /api/favourites/{productId}:
+ * /api/wishlists/{productId}:
  *   delete:
- *     tags: [Favourites]
- *     summary: Remove from favourites
+ *     tags: [Wishlists]
+ *     summary: Remove from wishlists
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -59,15 +59,15 @@ router.delete("/", asyncHandler(favouriteController.clearFavourites));
  */
 router.delete(
   "/:productId",
-  asyncHandler(favouriteController.removeFromFavourites),
+  asyncHandler(wishlistController.removeFromWishlists),
 );
 
 /**
  * @swagger
- * /api/favourites/check/{productId}:
+ * /api/wishlists/check/{productId}:
  *   get:
- *     tags: [Favourites]
- *     summary: Check if in favourites
+ *     tags: [Wishlists]
+ *     summary: Check if in wishlists
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -82,7 +82,7 @@ router.delete(
  */
 router.get(
   "/check/:productId",
-  asyncHandler(favouriteController.checkInFavourites),
+  asyncHandler(wishlistController.checkInWishlists),
 );
 
 export default router;

@@ -340,8 +340,8 @@ const options = {
         description: "Search functionality endpoints",
       },
       {
-        name: "Favourites",
-        description: "User favourites endpoints",
+        name: "Wishlists",
+        description: "User wishlists endpoints",
       },
       {
         name: "Deals",
