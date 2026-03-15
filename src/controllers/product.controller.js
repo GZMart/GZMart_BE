@@ -344,6 +344,23 @@ export const getTrendingProducts = asyncHandler(async (req, res, next) => {
 });
 
 /**
+ * @desc    Get today's recommendations
+ * @route   GET /api/products/today-recommendations
+ * @access  Public
+ */
+export const getTodayRecommendations = asyncHandler(async (req, res, next) => {
+  const { limit = 10 } = req.query;
+  const products = await productService.getTodayRecommendations(
+    parseInt(limit),
+  );
+
+  res.status(200).json({
+    success: true,
+    data: products,
+  });
+});
+
+/**
  * @desc    Get new arrivals
  * @route   GET /api/products/new-arrivals
  * @access  Public

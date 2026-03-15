@@ -7,6 +7,76 @@ import User from "../models/User.js";
 import InventoryItem from "../models/InventoryItem.js";
 import { rollbackOrderResources } from "../utils/orderInventory.js";
 import coinService from "./coin.service.js";
+import NotificationService from "./notification.service.js";
+import { getSocketIO } from "../utils/socketIO.js";
+
+const emitRmaUpdate = (returnRequest, extra = {}) => {
+  try {
+    const io = getSocketIO();
+    if (!io || !returnRequest) {
+      return;
+    }
+
+    const payload = {
+      returnRequestId: returnRequest._id?.toString?.() || returnRequest._id,
+      orderId:
+        returnRequest.orderId?._id?.toString?.() || returnRequest.orderId,
+      userId: returnRequest.userId?._id?.toString?.() || returnRequest.userId,
+      status: returnRequest.status,
+      type: returnRequest.type,
+      refundAmount: returnRequest.refund?.amount || 0,
+      updatedAt: new Date().toISOString(),
+      ...extra,
+    };
+
+    io.emit("rma:request-updated", payload);
+    if (payload.returnRequestId) {
+      io.emit(`rma:request-updated:${payload.returnRequestId}`, payload);
+    }
+
+    const buyerId = payload.userId;
+    if (buyerId) {
+      io.to(`user_${buyerId}`).emit("rma:request-updated", payload);
+      if (payload.returnRequestId) {
+        io.to(`user_${buyerId}`).emit(
+          `rma:request-updated:${payload.returnRequestId}`,
+          payload,
+        );
+      }
+    }
+  } catch (error) {
+    console.error("[RMA] Failed to emit realtime update:", error);
+  }
+};
+
+const ensureLogisticsSteps = (returnRequest) => {
+  if (!returnRequest.logistics) {
+    returnRequest.logistics = { flowType: null, currentStep: null, steps: [] };
+  }
+  if (!Array.isArray(returnRequest.logistics.steps)) {
+    returnRequest.logistics.steps = [];
+  }
+};
+
+const upsertLogisticsStep = (returnRequest, code, patch = {}) => {
+  ensureLogisticsSteps(returnRequest);
+  const existing = returnRequest.logistics.steps.find(
+    (step) => step.code === code,
+  );
+  if (existing) {
+    Object.assign(existing, patch);
+    return existing;
+  }
+
+  const next = {
+    code,
+    title: patch.title || code,
+    completed: false,
+    ...patch,
+  };
+  returnRequest.logistics.steps.push(next);
+  return next;
+};
 
 /**
  * RMA Service - Return Merchandise Authorization
@@ -22,7 +92,15 @@ export const createReturnRequest = async (data) => {
   try {
     session.startTransaction();
 
-    const { orderId, userId, type, reason, description, images, items } = data;
+    const {
+      orderId,
+      userId,
+      type = "undetermined",
+      reason,
+      description,
+      images,
+      items,
+    } = data;
 
     // 1. Check eligibility
     const eligibility = await ReturnRequest.checkEligibility(orderId);
@@ -126,14 +204,23 @@ export const createReturnRequest = async (data) => {
           images: images || [],
           items: validatedItems,
           status: "pending",
-          refund:
-            type === "refund"
-              ? {
-                  amount: totalRefundAmount,
-                  coinAmount: Math.round(totalRefundAmount), // 1 VND = 1 coin
-                }
-              : undefined,
+          refund: {
+            amount: totalRefundAmount,
+            coinAmount: Math.round(totalRefundAmount), // 1 VND = 1 coin
+          },
           returnShipping,
+          logistics: {
+            flowType: null,
+            currentStep: "buyer_submitted",
+            steps: [
+              {
+                code: "buyer_submitted",
+                title: "Buyer submitted return/refund request",
+                completed: true,
+                completedAt: new Date(),
+              },
+            ],
+          },
           eligibility: {
             isEligible: true,
             orderDeliveredDate: eligibility.deliveredDate,
@@ -157,6 +244,10 @@ export const createReturnRequest = async (data) => {
     await session.commitTransaction();
     session.endSession();
 
+    emitRmaUpdate(returnRequest[0], {
+      event: "created",
+    });
+
     console.log(
       `[RMA] Created return request ${returnRequest[0].requestNumber} for order ${order.orderNumber}`,
     );
@@ -176,6 +267,7 @@ export const createReturnRequest = async (data) => {
 export const respondToReturnRequest = async (
   requestId,
   decision,
+  resolutionType,
   respondedBy,
   notes,
 ) => {
@@ -207,10 +299,73 @@ export const respondToReturnRequest = async (
     };
 
     if (decision === "approve") {
+      if (!["refund", "exchange"].includes(resolutionType)) {
+        throw new Error("Resolution type must be 'refund' or 'exchange'");
+      }
+
+      returnRequest.type = resolutionType;
       returnRequest.status = "approved";
+      returnRequest.logistics = {
+        ...(returnRequest.logistics || {}),
+        flowType: resolutionType,
+        currentStep:
+          resolutionType === "exchange"
+            ? "seller_pack_and_handover"
+            : "seller_to_buyer_in_transit",
+        steps:
+          resolutionType === "exchange"
+            ? [
+                {
+                  code: "seller_pack_and_handover",
+                  title: "Seller packs replacement item and hands to shipper",
+                  completed: false,
+                },
+                {
+                  code: "shipper_deliver_and_collect",
+                  title:
+                    "Shipper delivers replacement to buyer and collects faulty item",
+                  completed: false,
+                },
+                {
+                  code: "shipper_return_to_seller",
+                  title: "Shipper returns faulty item back to seller warehouse",
+                  completed: false,
+                },
+                {
+                  code: "exchange_completed",
+                  title: "Exchange flow is completed",
+                  completed: false,
+                },
+              ]
+            : [
+                {
+                  code: "seller_to_buyer_in_transit",
+                  title:
+                    "Shipper is delivering return flow package from seller to buyer",
+                  completed: false,
+                },
+                {
+                  code: "buyer_confirmed_handover",
+                  title: "Buyer confirmed handover of faulty item",
+                  completed: false,
+                },
+                {
+                  code: "buyer_to_seller_in_transit",
+                  title:
+                    "Shipper is returning faulty item from buyer back to seller",
+                  completed: false,
+                },
+                {
+                  code: "seller_confirmed_faulty_received",
+                  title: "Seller confirmed receiving faulty item",
+                  completed: false,
+                },
+              ],
+      };
+
       returnRequest.timeline.push({
         status: "approved",
-        description: "Seller approved return request",
+        description: `Seller approved request with ${resolutionType.toUpperCase()} resolution`,
         updatedAt: new Date(),
         updatedBy: respondedBy,
         role: "seller",
@@ -233,9 +388,30 @@ export const respondToReturnRequest = async (
     await session.commitTransaction();
     session.endSession();
 
+    await NotificationService.createNotification(
+      returnRequest.userId,
+      decision === "approve"
+        ? "Return Request Approved"
+        : "Return Request Rejected",
+      decision === "approve"
+        ? `Seller approved your request #${returnRequest.requestNumber} with ${returnRequest.type} resolution.`
+        : `Seller rejected your request #${returnRequest.requestNumber}.`,
+      "ORDER",
+      {
+        orderId: returnRequest.orderId,
+        returnRequestId: returnRequest._id,
+        returnStatus: returnRequest.status,
+        resolution: returnRequest.type,
+      },
+    );
+
     console.log(
       `[RMA] Seller ${decision} return request ${returnRequest.requestNumber}`,
     );
+
+    emitRmaUpdate(returnRequest, {
+      event: decision === "approve" ? "seller_approved" : "seller_rejected",
+    });
 
     return returnRequest;
   } catch (error) {
@@ -338,9 +514,27 @@ export const processRefund = async (returnRequestId) => {
     await session.commitTransaction();
     session.endSession();
 
+    await NotificationService.createNotification(
+      returnRequest.userId,
+      "Refund Completed",
+      `${coinAmount} GZCoin has been credited for order ${order.orderNumber}.`,
+      "ORDER",
+      {
+        orderId: order._id,
+        returnRequestId: returnRequest._id,
+        returnStatus: returnRequest.status,
+        coinAmount,
+      },
+    );
+
     console.log(
       `[RMA] Refund processed: ${coinAmount} coins added to user wallet (no expiration)`,
     );
+
+    emitRmaUpdate(returnRequest, {
+      event: "refund_completed",
+      coinAmount,
+    });
 
     return {
       returnRequest,
@@ -387,143 +581,38 @@ export const processExchange = async (returnRequestId) => {
     }
 
     const order = returnRequest.orderId;
+    // Mark exchange flow as completed. In this codebase, replacement shipment is tracked via RMA
+    // timeline and logistics steps rather than creating a synthetic order record.
+    const priceDifference = 0;
 
-    // 1. Rollback old items stock (trả hàng cũ về kho)
-    console.log("[RMA Exchange] Rolling back old items to inventory...");
-    for (const item of returnRequest.items) {
-      const orderItem = await OrderItem.findById(item.orderItemId).session(
-        session,
-      );
-      if (orderItem && orderItem.variantId) {
-        const oldVariant = await InventoryItem.findById(
-          orderItem.variantId,
-        ).session(session);
-        if (oldVariant) {
-          oldVariant.stock += item.quantity;
-          await oldVariant.save({ session });
-          console.log(
-            `[RMA Exchange] Restored ${item.quantity} units to ${orderItem.variantName} (Stock: ${oldVariant.stock})`,
-          );
-        }
-      }
-    }
-
-    // 2. Validate exchange items have stock
-    for (const item of returnRequest.items) {
-      if (item.exchangeToVariantId) {
-        const variant = await InventoryItem.findById(
-          item.exchangeToVariantId,
-        ).session(session);
-
-        if (!variant) {
-          throw new Error(
-            `Exchange variant not found: ${item.exchangeToVariantName}`,
-          );
-        }
-
-        if (variant.stock < item.quantity) {
-          throw new Error(
-            `Insufficient stock for ${item.exchangeToVariantName}. Available: ${variant.stock}`,
-          );
-        }
-      }
-    }
-
-    // 3. Calculate price difference
-    let priceDifference = 0;
-    for (const item of returnRequest.items) {
-      if (item.exchangeToVariantId) {
-        const newVariant = await InventoryItem.findById(
-          item.exchangeToVariantId,
-        ).session(session);
-        const originalPrice = item.price;
-        const newPrice = newVariant.price;
-        priceDifference += (newPrice - originalPrice) * item.quantity;
-      }
-    }
-
-    console.log(`[RMA Exchange] Price difference: ${priceDifference} VND`);
-
-    // 4. Create new order items for exchange
-    const newOrderItems = [];
-    for (const item of returnRequest.items) {
-      if (item.exchangeToVariantId) {
-        const newVariant = await InventoryItem.findById(
-          item.exchangeToVariantId,
-        ).session(session);
-
-        const orderItem = await OrderItem.create(
-          [
-            {
-              productId: item.productId,
-              productName: item.productName,
-              variantId: item.exchangeToVariantId,
-              variantName: item.exchangeToVariantName,
-              quantity: item.quantity,
-              price: newVariant.price,
-              finalPrice: newVariant.price,
-              image: newVariant.image || item.orderItemId.image,
-              sku: newVariant.sku,
-            },
-          ],
-          { session },
-        );
-
-        newOrderItems.push(orderItem[0]._id);
-
-        // Deduct stock
-        newVariant.stock -= item.quantity;
-        await newVariant.save({ session });
-      }
-    }
-
-    // 5. Create new exchange order
-    const newOrder = await Order.create(
-      [
-        {
-          userId: order.userId,
-          orderNumber: `EXG-${order.orderNumber}`,
-          status: "processing",
-          totalPrice: Math.max(0, priceDifference),
-          subtotal: Math.max(0, priceDifference),
-          shippingAddress: order.shippingAddress,
-          shippingMethod: order.shippingMethod,
-          shippingCost: 0, // Free shipping for exchange
-          paymentMethod: priceDifference > 0 ? "wallet" : "cod", // Use wallet if buyer needs to pay difference
-          paymentStatus: priceDifference > 0 ? "pending" : "paid",
-          items: newOrderItems,
-          notes: `Exchange from order ${order.orderNumber} (${returnRequest.requestNumber})`,
-          resourcesDeducted: true,
-        },
-      ],
-      { session },
-    );
-
-    // 6. Update return request
     returnRequest.exchange = {
-      newOrderId: newOrder[0]._id,
+      newOrderId: null,
       priceDifference,
-      additionalPaymentRequired: priceDifference > 0,
+      additionalPaymentRequired: false,
       exchangedAt: new Date(),
     };
     returnRequest.status = "completed";
+    returnRequest.logistics = {
+      ...(returnRequest.logistics || {}),
+      currentStep: "exchange_completed",
+    };
     returnRequest.timeline.push({
       status: "completed",
-      description: `Exchange processed. New order: ${newOrder[0].orderNumber}`,
+      description: "Exchange processed successfully",
       updatedAt: new Date(),
       role: "system",
     });
 
     await returnRequest.save({ session });
 
-    // 7. Update original order
+    // Update original order
     order.status = "refunded"; // Mark original as refunded/exchanged
     order.statusHistory.push({
       status: "refunded",
       changedByRole: "system",
       changedAt: new Date(),
       reason: `Exchanged via ${returnRequest.requestNumber}`,
-      notes: `New order: ${newOrder[0].orderNumber}`,
+      notes: "Replacement flow completed",
     });
 
     await order.save({ session });
@@ -531,13 +620,30 @@ export const processExchange = async (returnRequestId) => {
     await session.commitTransaction();
     session.endSession();
 
-    console.log(
-      `[RMA] Exchange processed: Created new order ${newOrder[0].orderNumber}`,
+    await NotificationService.createNotification(
+      returnRequest.userId,
+      "Exchange Processed",
+      `Your exchange for order ${order.orderNumber} has been processed successfully.`,
+      "ORDER",
+      {
+        orderId: order._id,
+        newOrderId: null,
+        returnRequestId: returnRequest._id,
+        returnStatus: returnRequest.status,
+      },
     );
+
+    console.log(
+      `[RMA] Exchange processed for request ${returnRequest.requestNumber}`,
+    );
+
+    emitRmaUpdate(returnRequest, {
+      event: "exchange_completed",
+    });
 
     return {
       returnRequest,
-      newOrder: newOrder[0],
+      newOrder: null,
       priceDifference,
     };
   } catch (error) {
@@ -562,6 +668,10 @@ export const getUserReturnRequests = async (userId, filters = {}) => {
     query.type = filters.type;
   }
 
+  if (filters.orderId) {
+    query.orderId = filters.orderId;
+  }
+
   const returnRequests = await ReturnRequest.find(query)
     .populate("orderId", "orderNumber totalPrice status")
     .populate("items.orderItemId")
@@ -569,6 +679,16 @@ export const getUserReturnRequests = async (userId, filters = {}) => {
     .limit(filters.limit || 50);
 
   return returnRequests;
+};
+
+export const getOrderReturnRequestForBuyer = async (userId, orderId) => {
+  return ReturnRequest.findOne({
+    userId,
+    orderId,
+    isActive: true,
+  })
+    .populate("orderId", "orderNumber status")
+    .sort({ createdAt: -1 });
 };
 
 /**
@@ -590,7 +710,47 @@ export const getSellerReturnRequests = async (sellerId, filters = {}) => {
     .sort({ createdAt: -1 })
     .limit(filters.limit || 50);
 
-  return returnRequests;
+  const withStockSignals = await Promise.all(
+    returnRequests.map(async (requestDoc) => {
+      const request = requestDoc.toObject();
+
+      const stockChecks = await Promise.all(
+        (request.items || []).map(async (item) => {
+          const modelId = item.orderItemId?.modelId;
+          const productId = item.productId;
+
+          if (!modelId || !productId) {
+            return {
+              itemId: item.orderItemId?._id || item.orderItemId,
+              requestedQty: item.quantity || 0,
+              availableQty: 0,
+              canExchange: false,
+            };
+          }
+
+          const inventory = await InventoryItem.findOne({ productId, modelId });
+          const availableQty =
+            inventory?.availableQuantity ?? inventory?.quantity ?? 0;
+
+          return {
+            itemId: item.orderItemId?._id || item.orderItemId,
+            requestedQty: item.quantity || 0,
+            availableQty,
+            canExchange: availableQty >= (item.quantity || 0),
+          };
+        }),
+      );
+
+      request.exchangeEligibility = {
+        canExchange: stockChecks.every((s) => s.canExchange),
+        checks: stockChecks,
+      };
+
+      return request;
+    }),
+  );
+
+  return withStockSignals;
 };
 
 /**
@@ -687,11 +847,141 @@ export const updateReturnShipping = async (
       `[RMA] Buyer updated shipping for request ${returnRequest.requestNumber}`,
     );
 
+    emitRmaUpdate(returnRequest, {
+      event: "items_returned",
+    });
+
     return returnRequest;
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
     console.error("[RMA] Error updating return shipping:", error);
+    throw error;
+  }
+};
+
+/**
+ * Buyer confirms faulty item handover after first-leg delivery reaches buyer.
+ */
+export const confirmBuyerHandover = async (returnRequestId, userId, notes) => {
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const returnRequest =
+      await ReturnRequest.findById(returnRequestId).session(session);
+
+    if (!returnRequest) {
+      throw new Error("Return request not found");
+    }
+
+    if (returnRequest.userId.toString() !== userId.toString()) {
+      throw new Error("You don't have permission to confirm this handover");
+    }
+
+    if (!["approved", "items_returned"].includes(returnRequest.status)) {
+      throw new Error(
+        `Cannot confirm handover for status: ${returnRequest.status}. Must be approved or items_returned.`,
+      );
+    }
+
+    const now = new Date();
+
+    if (returnRequest.type === "refund") {
+      upsertLogisticsStep(returnRequest, "seller_to_buyer_in_transit", {
+        title: "Shipper is delivering return flow package from seller to buyer",
+        completed: true,
+        completedAt: now,
+      });
+
+      upsertLogisticsStep(returnRequest, "buyer_confirmed_handover", {
+        title: "Buyer confirmed handover of faulty item",
+        completed: true,
+        completedAt: now,
+        note: notes,
+      });
+
+      upsertLogisticsStep(returnRequest, "buyer_to_seller_in_transit", {
+        title: "Shipper is returning faulty item from buyer back to seller",
+        completed: false,
+      });
+
+      returnRequest.status = "items_returned";
+      returnRequest.logistics = {
+        ...(returnRequest.logistics || {}),
+        flowType: "refund",
+        currentStep: "buyer_to_seller_in_transit",
+      };
+
+      returnRequest.timeline.push({
+        status: "items_returned",
+        description:
+          "Buyer confirmed handover. Shipment is now returning to seller",
+        updatedAt: now,
+        updatedBy: userId,
+        role: "buyer",
+        notes,
+      });
+    } else if (returnRequest.type === "exchange") {
+      upsertLogisticsStep(returnRequest, "seller_pack_and_handover", {
+        title: "Seller packs replacement item and hands to shipper",
+        completed: true,
+        completedAt: now,
+      });
+
+      upsertLogisticsStep(returnRequest, "shipper_deliver_and_collect", {
+        title: "Shipper delivers replacement to buyer and collects faulty item",
+        completed: true,
+        completedAt: now,
+        note: notes,
+      });
+
+      upsertLogisticsStep(returnRequest, "shipper_return_to_seller", {
+        title: "Shipper returns faulty item back to seller warehouse",
+        completed: false,
+      });
+
+      upsertLogisticsStep(returnRequest, "exchange_completed", {
+        title: "Exchange flow is completed",
+        completed: false,
+      });
+
+      returnRequest.status = "items_returned";
+      returnRequest.logistics = {
+        ...(returnRequest.logistics || {}),
+        flowType: "exchange",
+        currentStep: "shipper_return_to_seller",
+      };
+
+      returnRequest.timeline.push({
+        status: "items_returned",
+        description:
+          "Buyer confirmed delivery/collection handover. Faulty item is returning to seller",
+        updatedAt: now,
+        updatedBy: userId,
+        role: "buyer",
+        notes,
+      });
+    } else {
+      throw new Error(
+        "Buyer handover confirmation is only available for refund or exchange flow",
+      );
+    }
+
+    await returnRequest.save({ session });
+    await session.commitTransaction();
+    session.endSession();
+
+    emitRmaUpdate(returnRequest, {
+      event: "buyer_confirmed_handover",
+    });
+
+    return returnRequest;
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("[RMA] Error confirming buyer handover:", error);
     throw error;
   }
 };
@@ -723,11 +1013,44 @@ export const confirmItemsReceived = async (
       );
     }
 
+    if (returnRequest.type === "refund") {
+      upsertLogisticsStep(returnRequest, "buyer_to_seller_in_transit", {
+        title: "Shipper is returning faulty item from buyer back to seller",
+        completed: true,
+        completedAt: new Date(),
+      });
+
+      upsertLogisticsStep(returnRequest, "seller_confirmed_faulty_received", {
+        title: "Seller confirmed receiving faulty item",
+        completed: true,
+        completedAt: new Date(),
+        note: notes,
+      });
+    } else if (returnRequest.type === "exchange") {
+      upsertLogisticsStep(returnRequest, "shipper_return_to_seller", {
+        title: "Shipper returns faulty item back to seller warehouse",
+        completed: true,
+        completedAt: new Date(),
+      });
+
+      upsertLogisticsStep(returnRequest, "exchange_completed", {
+        title: "Exchange flow is completed",
+        completed: false,
+      });
+    }
+
     // Update shipping info
     returnRequest.returnShipping.actualReturnDate = new Date();
 
     // Update status to processing (ready for refund/exchange)
     returnRequest.status = "processing";
+    returnRequest.logistics = {
+      ...(returnRequest.logistics || {}),
+      currentStep:
+        returnRequest.type === "exchange"
+          ? "shipper_return_to_seller"
+          : "seller_confirmed_faulty_received",
+    };
     returnRequest.timeline.push({
       status: "processing",
       description: "Seller confirmed receiving returned items",
@@ -742,9 +1065,30 @@ export const confirmItemsReceived = async (
     await session.commitTransaction();
     session.endSession();
 
+    // Refund flow: auto credit GZCoin immediately after seller confirms receipt.
+    if (returnRequest.type === "refund") {
+      const refundResult = await processRefund(returnRequestId);
+      return {
+        ...refundResult,
+        autoRefund: true,
+      };
+    }
+
+    if (returnRequest.type === "exchange") {
+      const exchangeResult = await processExchange(returnRequestId);
+      return {
+        ...exchangeResult,
+        autoExchange: true,
+      };
+    }
+
     console.log(
       `[RMA] Seller confirmed items received for request ${returnRequest.requestNumber}`,
     );
+
+    emitRmaUpdate(returnRequest, {
+      event: "seller_confirmed_receipt",
+    });
 
     return returnRequest;
   } catch (error) {
@@ -785,6 +1129,9 @@ export const autoApproveExpiredRequests = async () => {
 
       await request.save();
       console.log(`[RMA] Auto-approved request: ${request.requestNumber}`);
+      emitRmaUpdate(request, {
+        event: "auto_approved",
+      });
     }
 
     return expiredRequests.length;
@@ -802,6 +1149,7 @@ export default {
   getUserReturnRequests,
   getSellerReturnRequests,
   updateReturnShipping,
+  confirmBuyerHandover,
   confirmItemsReceived,
   autoApproveExpiredRequests,
 };

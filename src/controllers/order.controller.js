@@ -9,6 +9,8 @@ import InventoryTransaction from "../models/InventoryTransaction.js";
 import Voucher from "../models/Voucher.js";
 import Deal from "../models/Deal.js";
 import User from "../models/User.js";
+import Coin from "../models/Coin.js";
+import WalletTransaction from "../models/WalletTransaction.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import * as flashSaleService from "../services/flashsale.service.js";
@@ -61,9 +63,125 @@ const calculateShippingFee = (subtotal, city = "") => {
   return 35000;
 };
 
+const normalizeFee = (value, fallback = 0) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.round(parsed);
+};
+
 // Helper: Generate Order Number
 const generateOrderNumber = () => {
   return "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
+};
+
+// Deduct GZCoin using packets with nearest expiration first.
+const deductCoinsForOrder = async ({
+  user,
+  requestedAmount,
+  orderId,
+  orderNumber,
+  session,
+}) => {
+  const amountToDeduct = Math.max(0, Math.floor(Number(requestedAmount || 0)));
+  if (amountToDeduct <= 0) {
+    return {
+      deductedAmount: 0,
+      usageDetails: [],
+      balanceBefore: user.reward_point || 0,
+      balanceAfter: user.reward_point || 0,
+    };
+  }
+
+  const now = new Date();
+
+  const expiringPackets = await Coin.find({
+    userId: user._id,
+    status: "active",
+    remainingAmount: { $gt: 0 },
+    expiresAt: { $ne: null, $gt: now },
+  })
+    .sort({ expiresAt: 1, createdAt: 1 })
+    .session(session);
+
+  const neverExpirePackets = await Coin.find({
+    userId: user._id,
+    status: "active",
+    remainingAmount: { $gt: 0 },
+    expiresAt: null,
+  })
+    .sort({ createdAt: 1 })
+    .session(session);
+
+  const packets = [...expiringPackets, ...neverExpirePackets];
+
+  let remaining = amountToDeduct;
+  const usageDetails = [];
+
+  for (const packet of packets) {
+    if (remaining <= 0) break;
+
+    const useAmount = Math.min(packet.remainingAmount, remaining);
+    packet.remainingAmount -= useAmount;
+    if (packet.remainingAmount === 0) {
+      packet.status = "depleted";
+    }
+    await packet.save({ session });
+
+    usageDetails.push({
+      packetId: packet._id,
+      source: packet.source,
+      amountUsed: useAmount,
+      expiresAt: packet.expiresAt,
+      remainingInPacket: packet.remainingAmount,
+    });
+
+    remaining -= useAmount;
+  }
+
+  const deductedAmount = amountToDeduct - remaining;
+
+  if (deductedAmount <= 0) {
+    return {
+      deductedAmount: 0,
+      usageDetails: [],
+      balanceBefore: user.reward_point || 0,
+      balanceAfter: user.reward_point || 0,
+    };
+  }
+
+  const balanceBefore = user.reward_point || 0;
+  const balanceAfter = Math.max(0, balanceBefore - deductedAmount);
+
+  await WalletTransaction.create(
+    [
+      {
+        userId: user._id,
+        type: "purchase",
+        amount: -deductedAmount,
+        balanceBefore,
+        balanceAfter,
+        description: `Use GZCoin for order ${orderNumber}`,
+        reference: { orderId },
+        status: "completed",
+        metadata: {
+          packetsUsed: usageDetails,
+        },
+      },
+    ],
+    { session },
+  );
+
+  user.reward_point = balanceAfter;
+  await user.save({ session });
+
+  return {
+    deductedAmount,
+    usageDetails,
+    balanceBefore,
+    balanceAfter,
+  };
 };
 
 // Helper to check stock via InventoryItem (source of truth)
@@ -77,7 +195,7 @@ const checkStock = async (productId, sku, qty, modelStock = 0) => {
 // @route   POST /api/orders/preview
 // @access  Private
 export const previewOrder = asyncHandler(async (req, res, next) => {
-  const { city, voucherIds, cartItemIds } = req.body;
+  const { city, voucherIds, cartItemIds, shippingCost, giftBoxFee } = req.body;
 
   // 1. Get Cart
   const cart = await Cart.findOne({ userId: req.user._id });
@@ -166,15 +284,19 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
   const discount = totalDiscount;
 
   // 4. Calculate Fees
-  const shippingCost = calculateShippingFee(subtotal, city);
+  const computedShippingCost = calculateShippingFee(subtotal, city);
+  const appliedShippingCost = normalizeFee(shippingCost, computedShippingCost);
+  const appliedGiftBoxFee = normalizeFee(giftBoxFee, 0);
   const tax = 0;
-  const total = subtotal + shippingCost + tax - discount;
+  const total =
+    subtotal + appliedShippingCost + tax - discount + appliedGiftBoxFee;
 
   res.status(200).json({
     success: true,
     data: {
       subtotal,
-      shippingCost,
+      shippingCost: appliedShippingCost,
+      giftBoxFee: appliedGiftBoxFee,
       tax,
       discount,
       total,
@@ -192,6 +314,10 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   const {
     shippingAddress,
     paymentMethod,
+    shippingMethod,
+    shippingCost,
+    giftBoxFee,
+    includeGiftBox,
     notes,
     city,
     quantity,
@@ -380,9 +506,17 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   const discount = totalDiscount;
 
   // 4. Calculate Totals
-  const shippingCost = calculateShippingFee(subtotal, city || shippingAddress);
+  const computedShippingCost = calculateShippingFee(
+    subtotal,
+    city || shippingAddress,
+  );
+  const appliedShippingCost = normalizeFee(shippingCost, computedShippingCost);
+  const appliedGiftBoxFee = normalizeFee(giftBoxFee, 0);
   const tax = 0;
-  const totalPrice = subtotal + shippingCost + tax - discount;
+  const payableBeforeCoin = Math.max(
+    0,
+    subtotal + appliedShippingCost + tax - discount + appliedGiftBoxFee,
+  );
 
   // 5. Create Order with Transaction Support
   const appliedCodes = validVouchers.map((v) => v.code).join(", ");
@@ -392,16 +526,29 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   session.startTransaction();
 
   try {
+    const userInTx = await User.findById(req.user._id).session(session);
+    if (!userInTx) {
+      throw new ErrorResponse("User not found", 404);
+    }
+
+    const coinPlanAmount = Math.min(
+      Math.max(0, userInTx.reward_point || 0),
+      payableBeforeCoin,
+    );
+
     const order = await Order.create(
       [
         {
           userId: req.user._id,
           orderNumber: generateOrderNumber(),
           status: "pending",
-          totalPrice,
+          totalPrice: payableBeforeCoin,
+          payableBeforeCoin,
           subtotal,
           shippingAddress,
-          shippingCost,
+          shippingMethod: shippingMethod || undefined,
+          shippingCost: appliedShippingCost,
+          giftBoxFee: includeGiftBox ? appliedGiftBoxFee : 0,
           paymentMethod,
           notes,
           discount,
@@ -415,6 +562,22 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       { session },
     );
     const createdOrder = order[0];
+
+    // Deduct GZCoin first (expiring soon packets are consumed first)
+    const coinDeduction = await deductCoinsForOrder({
+      user: userInTx,
+      requestedAmount: coinPlanAmount,
+      orderId: createdOrder._id,
+      orderNumber: createdOrder.orderNumber,
+      session,
+    });
+
+    createdOrder.coinUsedAmount = coinDeduction.deductedAmount;
+    createdOrder.coinUsageDetails = coinDeduction.usageDetails;
+    createdOrder.totalPrice = Math.max(
+      0,
+      payableBeforeCoin - coinDeduction.deductedAmount,
+    );
 
     // 5. Create Order Items
     const orderItemIds = [];
@@ -460,8 +623,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     // For PayOS, resources will be deducted after payment confirmation
     const isCOD =
       paymentMethod === "cod" || paymentMethod === "cash_on_delivery";
+    const isFullyPaidByCoin = createdOrder.totalPrice <= 0;
 
-    if (isCOD) {
+    if (isCOD || isFullyPaidByCoin) {
       // Deduct inventory, vouchers, and flash sales immediately for COD
       await deductOrderResources(
         createdOrder,
@@ -470,10 +634,19 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         req.user._id,
       );
       createdOrder.resourcesDeducted = true;
-      createdOrder.paymentStatus = "pending"; // COD will be marked as paid when buyer confirms receipt
+
+      if (isFullyPaidByCoin) {
+        createdOrder.paymentStatus = "paid";
+        createdOrder.paymentDate = new Date();
+        // Keep order pending until seller explicitly processes it.
+        createdOrder.status = "pending";
+      } else {
+        createdOrder.paymentStatus = "pending"; // COD will be marked as paid when buyer confirms receipt
+      }
+
       await createdOrder.save({ session });
 
-      // Clear cart for COD using utility function with transaction support
+      // Clear cart for COD / fully paid-by-coin using utility function with transaction support
       await clearUserCart(req.user._id, session);
     }
 
@@ -512,6 +685,12 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     res.status(201).json({
       success: true,
       data: createdOrder,
+      payment: {
+        payableBeforeCoin,
+        coinUsed: createdOrder.coinUsedAmount || 0,
+        amountDue: createdOrder.totalPrice,
+        fullyPaidByCoin: createdOrder.totalPrice <= 0,
+      },
     });
   } catch (error) {
     // Rollback transaction on error
@@ -924,6 +1103,7 @@ export const confirmReceipt = asyncHandler(async (req, res, next) => {
     {
       orderNumber: order.orderNumber,
       completedAt: order.completedAt,
+      buyerId: order.userId,
     },
   );
 
@@ -982,6 +1162,7 @@ export const markAsDelivered = asyncHandler(async (req, res, next) => {
     {
       orderNumber: order.orderNumber,
       deliveredAt: order.deliveredAt,
+      buyerId: order.userId,
     },
   );
 
