@@ -33,9 +33,11 @@ const returnRequestSchema = new mongoose.Schema(
     // Type of request
     type: {
       type: String,
-      enum: ["refund", "exchange"],
+      enum: ["undetermined", "refund", "exchange"],
       required: true,
-      description: "refund = hoàn tiền coin, exchange = đổi hàng",
+      default: "undetermined",
+      description:
+        "undetermined = buyer chưa chọn loại xử lý, seller sẽ quyết định refund hoặc exchange",
     },
 
     // Items to be returned/exchanged
@@ -185,6 +187,31 @@ const returnRequestSchema = new mongoose.Schema(
         description:
           "buyer pays if change_of_mind, seller pays if defective/wrong_item",
       },
+    },
+
+    // Logistics flow tracking for refund/exchange operations
+    logistics: {
+      flowType: {
+        type: String,
+        enum: ["refund", "exchange", null],
+        default: null,
+      },
+      currentStep: {
+        type: String,
+        default: "buyer_submitted",
+      },
+      steps: [
+        {
+          code: String,
+          title: String,
+          completed: {
+            type: Boolean,
+            default: false,
+          },
+          completedAt: Date,
+          note: String,
+        },
+      ],
     },
 
     // Timeline tracking

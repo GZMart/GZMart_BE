@@ -109,6 +109,20 @@ export const updateOrderStatus = asyncHandler(async (req, res) => {
     },
   );
 
+  // Emit realtime event so buyer pages update immediately without reload.
+  orderTrackingService.notifyBuyerStatusChange(
+    order._id.toString(),
+    order.status,
+    {
+      orderNumber: order.orderNumber,
+      trackingNumber: order.trackingNumber,
+      estimatedDelivery: order.estimatedDelivery,
+      notes: req.body.notes,
+      buyerId: order.userId,
+      sellerId: req.user?._id,
+    },
+  );
+
   res.status(200).json({
     success: true,
     message: `Order status updated to '${req.body.newStatus}'`,
@@ -130,14 +144,16 @@ export const cancelOrder = asyncHandler(async (req, res) => {
   );
 
   try {
-     await NotificationService.createNotification(
-       order.userId,
-       "Đơn hàng đã bị hủy",
-       `Đơn hàng ${order.orderNumber} của bạn đã bị hủy. Lý do: ${cancellationReason}`,
-       "ORDER",
-       { orderId: order._id.toString() }
-     );
-  } catch(e) { console.error(e) }
+    await NotificationService.createNotification(
+      order.userId,
+      "Đơn hàng đã bị hủy",
+      `Đơn hàng ${order.orderNumber} của bạn đã bị hủy. Lý do: ${cancellationReason}`,
+      "ORDER",
+      { orderId: order._id.toString() },
+    );
+  } catch (e) {
+    console.error(e);
+  }
 
   res.status(200).json({
     success: true,
@@ -201,6 +217,8 @@ export const confirmOrder = asyncHandler(async (req, res, next) => {
     "confirmed",
     {
       orderNumber: order.orderNumber,
+      buyerId: order.userId,
+      sellerId: req.user?._id,
     },
   );
 
@@ -210,9 +228,11 @@ export const confirmOrder = asyncHandler(async (req, res, next) => {
       "Đơn hàng đã được xác nhận",
       `Đơn hàng ${order.orderNumber} của bạn đã được người bán xác nhận và đang chuẩn bị hàng.`,
       "ORDER",
-      { orderId: order._id.toString() }
+      { orderId: order._id.toString() },
     );
-  } catch(e) { console.error(e) }
+  } catch (e) {
+    console.error(e);
+  }
 
   res.status(200).json({
     success: true,
@@ -279,6 +299,11 @@ export const startShipping = asyncHandler(async (req, res, next) => {
   const shippingInfo = await orderTrackingService.startDeliveryTimer(
     order._id.toString(),
     coordinates,
+    {
+      orderNumber: order.orderNumber,
+      buyerId: order.userId?._id || order.userId,
+      sellerId: order.sellerId?._id || order.sellerId || req.user?._id,
+    },
   );
 
   try {
@@ -287,9 +312,11 @@ export const startShipping = asyncHandler(async (req, res, next) => {
       "Đơn hàng đang giao",
       `Đơn hàng ${order.orderNumber} của bạn đã được giao cho đơn vị vận chuyển.`,
       "ORDER",
-      { orderId: order._id.toString() }
+      { orderId: order._id.toString() },
     );
-  } catch(e) { console.error(e) }
+  } catch (e) {
+    console.error(e);
+  }
 
   res.status(200).json({
     success: true,
@@ -350,6 +377,8 @@ export const completeOrder = asyncHandler(async (req, res, next) => {
     {
       orderNumber: order.orderNumber,
       completedAt: order.completedAt,
+      buyerId: order.userId,
+      sellerId: req.user?._id,
     },
   );
 
@@ -359,9 +388,11 @@ export const completeOrder = asyncHandler(async (req, res, next) => {
       "Giao hàng thành công",
       `Tuyệt vời! Đơn hàng ${order.orderNumber} đã được giao thành công. Mong bạn hài lòng với sản phẩm.`,
       "ORDER",
-      { orderId: order._id.toString() }
+      { orderId: order._id.toString() },
     );
-  } catch(e) { console.error(e) }
+  } catch (e) {
+    console.error(e);
+  }
 
   res.status(200).json({
     success: true,
@@ -409,6 +440,8 @@ export const packOrder = asyncHandler(async (req, res, next) => {
     "packing",
     {
       orderNumber: order.orderNumber,
+      buyerId: order.userId,
+      sellerId: req.user?._id,
     },
   );
 

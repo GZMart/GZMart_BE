@@ -729,15 +729,54 @@ export const getFeaturedProducts = async (limit = 10) => {
  * Get trending products (GZM-13 Feature)
  */
 export const getTrendingProducts = async (limit = 10) => {
-  // Trending based on sales or explicit flag
-  return await Product.find({
+  // Backward compatibility:
+  // Frontend still uses /trending, but section title is now TODAY'S RECOMMENDATIONS.
+  return await getTodayRecommendations(limit);
+};
+
+/**
+ * Get today's recommendations
+ * - Prioritize active, in-stock products with healthy social proof.
+ * - Rotate results daily so recommendations feel fresh each day.
+ */
+export const getTodayRecommendations = async (limit = 10) => {
+  const parsedLimit = Number.parseInt(limit, 10);
+  const safeLimit = Number.isFinite(parsedLimit)
+    ? Math.min(Math.max(parsedLimit, 1), 30)
+    : 10;
+
+  const candidates = await Product.find({
     status: "active",
-    $or: [{ isTrending: true }, { sold: { $gt: 10 } }],
+    $or: [
+      { stock: { $gt: 0 } },
+      { "models.stock": { $gt: 0 } },
+      { sold: { $gt: 0 } },
+    ],
   })
     .populate("categoryId", "name slug")
-    .sort({ sold: -1 })
-    .limit(limit)
+    .sort({
+      isFeatured: -1,
+      isTrending: -1,
+      sold: -1,
+      rating: -1,
+      reviewCount: -1,
+      createdAt: -1,
+    })
+    .limit(120)
     .lean();
+
+  if (candidates.length <= safeLimit) {
+    return candidates;
+  }
+
+  const now = new Date();
+  const daySeed = Number(
+    `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}${String(now.getUTCDate()).padStart(2, "0")}`,
+  );
+  const start = daySeed % candidates.length;
+  const rotated = [...candidates.slice(start), ...candidates.slice(0, start)];
+
+  return rotated.slice(0, safeLimit);
 };
 
 /**

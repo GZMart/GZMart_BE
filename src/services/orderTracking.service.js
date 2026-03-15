@@ -4,12 +4,52 @@ import { getSocketIO } from "../utils/socketIO.js";
 // Store active timers for cleanup
 const activeTimers = new Map();
 
+const toUserIdString = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "object") {
+    return value._id?.toString?.() || value.id?.toString?.() || null;
+  }
+
+  return value.toString?.() || null;
+};
+
+const emitOrderStatus = (io, payload = {}) => {
+  const { orderId, status, buyerId, sellerId } = payload;
+
+  if (!orderId || !status) {
+    return;
+  }
+
+  const buyerIdStr = toUserIdString(buyerId);
+  if (buyerIdStr) {
+    io.to(`user_${buyerIdStr}`).emit("order_status_updated", payload);
+    io.to(`user_${buyerIdStr}`).emit(`order:status:${orderId}`, payload);
+  }
+
+  const sellerIdStr = toUserIdString(sellerId);
+  if (sellerIdStr) {
+    io.to(`user_${sellerIdStr}`).emit("order_status_updated", payload);
+    io.to(`user_${sellerIdStr}`).emit(`order:status:${orderId}`, payload);
+  }
+};
+
 /**
  * Start the 60-second delivery countdown timer
  * @param {String} orderId - Order ID
  * @param {Object} trackingData - Contains seller and buyer coordinates
  */
-export const startDeliveryTimer = async (orderId, trackingData) => {
+export const startDeliveryTimer = async (
+  orderId,
+  trackingData,
+  metadata = {},
+) => {
   const io = getSocketIO();
   if (!io) {
     console.error("Socket.IO instance not available");
@@ -27,6 +67,13 @@ export const startDeliveryTimer = async (orderId, trackingData) => {
   const shippingEstimatedArrival = new Date(
     shippingStartedAt.getTime() + 60 * 1000,
   ); // 60 seconds from now
+
+  const statusPayloadBase = {
+    orderId,
+    orderNumber: metadata.orderNumber,
+    buyerId: metadata.buyerId,
+    sellerId: metadata.sellerId,
+  };
 
   // Update order with shipping info
   await Order.findByIdAndUpdate(orderId, {
@@ -53,6 +100,16 @@ export const startDeliveryTimer = async (orderId, trackingData) => {
     duration: 60, // seconds
   });
 
+  emitOrderStatus(io, {
+    ...statusPayloadBase,
+    status: "shipping",
+    coordinates: trackingData,
+    startTime: shippingStartedAt,
+    estimatedArrival: shippingEstimatedArrival,
+    duration: 60,
+    updatedAt: new Date(),
+  });
+
   // Set 60-second timer to auto-update to delivered
   const timerId = setTimeout(async () => {
     try {
@@ -72,6 +129,13 @@ export const startDeliveryTimer = async (orderId, trackingData) => {
         orderId,
         status: "delivered",
         arrivedAt: new Date(),
+      });
+
+      emitOrderStatus(io, {
+        ...statusPayloadBase,
+        status: "delivered",
+        deliveredAt: new Date(),
+        updatedAt: new Date(),
       });
 
       // Remove timer from active list
@@ -170,7 +234,7 @@ export const notifyBuyerStatusChange = (
     return;
   }
 
-  io.emit(`order:status:${orderId}`, {
+  emitOrderStatus(io, {
     orderId,
     status,
     updatedAt: new Date(),
