@@ -4,6 +4,7 @@ import {
   getProduct,
   getFeaturedProducts,
   getTrendingProducts,
+  getTodayRecommendations,
   getNewArrivals,
   getBestOffers,
   getProductsAdvanced,
@@ -105,6 +106,18 @@ router.get("/featured", asyncHandler(getFeaturedProducts));
  *         description: Success
  */
 router.get("/trending", asyncHandler(getTrendingProducts));
+
+/**
+ * @swagger
+ * /api/products/today-recommendations:
+ *   get:
+ *     tags: [Products]
+ *     summary: Get today's recommendations
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/today-recommendations", asyncHandler(getTodayRecommendations));
 
 /**
  * @swagger

@@ -6,6 +6,7 @@ import { ErrorResponse } from "../utils/errorResponse.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { emailTemplates } from "../templates/email.templates.js";
 import payOs from "../config/payos.config.js";
+import * as orderTrackingService from "./orderTracking.service.js";
 import {
   deductOrderResourcesFromOrder,
   clearUserCart,
@@ -59,7 +60,8 @@ class PaymentService {
     const description = `GZMart #${order.orderNumber}`;
 
     const payosOrder = {
-      amount: Math.round(order.totalPrice), // Use actual order total price
+      //amount: Math.round(order.totalPrice), // Use actual order total price
+      amount: 2000, // Temporary fixed amount for testing
       description: description.substring(0, 25),
       orderCode: orderCode,
       returnUrl: `${process.env.FRONTEND_URL}/buyer/payment/success?orderCode=${orderCode}`,
@@ -199,19 +201,32 @@ class PaymentService {
       order.payosCounterAccountNumber = verifiedData.counterAccountNumber;
     }
 
-    order.status = "processing";
+    order.status = "pending";
 
     order.statusHistory.push({
-      status: "processing",
+      status: "pending",
       changedBy: order.userId,
       changedByRole: "system",
       changedAt: new Date(),
       reason: "Thanh toán thành công qua PayOS",
-      notes: `PayOS OrderCode: ${orderCode}`,
+      notes: `PayOS OrderCode: ${orderCode}. Chờ seller xử lý đơn hàng.`,
     });
 
     await order.save();
     console.log("[Webhook] Order saved successfully");
+
+    orderTrackingService.notifyBuyerStatusChange(
+      order._id.toString(),
+      "pending",
+      {
+        orderNumber: order.orderNumber,
+        buyerId: order.userId,
+        sellerId: order.sellerId,
+        updatedAt: new Date(),
+        notes:
+          "Thanh toán PayOS thành công, đơn ở trạng thái pending chờ seller xử lý",
+      },
+    );
 
     // CRITICAL FIX: Deduct inventory, vouchers, and flash sales AFTER payment confirmed
     console.log(
@@ -383,15 +398,15 @@ class PaymentService {
 
         order.paymentStatus = "paid";
         order.paymentDate = new Date();
-        order.status = "processing";
+        order.status = "pending";
 
         order.statusHistory.push({
-          status: "processing",
+          status: "pending",
           changedBy: order.userId,
           changedByRole: "system",
           changedAt: new Date(),
           reason: "Thanh toán thành công qua PayOS (manual check)",
-          notes: `PayOS OrderCode: ${orderCode}`,
+          notes: `PayOS OrderCode: ${orderCode}. Chờ seller xử lý đơn hàng.`,
         });
 
         await order.save();
@@ -400,6 +415,18 @@ class PaymentService {
           paymentStatus: order.paymentStatus,
           status: order.status,
         });
+
+        orderTrackingService.notifyBuyerStatusChange(
+          order._id.toString(),
+          "pending",
+          {
+            orderNumber: order.orderNumber,
+            buyerId: order.userId,
+            sellerId: order.sellerId,
+            updatedAt: new Date(),
+            notes: "Thanh toán PayOS xác nhận qua manual check, đơn ở pending",
+          },
+        );
 
         // CRITICAL FIX: Deduct resources after payment confirmed
         console.log("[PayOS Check] Deducting resources...");

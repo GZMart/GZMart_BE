@@ -47,6 +47,22 @@ router.get("/requests", protect, rmaController.getMyReturnRequests);
 
 /**
  * @swagger
+ * /api/rma/requests/order/{orderId}:
+ *   get:
+ *     summary: Get latest return request by order for current buyer
+ *     tags: [RMA - Return & Exchange]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  "/requests/order/:orderId",
+  protect,
+  authorize("buyer"),
+  rmaController.getOrderReturnRequest,
+);
+
+/**
+ * @swagger
  * /api/rma/requests/{id}:
  *   get:
  *     summary: Get return request details
@@ -86,6 +102,13 @@ router.put(
   protect,
   authorize("buyer"),
   rmaController.updateReturnShipping,
+);
+
+router.put(
+  "/requests/:id/confirm-handover",
+  protect,
+  authorize("buyer"),
+  rmaController.confirmBuyerHandover,
 );
 
 // ==================== WALLET ROUTES ====================

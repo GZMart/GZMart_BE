@@ -70,6 +70,19 @@ export const deductOrderResources = async (
       console.warn(
         `[OrderInventory] COD - No inventory item found for SKU: ${model.sku}`,
       );
+
+      // Fallback: still deduct from Product.models[].stock to prevent stock not changing
+      const modelInProduct = product.models.id(model._id);
+      if (modelInProduct) {
+        modelInProduct.stock = Math.max(
+          0,
+          Number(modelInProduct.stock || 0) - Number(cartItem.quantity || 0),
+        );
+        await product.save();
+        console.log(
+          `[OrderInventory] COD - Fallback deducted Product.models[].stock for SKU: ${model.sku} → ${modelInProduct.stock}`,
+        );
+      }
     }
 
     // Create transaction log
@@ -301,6 +314,34 @@ export const deductOrderResourcesFromOrder = async (order) => {
       });
     } else {
       console.warn(`[OrderInventory] No inventory found for SKU: ${item.sku}`);
+
+      // Fallback: still deduct Product.models[].stock when inventory record does not exist
+      const product = await Product.findById(item.productId);
+      if (product) {
+        const model = product.models.id(item.modelId);
+        if (model) {
+          const beforeStock = Number(model.stock || 0);
+          model.stock = Math.max(0, beforeStock - Number(item.quantity || 0));
+          await product.save();
+          console.log(
+            `[OrderInventory] Fallback deducted Product.models[].stock for SKU: ${item.sku} (${beforeStock} → ${model.stock})`,
+          );
+        }
+      }
+
+      await InventoryTransaction.create({
+        productId: item.productId,
+        modelId: item.modelId,
+        sku: item.sku,
+        type: "out",
+        quantity: -item.quantity,
+        stockBefore: currentStock,
+        stockAfter: Math.max(0, currentStock - item.quantity),
+        referenceType: "order",
+        referenceId: order._id,
+        createdBy: order.userId,
+        note: `Order ${order.orderNumber} (Payment confirmed, fallback)`,
+      });
     }
   }
 

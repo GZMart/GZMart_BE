@@ -221,6 +221,7 @@ app.use("/api/follows", followRoutes);
 app.use("/api/coins", coinRoutes);
 app.use("/api/seller-applications", sellerApplicationRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/rma", rmaRoutes);
 
 // Error handler
 app.use(errorHandler);
