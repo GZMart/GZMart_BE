@@ -1,0 +1,171 @@
+import mongoose from "mongoose";
+import Product from "../../../models/Product.js";
+import Category from "../../../models/Category.js";
+import Deal from "../../../models/Deal.js";
+import Voucher from "../../../models/Voucher.js";
+import Review from "../../../models/Review.js";
+import User from "../../../models/User.js";
+import embeddingService from "../../embedding.service.js";
+import { registerTool } from "../tools.js";
+
+const TOP_K = 10;
+
+async function execute({ query, limit = TOP_K, categoryId = null }) {
+  const queryEmbedding = await embeddingService.getEmbedding(query);
+
+  const filter = { status: "active" };
+  if (categoryId) filter.categoryId = new mongoose.Types.ObjectId(categoryId);
+
+  let products = [];
+  try {
+    products = await Product.aggregate([
+      {
+        $vectorSearch: {
+          index: "product_vector_index",
+          path: "embedding",
+          queryVector: queryEmbedding,
+          numCandidates: limit * 5,
+          limit,
+          filter,
+        },
+      },
+      {
+        $project: {
+          name: 1, slug: 1, categoryId: 1, sellerId: 1,
+          description: 1, attributes: 1, originalPrice: 1,
+          rating: 1, reviewCount: 1, sold: 1, brand: 1,
+          tags: 1, "models.price": 1, "models.sku": 1, images: 1,
+          score: { $meta: "vectorSearchScore" },
+        },
+      },
+    ]);
+  } catch (err) {
+    console.warn("[productSearch] Vector search failed, falling back to text:", err.message);
+  }
+
+  if (products.length < 3) {
+    try {
+      const textResults = await Product.find({
+        status: "active",
+        $text: { $search: query },
+      })
+        .select("name slug categoryId sellerId description attributes originalPrice rating reviewCount sold brand tags models.price models.sku images")
+        .limit(limit)
+        .lean();
+
+      const existingIds = new Set(products.map((p) => p._id.toString()));
+      for (const p of textResults) {
+        if (!existingIds.has(p._id.toString())) products.push(p);
+      }
+    } catch {
+      // text index may not exist
+    }
+  }
+
+  if (products.length === 0) {
+    return { context: "Không tìm thấy sản phẩm phù hợp.", products: [] };
+  }
+
+  const productIds = products.map((p) => p._id);
+  const sellerIds = [...new Set(products.map((p) => p.sellerId?.toString()).filter(Boolean))];
+  const now = new Date();
+
+  const [categories, sellers, deals, vouchers, reviews] = await Promise.all([
+    Category.find({ status: "active" }).select("name").lean(),
+    User.find({ _id: { $in: sellerIds } }, "fullName shopName").lean(),
+    Deal.find({
+      productId: { $in: productIds }, status: "active",
+      startDate: { $lte: now }, endDate: { $gte: now },
+    }).select("productId type title dealPrice discountPercent endDate").lean(),
+    Voucher.find({
+      status: "active", displaySetting: "public",
+      startTime: { $lte: now }, endTime: { $gte: now },
+      type: { $in: ["shop", "product"] },
+      $or: [
+        { shopId: { $in: sellerIds } },
+        { appliedProducts: { $in: productIds } },
+      ],
+      $expr: { $lt: ["$usageCount", "$usageLimit"] },
+    }).select("code name type shopId discountType discountValue maxDiscountAmount minBasketPrice applyTo appliedProducts endTime").lean(),
+    Review.aggregate([
+      { $match: { productId: { $in: productIds }, status: "approved" } },
+      { $group: {
+        _id: "$productId",
+        avgRating: { $avg: "$rating" }, count: { $sum: 1 },
+        sample: { $push: { rating: "$rating", content: { $substrBytes: ["$content", 0, 80] } } },
+      }},
+      { $project: { avgRating: { $round: ["$avgRating", 1] }, count: 1, sample: { $slice: ["$sample", 2] } } },
+    ]),
+  ]);
+
+  const catMap = {};
+  categories.forEach((c) => { catMap[c._id.toString()] = c.name; });
+  const sellerMap = {};
+  sellers.forEach((s) => { sellerMap[s._id.toString()] = s.shopName || s.fullName || "Shop"; });
+  const dealMap = {};
+  deals.forEach((d) => { const pid = d.productId.toString(); if (!dealMap[pid]) dealMap[pid] = []; dealMap[pid].push(d); });
+  const reviewMap = {};
+  reviews.forEach((r) => { reviewMap[r._id.toString()] = r; });
+
+  const productLines = products.map((p) => {
+    const pid = p._id.toString();
+    const sid = p.sellerId?.toString();
+    const cat = catMap[p.categoryId?.toString()] || "N/A";
+    const shop = sellerMap[sid] || "Shop";
+    const prices = p.models?.map((m) => m.price).filter(Boolean) || [];
+    const basePrice = prices.length > 0 ? Math.min(...prices) : (p.originalPrice || 0);
+    const maxPrice = prices.length > 1 ? Math.max(...prices) : null;
+    const priceStr = maxPrice && maxPrice !== basePrice
+      ? `${basePrice.toLocaleString("vi-VN")}–${maxPrice.toLocaleString("vi-VN")}₫`
+      : `${basePrice.toLocaleString("vi-VN")}₫`;
+
+    const desc = p.description?.replace(/<[^>]*>/g, "").slice(0, 200) || "";
+    const attrs = (p.attributes || []).map((a) => `${a.label}: ${a.value}`).join(", ");
+
+    let line = `[ID:${pid}] ${p.name} | ${cat} | Shop: ${shop} | Giá: ${priceStr} | ⭐${p.rating}/5 (${p.reviewCount} đánh giá) | Đã bán: ${p.sold}`;
+    if (p.brand) line += ` | Brand: ${p.brand}`;
+
+    const pDeals = dealMap[pid];
+    if (pDeals?.length) {
+      pDeals.forEach((d) => {
+        const label = d.type === "flash_sale" ? "FLASH SALE" : d.title || d.type;
+        const disc = d.dealPrice ? `${d.dealPrice.toLocaleString("vi-VN")}₫` : `-${d.discountPercent}%`;
+        line += `\n  🔥 ${label}: ${disc} (HSD: ${d.endDate.toLocaleDateString("vi-VN")})`;
+      });
+    }
+
+    const applicableVouchers = vouchers.filter((v) => {
+      if (v.type === "product" && v.applyTo === "specific") return v.appliedProducts?.some((ap) => ap.toString() === pid);
+      return v.shopId?.toString() === sid;
+    });
+    applicableVouchers.forEach((v) => {
+      const disc = v.discountType === "percent"
+        ? `-${v.discountValue}%${v.maxDiscountAmount ? ` (max ${v.maxDiscountAmount.toLocaleString("vi-VN")}₫)` : ""}`
+        : `-${v.discountValue.toLocaleString("vi-VN")}₫`;
+      line += `\n  🎟️ ${v.code}: ${disc}`;
+    });
+
+    if (desc) line += `\n  Mô tả: ${desc}`;
+    if (attrs) line += `\n  Đặc điểm: ${attrs}`;
+    return line;
+  });
+
+  const context = `=== SẢN PHẨM TÌM ĐƯỢC (${products.length} kết quả) ===\n${productLines.join("\n\n")}`;
+  return { context, products };
+}
+
+registerTool("productSearch", {
+  description: "Tìm kiếm sản phẩm theo từ khóa, sử dụng vector search + text search",
+  roles: ["buyer", "seller", "admin"],
+  keywords: [
+    "tìm", "kiếm", "gợi ý", "recommend", "sản phẩm", "hàng",
+    "mua", "muốn", "cần", "xem", "so sánh",
+    "áo", "quần", "giày", "dép", "túi", "balo", "nón", "mũ", "váy", "đầm",
+    "hoodie", "jacket", "polo", "jean", "jogger", "sneaker",
+    "điện thoại", "laptop", "tai nghe", "loa", "sạc", "ốp lưng",
+    "kem", "serum", "son", "nước hoa", "dầu gội",
+    "rẻ", "đắt", "budget", "dưới", "trên",
+    "hot", "bán chạy", "best seller", "mới",
+  ],
+  execute,
+});
