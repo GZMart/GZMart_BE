@@ -241,6 +241,15 @@ const productSchema = new mongoose.Schema(
       description: String,
       keywords: [String],
     },
+    embedding: {
+      type: [Number],
+      default: [],
+      select: false,
+    },
+    embeddingText: {
+      type: String,
+      select: false,
+    },
   },
   {
     timestamps: true,
@@ -287,6 +296,36 @@ productSchema.pre("save", function (next) {
 
   if (this.isNew) {
     this.isNewArrival = true;
+  }
+});
+
+productSchema.post("save", async function () {
+  const modifiedPaths = this.modifiedPaths();
+  const relevantFields = ["name", "description", "attributes", "tags", "brand", "categoryId"];
+  const needsUpdate = relevantFields.some((f) => modifiedPaths.includes(f));
+
+  if (needsUpdate && this.status === "active") {
+    try {
+      const { default: embeddingService } = await import("../services/embedding.service.js");
+      const { default: Category } = await import("./Category.js");
+      const cat = await Category.findById(this.categoryId).select("name").lean();
+
+      const parts = [
+        this.name, cat?.name || "", this.brand || "",
+        this.description?.replace(/<[^>]*>/g, "").slice(0, 300) || "",
+        (this.attributes || []).map((a) => `${a.label} ${a.value}`).join(" "),
+        (this.tags || []).join(" "),
+      ];
+      const text = parts.filter(Boolean).join(" | ");
+      const embedding = await embeddingService.getEmbedding(text);
+
+      await this.constructor.updateOne(
+        { _id: this._id },
+        { $set: { embedding, embeddingText: text } }
+      );
+    } catch (err) {
+      console.error(`[Embedding] Failed for product ${this._id}:`, err.message);
+    }
   }
 });
 
