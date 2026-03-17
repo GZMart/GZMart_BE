@@ -141,6 +141,31 @@ export const completePurchaseOrder = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Receive Purchase Order & Calculate Landed Cost (Stage 2)
+ *          Submit arrival costs; allocates overhead by Value Ratio; updates to COMPLETED
+ * @route   POST /api/purchase-orders/:id/receive
+ * @access  Private (Admin/Manager)
+ */
+export const receiveOrderAndCalculateLandedCost = asyncHandler(async (req, res) => {
+  const result = await purchaseOrderService.receiveOrderAndCalculateLandedCost(
+    req.params.id,
+    req.body,
+    req.user._id,
+  );
+
+  res.status(200).json({
+    success: true,
+    message: result.message,
+    data: {
+      purchaseOrder: result.purchaseOrder,
+      summary: result.summary,
+      updatedProducts: result.updatedProducts,
+      inventoryTransactions: result.inventoryTransactions,
+    },
+  });
+});
+
+/**
  * @desc    Cancel purchase order
  * @route   POST /api/purchase-orders/:id/cancel
  * @access  Private (Admin/Manager)

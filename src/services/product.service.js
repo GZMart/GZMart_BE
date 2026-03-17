@@ -84,6 +84,12 @@ export const createProduct = async (productData, sellerId) => {
     images,
     tags,
     brand,
+    preOrderDays,
+    weight,
+    weightUnit,
+    dimLength,
+    dimWidth,
+    dimHeight,
   } = productData;
 
   const category = await Category.findById(categoryId);
@@ -219,6 +225,12 @@ export const createProduct = async (productData, sellerId) => {
     brand,
     status,
     sellerId,
+    preOrderDays: preOrderDays ?? 0,
+    weight: weight ?? 0,
+    weightUnit: weightUnit || "gr",
+    dimLength: dimLength ?? 0,
+    dimWidth: dimWidth ?? 0,
+    dimHeight: dimHeight ?? 0,
   });
 
   await product.save();
