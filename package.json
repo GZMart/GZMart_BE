@@ -27,6 +27,7 @@
     "google-auth-library": "^10.5.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.3",
+    "livekit-server-sdk": "^2.15.0",
     "mongoose": "^9.1.2",
     "morgan": "^1.10.0",
     "multer": "^2.0.2",
