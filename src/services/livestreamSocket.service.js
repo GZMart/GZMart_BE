@@ -8,6 +8,7 @@ export function setupLiveStreamHandlers(io) {
     socket.on("livestream_join", async (data) => {
       try {
         const { sessionId, userId, displayName } = data || {};
+        logger.info(`livestream_join: socket=${socket.id} sessionId=${sessionId} userId=${userId || "guest"}`);
         const session = await LiveSession.findById(sessionId);
         if (!session || session.status !== "live") {
           socket.emit("livestream_error", { message: "Session not available" });
@@ -26,6 +27,7 @@ export function setupLiveStreamHandlers(io) {
     socket.on("livestream_chat", async (data) => {
       try {
         const { sessionId, content, displayName } = data || {};
+        logger.info(`livestream_chat: socket=${socket.id} sessionId=${sessionId} contentLen=${(content || "").length}`);
         const session = await LiveSession.findById(sessionId);
         if (!session || session.status !== "live") return;
         const roomId = `livestream_${sessionId}`;
