@@ -42,6 +42,7 @@ import aiRoutes from "./routes/ai.routes.js";
 import reviewRoutes from "./routes/review.routes.js";
 import promotionPublicRoutes from "./routes/promotionPublic.routes.js";
 import followRoutes from "./routes/follow.routes.js";
+import livestreamRoutes from "./routes/livestream.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
@@ -218,6 +219,7 @@ app.use("/api/exchange-rate", exchangeRateRoutes);
 app.use("/api/ghn", ghnRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/follows", followRoutes);
+app.use("/api/livestream", livestreamRoutes);
 app.use("/api/coins", coinRoutes);
 app.use("/api/seller-applications", sellerApplicationRoutes);
 app.use("/api/notifications", notificationRoutes);
