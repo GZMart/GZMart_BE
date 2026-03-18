@@ -59,6 +59,7 @@ export async function getActiveByShop(req, res, next) {
     const { shopId } = req.query;
     if (!shopId) return res.status(400).json({ message: "shopId required" });
     const session = await livestreamService.getActiveSessionByShop(shopId);
+    res.setHeader("Cache-Control", "private, max-age=30");
     res.json(session || null);
   } catch (e) {
     next(e);
