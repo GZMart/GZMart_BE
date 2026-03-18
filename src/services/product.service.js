@@ -10,6 +10,10 @@ import AddOnDeal from "../models/AddOnDeal.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { generateSKU } from "../utils/skuGenerator.js";
 
+// Public storefront visibility: include in-stock and out-of-stock products,
+// but keep draft/inactive hidden.
+const PUBLIC_VISIBLE_STATUSES = ["active", "out_of_stock"];
+
 /**
  * Fetch the currently active flash sale for a product, shaped for the FE.
  * Returns null when there is no active flash sale.
@@ -80,7 +84,7 @@ export const createProduct = async (productData, sellerId) => {
     description,
     attributes,
     tiers,
-    models,
+    models: rawModels,
     images,
     tags,
     brand,
@@ -90,14 +94,36 @@ export const createProduct = async (productData, sellerId) => {
     dimLength,
     dimWidth,
     dimHeight,
+    stock: topLevelStock,
   } = productData;
 
-  const category = await Category.findById(categoryId);
-  if (!category) {
-    throw new ErrorResponse("Category not found", 404);
-  }
-  if (category.status !== "active") {
-    throw new ErrorResponse("Cannot add product to inactive category", 400);
+  const toSafeNonNegativeNumber = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
+
+  // Accept stock from multiple payload shapes to avoid accidental out_of_stock
+  // when clients send quantity/top-level stock instead of model.stock.
+  const models = (rawModels || []).map((model) => ({
+    ...model,
+    price: toSafeNonNegativeNumber(model.price, 0),
+    costPrice: toSafeNonNegativeNumber(model.costPrice, 0),
+    stock: toSafeNonNegativeNumber(
+      model.stock ?? model.quantity ?? topLevelStock,
+      0,
+    ),
+  }));
+
+  if (categoryId) {
+    const category = await Category.findById(categoryId);
+    if (!category) {
+      throw new ErrorResponse("Category not found", 404);
+    }
+    if (category.status !== "active") {
+      throw new ErrorResponse("Cannot add product to inactive category", 400);
+    }
+  } else if (productData.status !== "draft") {
+    throw new ErrorResponse("Category is required for published products", 400);
   }
 
   if (tiers && tiers.length > 0) {
@@ -193,7 +219,7 @@ export const createProduct = async (productData, sellerId) => {
   const prices = models.map((m) => m.price);
   const originalPrice = Math.min(...prices);
 
-  if (originalPrice <= 0) {
+  if (originalPrice <= 0 && productData.status !== "draft") {
     throw new ErrorResponse("Product must have price > 0", 400);
   }
 
@@ -209,7 +235,9 @@ export const createProduct = async (productData, sellerId) => {
     (sum, model) => sum + (Number(model.stock) || 0),
     0,
   );
-  const status = totalStock > 0 ? "active" : "out_of_stock";
+  const status = productData.status === "draft" 
+    ? "draft" 
+    : (totalStock > 0 ? "active" : "out_of_stock");
 
   const product = new Product({
     name,
@@ -287,7 +315,10 @@ export const getProductById = async (productId) => {
         import("../models/ShopStatistic.js").then((m) =>
           m.default.findOne({ sellerId }),
         ),
-        Product.countDocuments({ sellerId, status: "active" }),
+        Product.countDocuments({
+          sellerId,
+          status: { $in: PUBLIC_VISIBLE_STATUSES },
+        }),
         import("../models/Follow.js").then((m) =>
           m.default.countDocuments({ followingId: sellerId }),
         ),
@@ -356,7 +387,10 @@ export const getProductBySlug = async (slug) => {
         import("../models/ShopStatistic.js").then((m) =>
           m.default.findOne({ sellerId }),
         ),
-        Product.countDocuments({ sellerId, status: "active" }),
+        Product.countDocuments({
+          sellerId,
+          status: { $in: PUBLIC_VISIBLE_STATUSES },
+        }),
         import("../models/Follow.js").then((m) =>
           m.default.countDocuments({ followingId: sellerId }),
         ),
@@ -889,7 +923,14 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
 
   const sellerObj = seller.toObject();
 
-  const productQuery = { sellerId, status: "active" };
+  const productQuery = {
+    sellerId,
+  };
+  
+  if (!options.includeHidden) {
+    productQuery.status = { $in: PUBLIC_VISIBLE_STATUSES };
+  }
+  
   if (categoryId) {
     productQuery.categoryId = categoryId;
   }
@@ -912,7 +953,7 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     import("../models/ShopStatistic.js").then((m) =>
       m.default.findOne({ sellerId }),
     ),
-    Product.countDocuments({ sellerId, status: "active" }),
+    Product.countDocuments(productQuery),
     import("../models/Follow.js").then((m) =>
       m.default.countDocuments({ followingId: sellerId }),
     ),
