@@ -34,14 +34,20 @@ export async function startSession(sessionId, shopId, userId) {
     name: "Host",
     metadata: JSON.stringify({ role: "host" }),
   });
-  at.addGrant({ roomJoin: true, room: session.liveKitRoomName, canPublish: true });
+  at.addGrant({
+    roomJoin: true,
+    room: session.liveKitRoomName,
+    canPublish: true,
+    canSubscribe: true,
+  });
 
+  const token = await at.toJwt();
   session.status = "live";
   session.startedAt = new Date();
-  session.liveKitToken = at.toJwt();
+  session.liveKitToken = token;
   await session.save({ validateBeforeSave: false });
 
-  return { session, token: at.toJwt() };
+  return { session, token };
 }
 
 export async function getViewerToken(sessionId, userId, displayName = "Viewer") {
@@ -53,9 +59,14 @@ export async function getViewerToken(sessionId, userId, displayName = "Viewer") 
     name: displayName,
     metadata: JSON.stringify({ role: "viewer" }),
   });
-  at.addGrant({ roomJoin: true, room: session.liveKitRoomName, canPublish: false });
+  at.addGrant({
+    roomJoin: true,
+    room: session.liveKitRoomName,
+    canPublish: false,
+    canSubscribe: true,
+  });
 
-  return at.toJwt();
+  return await at.toJwt();
 }
 
 export async function endSession(sessionId, shopId, userId) {
