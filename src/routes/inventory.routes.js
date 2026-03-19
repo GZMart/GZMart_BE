@@ -8,6 +8,7 @@ import {
   getProductInventorySummary,
   getInventoryStats,
   bulkStockUpdate,
+  getLotBreakdown,
 } from "../controllers/inventory.controller.js";
 
 // Import middlewares
@@ -27,6 +28,7 @@ router.get("/transactions", getTransactions);
 router.get("/transactions/:id", getTransaction);
 router.get("/summary/:productId", getProductInventorySummary);
 router.get("/stats", getInventoryStats);
+router.get("/lots/:sku", getLotBreakdown);
 
 // Protected routes (enable after testing)
 // router.post('/stock-in', protect, requireRoles('admin', 'seller'), stockIn);

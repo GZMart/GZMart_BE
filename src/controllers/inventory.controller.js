@@ -199,3 +199,25 @@ export const bulkStockUpdate = asyncHandler(async (req, res, next) => {
     },
   });
 });
+
+/**
+ * @desc    Get lot-by-lot stock breakdown for a SKU (FIFO)
+ * @route   GET /api/inventory/lots/:sku
+ * @access  Private (Admin, Seller)
+ */
+export const getLotBreakdown = asyncHandler(async (req, res, next) => {
+  const { sku } = req.params;
+  const { warehouseId } = req.query;
+
+  if (!sku) {
+    throw new ErrorResponse("Please provide a SKU", 400);
+  }
+
+  const data = await inventoryService.getLotBreakdownBySku(sku, warehouseId || null);
+
+  res.status(200).json({
+    success: true,
+    data,
+  });
+});
+

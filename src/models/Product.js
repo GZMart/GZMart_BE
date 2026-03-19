@@ -137,7 +137,12 @@ const productSchema = new mongoose.Schema(
     categoryId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Category",
-      required: [true, "Category is required"],
+      required: [
+        function () {
+          return this.status !== "draft";
+        },
+        "Category is required",
+      ],
       index: true,
     },
     description: {
@@ -171,7 +176,12 @@ const productSchema = new mongoose.Schema(
     },
     originalPrice: {
       type: Number,
-      required: true,
+      required: [
+        function () {
+          return this.status !== "draft";
+        },
+        "Original price is required for published products",
+      ],
       min: [0, "Original price must be non-negative"],
     },
     preOrderDays: {

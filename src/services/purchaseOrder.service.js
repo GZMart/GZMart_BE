@@ -490,7 +490,7 @@ export const receiveOrderAndCalculateLandedCost = async (
       inventoryTransactions.push(transaction);
     }
 
-    purchaseOrder.status = "COMPLETED";
+    purchaseOrder.status = "Completed";
     purchaseOrder.receivedDate = new Date();
     purchaseOrder.completedBy = userId;
     purchaseOrder.shippingCost = lcSummary.intlShippingVnd;
@@ -892,7 +892,7 @@ export const createPurchaseOrder = async (poData, userId) => {
  */
 export const getPurchaseOrderById = async (purchaseOrderId, user = null) => {
   const purchaseOrder = await PurchaseOrder.findById(purchaseOrderId)
-    .populate("supplierId", "name contactPerson phone email")
+    .populate("supplierId", "name contact")
     .populate("createdBy", "name email")
     .populate("completedBy", "name email");
 
