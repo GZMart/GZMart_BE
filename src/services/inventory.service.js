@@ -1,6 +1,7 @@
 import InventoryTransaction from "../models/InventoryTransaction.js";
 import InventoryItem from "../models/InventoryItem.js";
 import Product from "../models/Product.js";
+import PurchaseOrder from "../models/PurchaseOrder.js";
 import mongoose from "mongoose";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
@@ -71,6 +72,17 @@ export const stockIn = async (transactionData, userId) => {
     // Sync stock back to Product.models for backward compatibility (optional)
     model.stock = stockAfter;
     model.costPrice = inventoryItem.costPrice;
+
+    // Calculate total stock and update product status
+    const allInventoryItems = await InventoryItem.find({ productId }).session(
+      session,
+    );
+    const totalStock = allInventoryItems.reduce(
+      (sum, item) => sum + item.quantity,
+      0,
+    );
+    product.status = totalStock > 0 ? "active" : "out_of_stock";
+
     await product.save({ session });
 
     // Create transaction record
@@ -157,6 +169,17 @@ export const stockOut = async (transactionData, userId) => {
 
     // Sync stock back to Product.models for backward compatibility (optional)
     model.stock = stockAfter;
+
+    // Calculate total stock and update product status
+    const allInventoryItems = await InventoryItem.find({ productId }).session(
+      session,
+    );
+    const totalStock = allInventoryItems.reduce(
+      (sum, item) => sum + item.quantity,
+      0,
+    );
+    product.status = totalStock > 0 ? "active" : "out_of_stock";
+
     await product.save({ session });
 
     // Create transaction record
@@ -256,7 +279,11 @@ export const adjustStock = async (transactionData, userId) => {
 
     // Update cost price if explicitly provided
     const costPriceBefore = inventoryItem.costPrice;
-    if (costPrice !== undefined && costPrice !== null && Number(costPrice) >= 0) {
+    if (
+      costPrice !== undefined &&
+      costPrice !== null &&
+      Number(costPrice) >= 0
+    ) {
       inventoryItem.costPrice = Number(costPrice);
       inventoryItem.costSource = "manual";
       inventoryItem.costSourcePoId = null;
@@ -266,20 +293,39 @@ export const adjustStock = async (transactionData, userId) => {
 
     // Sync stock and costPrice back to Product.models
     model.stock = stockAfter;
-    if (costPrice !== undefined && costPrice !== null && Number(costPrice) >= 0) {
+    if (
+      costPrice !== undefined &&
+      costPrice !== null &&
+      Number(costPrice) >= 0
+    ) {
       model.costPrice = Number(costPrice);
       model.costSource = "manual";
       model.costSourcePoId = null;
     }
+
+    // Calculate total stock and update product status
+    const allInventoryItems = await InventoryItem.find({ productId }).session(
+      session,
+    );
+    const totalStock = allInventoryItems.reduce(
+      (sum, item) => sum + item.quantity,
+      0,
+    );
+    product.status = totalStock > 0 ? "active" : "out_of_stock";
+
     await product.save({ session });
 
     const effectiveCostPrice = inventoryItem.costPrice || 0;
-    const noteText = note || [
-      `Stock adjusted from ${stockBefore} to ${stockAfter}`,
-      costPrice !== undefined && Number(costPrice) !== costPriceBefore
-        ? `Cost price updated from ${costPriceBefore} to ${costPrice}`
-        : null,
-    ].filter(Boolean).join("; ");
+    const noteText =
+      note ||
+      [
+        `Stock adjusted from ${stockBefore} to ${stockAfter}`,
+        costPrice !== undefined && Number(costPrice) !== costPriceBefore
+          ? `Cost price updated from ${costPriceBefore} to ${costPrice}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("; ");
 
     // Create transaction record
     const transaction = await InventoryTransaction.create(
@@ -339,7 +385,11 @@ export const getTransactions = async (filters = {}, options = {}) => {
   if (startDate || endDate) {
     query.createdAt = {};
     if (startDate) query.createdAt.$gte = new Date(startDate);
-    if (endDate) query.createdAt.$lte = new Date(endDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setUTCHours(23, 59, 59, 999);
+      query.createdAt.$lte = end;
+    }
   }
 
   const skip = (page - 1) * limit;
@@ -461,7 +511,11 @@ export const getInventoryStats = async (filters = {}) => {
   if (startDate || endDate) {
     matchStage.createdAt = {};
     if (startDate) matchStage.createdAt.$gte = new Date(startDate);
-    if (endDate) matchStage.createdAt.$lte = new Date(endDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setUTCHours(23, 59, 59, 999);
+      matchStage.createdAt.$lte = end;
+    }
   }
 
   const stats = await InventoryTransaction.aggregate([
@@ -752,3 +806,114 @@ export const confirmStock = async (
     session.endSession();
   }
 };
+
+/**
+ * Get lot-by-lot stock breakdown for a SKU using FIFO.
+ * Returns each "in" transaction as a lot with its remaining quantity
+ * after applying all "out"/"adjust" transactions chronologically.
+ */
+export const getLotBreakdownBySku = async (sku, warehouseId = null) => {
+  const normalizedSku = sku.toUpperCase();
+
+  const inventoryItem = await InventoryItem.findOne({
+    sku: normalizedSku,
+    warehouseId: warehouseId || null,
+  }).lean();
+
+  if (!inventoryItem) {
+    throw new ErrorResponse(`Inventory item not found for SKU: ${normalizedSku}`, 404);
+  }
+
+  const query = { sku: normalizedSku };
+  if (warehouseId) query.warehouseId = warehouseId;
+
+  const transactions = await InventoryTransaction.find(query)
+    .sort({ createdAt: 1 })
+    .lean();
+
+  const inLots = transactions.filter(
+    (t) => t.type === "in" || (t.type === "return" && t.quantity > 0),
+  );
+  const outflows = transactions.filter(
+    (t) => t.quantity < 0 || t.type === "out",
+  );
+
+  // Get current selling price for the SKU
+  const product = await Product.findById(inventoryItem.productId).lean();
+  const model = product?.models?.find((m) => m._id.toString() === inventoryItem.modelId.toString());
+  const currentSellingPrice = model?.price || product?.originalPrice || 0;
+
+  // Build mutable lot list
+  const lots = inLots.map((t) => ({
+    _txId: t._id.toString(),
+    lotDate: t.createdAt,
+    originalQty: Math.abs(t.quantity),
+    remainingQty: Math.abs(t.quantity),
+    costPrice: t.costPrice ?? 0,
+    referenceType: t.referenceType,
+    referenceId: t.referenceId,
+    note: t.note || null,
+  }));
+
+  // FIFO: consume total outflows from oldest lot first
+  let toConsume = outflows.reduce((sum, t) => sum + Math.abs(t.quantity), 0);
+  for (const lot of lots) {
+    if (toConsume <= 0) break;
+    const consumed = Math.min(lot.remainingQty, toConsume);
+    lot.remainingQty -= consumed;
+    toConsume -= consumed;
+  }
+
+  // Keep only lots with remaining stock
+  const activeLots = lots.filter((l) => l.remainingQty > 0);
+
+  // Batch-fetch PO codes for PO-referenced lots (note: POs are saved as 'order' in InventoryTransaction)
+  const poIds = [
+    ...new Set(
+      activeLots
+        .filter((l) => l.referenceType === "order" && l.referenceId)
+        .map((l) => l.referenceId.toString()),
+    ),
+  ];
+
+  const poMap = {};
+  if (poIds.length > 0) {
+    const orders = await PurchaseOrder.find({ _id: { $in: poIds } })
+      .select("_id code supplierId")
+      .populate("supplierId", "name")
+      .lean();
+    orders.forEach((po) => {
+      poMap[po._id.toString()] = {
+        code: po.code,
+        supplierName: po.supplierId?.name || null,
+      };
+    });
+  }
+
+  const result = activeLots.map((lot, idx) => {
+    const poInfo = lot.referenceId
+      ? poMap[lot.referenceId.toString()] || null
+      : null;
+    return {
+      lotIndex: idx + 1,
+      txId: lot._txId,
+      lotDate: lot.lotDate,
+      originalQty: lot.originalQty,
+      remainingQty: lot.remainingQty,
+      costPrice: lot.costPrice,
+      referenceType: lot.referenceType,
+      poId: lot.referenceId || null,
+      poCode: poInfo?.code || null,
+      supplierName: poInfo?.supplierName || null,
+      sellingPrice: currentSellingPrice,
+      note: lot.note,
+    };
+  });
+
+  return {
+    sku: normalizedSku,
+    totalRemaining: result.reduce((s, l) => s + l.remainingQty, 0),
+    lots: result,
+  };
+};
+

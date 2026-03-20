@@ -104,6 +104,14 @@ const modelSchema = new mongoose.Schema(
       min: [0, "Weight must be non-negative"],
       default: 0,
     },
+    weightUnit: {
+      type: String,
+      enum: ["gr", "kg"],
+      default: "gr",
+    },
+    dimLength: { type: Number, default: 0, min: 0 },
+    dimWidth: { type: Number, default: 0, min: 0 },
+    dimHeight: { type: Number, default: 0, min: 0 },
     isActive: {
       type: Boolean,
       default: true,
@@ -129,7 +137,12 @@ const productSchema = new mongoose.Schema(
     categoryId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Category",
-      required: [true, "Category is required"],
+      required: [
+        function () {
+          return this.status !== "draft";
+        },
+        "Category is required",
+      ],
       index: true,
     },
     description: {
@@ -163,9 +176,24 @@ const productSchema = new mongoose.Schema(
     },
     originalPrice: {
       type: Number,
-      required: true,
+      required: [
+        function () {
+          return this.status !== "draft";
+        },
+        "Original price is required for published products",
+      ],
       min: [0, "Original price must be non-negative"],
     },
+    preOrderDays: {
+      type: Number,
+      default: 0,
+      min: [0, "Pre-order days must be non-negative"],
+    },
+    weight: { type: Number, default: 0, min: 0 },
+    weightUnit: { type: String, enum: ["gr", "kg"], default: "gr" },
+    dimLength: { type: Number, default: 0, min: 0 },
+    dimWidth: { type: Number, default: 0, min: 0 },
+    dimHeight: { type: Number, default: 0, min: 0 },
     images: {
       type: [String],
       default: [],

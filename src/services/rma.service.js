@@ -5,6 +5,7 @@ import Order from "../models/Order.js";
 import OrderItem from "../models/OrderItem.js";
 import User from "../models/User.js";
 import InventoryItem from "../models/InventoryItem.js";
+import Product from "../models/Product.js";
 import { rollbackOrderResources } from "../utils/orderInventory.js";
 import coinService from "./coin.service.js";
 import NotificationService from "./notification.service.js";
@@ -695,29 +696,45 @@ export const getOrderReturnRequestForBuyer = async (userId, orderId) => {
  * Get seller's return requests (for orders they sold)
  */
 export const getSellerReturnRequests = async (sellerId, filters = {}) => {
-  // Find orders where seller is the seller (need to implement seller field in Order model)
-  // For now, return all pending requests
+  // Get all return requests first
   const query = { isActive: true };
 
   if (filters.status) {
     query.status = filters.status;
   }
 
-  const returnRequests = await ReturnRequest.find(query)
+  let returnRequests = await ReturnRequest.find(query)
     .populate("orderId")
     .populate("userId", "fullName email")
     .populate("items.orderItemId")
+    .populate("items.productId")
     .sort({ createdAt: -1 })
     .limit(filters.limit || 50);
 
-  const withStockSignals = await Promise.all(
-    returnRequests.map(async (requestDoc) => {
-      const request = requestDoc.toObject();
+  // Filter requests to only include items from this seller
+  const filteredRequests = [];
 
+  for (const requestDoc of returnRequests) {
+    const request = requestDoc.toObject();
+
+    // Filter items to only include products from this seller
+    const sellerItems = request.items.filter((item) => {
+      return (
+        item.productId &&
+        item.productId.sellerId &&
+        item.productId.sellerId.toString() === sellerId.toString()
+      );
+    });
+
+    // Only include this request if it has items from this seller
+    if (sellerItems.length > 0) {
+      request.items = sellerItems;
+
+      // Add stock signals for seller's items
       const stockChecks = await Promise.all(
         (request.items || []).map(async (item) => {
           const modelId = item.orderItemId?.modelId;
-          const productId = item.productId;
+          const productId = item.productId?._id;
 
           if (!modelId || !productId) {
             return {
@@ -728,7 +745,10 @@ export const getSellerReturnRequests = async (sellerId, filters = {}) => {
             };
           }
 
-          const inventory = await InventoryItem.findOne({ productId, modelId });
+          const inventory = await InventoryItem.findOne({
+            productId,
+            modelId,
+          });
           const availableQty =
             inventory?.availableQuantity ?? inventory?.quantity ?? 0;
 
@@ -746,11 +766,11 @@ export const getSellerReturnRequests = async (sellerId, filters = {}) => {
         checks: stockChecks,
       };
 
-      return request;
-    }),
-  );
+      filteredRequests.push(request);
+    }
+  }
 
-  return withStockSignals;
+  return filteredRequests;
 };
 
 /**

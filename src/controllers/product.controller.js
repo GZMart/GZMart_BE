@@ -456,6 +456,7 @@ export const getMyProducts = asyncHandler(async (req, res, next) => {
   const result = await productService.getProductsBySeller(sellerId, {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
+    includeHidden: true,
   });
 
   res.status(200).json({
