@@ -483,7 +483,7 @@ export const getProductsBySeller = asyncHandler(async (req, res, next) => {
     categoryId: categoryId || undefined,
   });
 
-  res.status(200).json({
+  const payload = {
     success: true,
     count: result.products.length,
     pagination: {
@@ -494,8 +494,10 @@ export const getProductsBySeller = asyncHandler(async (req, res, next) => {
     data: {
       seller: result.seller,
       products: result.products,
+      liveModules: result.liveModules || [],
     },
-  });
+  };
+  res.status(200).json(payload);
 });
 
 /**

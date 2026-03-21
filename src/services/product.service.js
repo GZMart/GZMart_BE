@@ -1,7 +1,9 @@
+import mongoose from "mongoose";
 import Product from "../models/Product.js";
 import InventoryItem from "../models/InventoryItem.js";
 import Category from "../models/Category.js";
 import User from "../models/User.js";
+import ShopDecoration from "../models/ShopDecoration.js";
 import Deal from "../models/Deal.js";
 import ShopProgram from "../models/ShopProgram.js";
 import ShopProgramProduct from "../models/ShopProgramProduct.js";
@@ -879,9 +881,9 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
   const { page = 1, limit = 20, categoryId } = options;
   const skip = (page - 1) * limit;
 
-  // Validate Seller exists
+  // Validate Seller exists (include shopDecoration for shop homepage blocks)
   const seller = await User.findById(sellerId).select(
-    "fullName avatar provinceName createdAt aboutMe role profileImage",
+    "fullName avatar provinceName createdAt aboutMe role profileImage shopDecoration",
   );
   if (!seller) {
     throw new ErrorResponse("Seller not found", 404);
@@ -939,12 +941,83 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     sellerObj.cancelDutyRate = 0;
   }
 
+  // ── Shop decoration: live modules + widget data ──────────────────────────
+  // Merge widget product data into liveModules so the FE can render everything
+  // from liveModules alone (no separate widgetData needed for products).
+  const deco = await ShopDecoration.findOne({ sellerId }).lean();
+  let liveModules = [];
+
+  if (deco) {
+    const activeVer = deco.activeVersion || "desktop";
+    const v = deco[activeVer] || {};
+    liveModules = v.published?.modules?.length
+      ? v.published.modules
+      : v.draft?.modules || [];
+
+    // Inject widget product data into matching module types
+    // Only inject into modules that are enabled AND have a product type
+    const { getShopWidgetData: fetchWidgetData } =
+      await import("./shopDecoration.service.js");
+    const widgetData = await fetchWidgetData(sellerId);
+
+    // Map WIDGET_KEYS → MODULE_TYPES
+    const productModuleMap = {
+      featuredProducts: "featured_products",
+      bestSelling: "best_selling",
+      newProducts: "new_products",
+      flashDeals: "flash_deals",
+      addonDeals: "addon_deals",
+      comboPromos: "combo_promos",
+    };
+
+    for (const mod of liveModules) {
+      // Only inject into enabled product modules
+      if (mod.isEnabled === false) continue;
+
+      const widgetKey = Object.keys(productModuleMap).find(
+        (k) => productModuleMap[k] === mod.type,
+      );
+      if (widgetKey && widgetData[widgetKey]?.length > 0) {
+        mod.props = {
+          ...(mod.props || {}),
+          products: widgetData[widgetKey],
+          _fromWidget: true,
+        };
+      }
+
+      // Inject featuredCategories
+      if (
+        mod.type === "featured_categories" &&
+        widgetData.featuredCategories?.length > 0
+      ) {
+        mod.props = {
+          ...(mod.props || {}),
+          categories: widgetData.featuredCategories,
+          _fromWidget: true,
+        };
+      }
+
+      // Inject categoryList
+      if (
+        mod.type === "category_list" &&
+        widgetData.categoryList?.length > 0
+      ) {
+        mod.props = {
+          ...(mod.props || {}),
+          categories: widgetData.categoryList,
+          _fromWidget: true,
+        };
+      }
+    }
+  }
+
   return {
     seller: sellerObj,
     products,
     total,
     page,
     pages: Math.ceil(total / limit),
+    liveModules,
   };
 };
 

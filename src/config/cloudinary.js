@@ -26,13 +26,28 @@ if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY) {
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req, file) => {
-    // Shop banner needs higher resolution
+    // Shop banner / profile cover — high resolution
     if (file.fieldname === "profileImage") {
       return {
         folder: "gzmart/banners",
         allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
         transformation: [
           { width: 1920, height: 600, crop: "limit", quality: "auto:best" },
+        ],
+        resource_type: "auto",
+        use_filename: true,
+        unique_filename: true,
+        overwrite: true,
+        secure: true,
+      };
+    }
+    // Shop decoration banners (carousel, single banner, hotspot) — high resolution, no crop
+    if (file.fieldname === "image") {
+      return {
+        folder: "gzmart/shop-banners",
+        allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
+        transformation: [
+          { width: 1920, height: 800, crop: "limit", quality: "auto:best" },
         ],
         resource_type: "auto",
         use_filename: true,
