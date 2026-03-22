@@ -159,3 +159,30 @@ export const advancedSearch = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Image Search using AI Vision
+ */
+export const imageSearch = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No image file uploaded.",
+      });
+    }
+
+    const imageBuffer = req.file.buffer;
+    const mimeType = req.file.mimetype;
+
+    const result = await searchService.searchByImage(imageBuffer, mimeType);
+
+    res.status(200).json({
+      success: true,
+      message: "Image search completed successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};

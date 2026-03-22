@@ -69,4 +69,17 @@ router.get("/autocomplete", asyncHandler(searchController.autocomplete));
  */
 router.get("/filters", asyncHandler(searchController.getAvailableFilters));
 
+/**
+ * @swagger
+ * /api/search/image:
+ *   post:
+ *     tags: [Search]
+ *     summary: Search by Image
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+import { uploadMemory } from "../middlewares/uploadMemory.middleware.js";
+router.post("/image", uploadMemory.single("image"), asyncHandler(searchController.imageSearch));
+
 export default router;

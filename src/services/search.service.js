@@ -372,6 +372,109 @@ class SearchService {
       inStock,
     });
   }
+
+  /**
+   * AI Image Search
+   */
+  async searchByImage(imageBuffer, mimeType) {
+    const { imageSearchService } = await import("./imageSearch.service.js");
+    
+    // 1. Analyze image with Gemini
+    const analyzedData = await imageSearchService.analyzeProductImage(imageBuffer, mimeType);
+    
+    // 2. Build search string
+    const { category, productName, brand, colors, material, features } = analyzedData;
+    
+    const searchString = [
+      category,
+      productName,
+      brand,
+      ...(colors || []),
+      material,
+      features
+    ].filter(Boolean).join(" ");
+    
+    if (!searchString) {
+      return { analyzedInfo: analyzedData, products: [] };
+    }
+    
+    console.log("Searching products by image features:", searchString);
+    
+    const searchStrategies = [
+      {
+        name: "Full match with brand",
+        filter: {
+          $text: { $search: searchString },
+          isAvailable: true,
+          ...(brand && { brand: { $regex: new RegExp(brand, "i") } }),
+        }
+      },
+      {
+        name: "Text search only",
+        filter: {
+          $text: { $search: searchString },
+          isAvailable: true,
+        }
+      }
+    ];
+    
+    let matchedProducts = [];
+    
+    for (const strategy of searchStrategies) {
+      try {
+        const products = await Product.find(strategy.filter, { score: { $meta: "textScore" } })
+          .populate("categoryId", "name slug")
+          .sort({ score: { $meta: "textScore" } })
+          .limit(16)
+          .lean();
+          
+        if (products.length > 0) {
+          console.log(`Found ${products.length} products using strategy: ${strategy.name}`);
+          matchedProducts = products;
+          break;
+        }
+      } catch (e) {
+        console.error(`Strategy ${strategy.name} failed:`, e.message);
+      }
+    }
+    
+    // Enrich with prices and stock
+    if (matchedProducts.length > 0) {
+      const now = new Date();
+      const productIds = matchedProducts.map((p) => p._id);
+      
+      const allDeals = await Deal.find({
+        productId: { $in: productIds },
+        status: "active",
+        startDate: { $lte: now },
+        endDate: { $gte: now },
+      }).select("productId discountPercent title endDate soldCount quantityLimit").lean();
+      
+      const dealsByProduct = {};
+      allDeals.forEach(deal => { dealsByProduct[deal.productId.toString()] = deal; });
+
+      matchedProducts = matchedProducts.map((product) => {
+        const models = product.models || [];
+        if (models.length > 0) {
+          const prices = models.map((m) => m.price);
+          product.minPrice = Math.min(...prices);
+          product.maxPrice = Math.max(...prices);
+          product.totalStock = models.reduce((sum, m) => sum + m.stock, 0);
+        }
+        
+        const activeDeal = dealsByProduct[product._id.toString()];
+        if (activeDeal) {
+          product.activeDeal = activeDeal;
+        }
+        return product;
+      });
+    }
+
+    return {
+      analyzedInfo: analyzedData,
+      products: matchedProducts
+    };
+  }
 }
 
 export default new SearchService();
