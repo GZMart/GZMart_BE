@@ -980,9 +980,19 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     sellerObj.cancelDutyRate = 0;
   }
 
+  // Attach min/max price per product so the FE seller listing can show price ranges.
+  const enrichedProducts = products.map((p) => {
+    const prices = (p.models || []).map((m) => m.price).filter((x) => typeof x === "number");
+    return {
+      ...p,
+      minPrice: prices.length ? Math.min(...prices) : p.originalPrice || 0,
+      maxPrice: prices.length ? Math.max(...prices) : p.originalPrice || 0,
+    };
+  });
+
   return {
     seller: sellerObj,
-    products,
+    products: enrichedProducts,
     total,
     page,
     pages: Math.ceil(total / limit),

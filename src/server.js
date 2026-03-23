@@ -54,6 +54,7 @@ import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
 import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
 import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
 import { startCoinJobs } from "./jobs/coinExpirationJob.js";
+import { runBatchEmbedding } from "./jobs/batchEmbedding.job.js";
 // Load environment variables
 dotenv.config();
 
@@ -290,7 +291,9 @@ server.listen(PORT, HOST, () => {
   startOrderCleanupJob();
   startRmaAutoApprovalJob();
   startExchangeRateJob();
-  startCoinJobs(); // Start coin expiration jobs
+  startCoinJobs();
+  // [Phase 3 - 5.2] Batch embedding cron — registered at import time
+  runBatchEmbedding();
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s
