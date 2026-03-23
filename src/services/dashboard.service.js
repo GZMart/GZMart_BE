@@ -209,7 +209,7 @@ export const getRevenueOverTime = async (sellerId, period = "daily") => {
  */
 export const getBestSellingProducts = async (sellerId, limit = 5) => {
   const sellerProducts = await Product.find({ sellerId }).select(
-    "_id name originalPrice images",
+    "_id name originalPrice images models",
   );
 
   const sellerProductIds = sellerProducts.map((p) => p._id);
@@ -255,6 +255,8 @@ export const getBestSellingProducts = async (sellerId, limit = 5) => {
         productId: '$_id',
         name: '$product.name',
         originalPrice: '$product.originalPrice',
+        minPrice: { $ifNull: [{ $min: '$product.models.price' }, '$product.originalPrice'] },
+        maxPrice: { $ifNull: [{ $max: '$product.models.price' }, '$product.originalPrice'] },
         totalSold: 1,
       },
     },

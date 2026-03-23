@@ -982,6 +982,15 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     sellerObj.cancelDutyRate = 0;
   }
 
+  // Attach min/max price per product so the FE seller listing can show price ranges.
+  const enrichedProducts = products.map((p) => {
+    const prices = (p.models || []).map((m) => m.price).filter((x) => typeof x === "number");
+    return {
+      ...p,
+      minPrice: prices.length ? Math.min(...prices) : p.originalPrice || 0,
+      maxPrice: prices.length ? Math.max(...prices) : p.originalPrice || 0,
+    };
+  });
   // ── Shop decoration: live modules + widget data ──────────────────────────
   // Merge widget product data into liveModules so the FE can render everything
   // from liveModules alone (no separate widgetData needed for products).
@@ -1054,7 +1063,7 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
 
   return {
     seller: sellerObj,
-    products,
+    products: enrichedProducts,
     total,
     page,
     pages: Math.ceil(total / limit),

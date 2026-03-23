@@ -1,5 +1,6 @@
 import { classifyIntent, extractParams } from "./intentRouter.js";
 import { getTool } from "./tools.js";
+import { sanitizePromptInput } from "../../utils/promptSanitizer.js";
 
 // Import all tools to trigger registerTool() calls
 import "./tools/productSearch.js";
@@ -16,6 +17,7 @@ import "./tools/platformStats.js";
 import "./tools/userGrowth.js";
 import "./tools/categorySales.js";
 import "./tools/sellerPerformance.js";
+import "./tools/priceSuggestion.js";
 
 const AI_API_URL = process.env.AI_API_URL || "https://textgeneration.trongducdoan25.workers.dev/";
 const AI_API_TOKEN = process.env.AI_API_TOKEN;
@@ -93,18 +95,30 @@ ${combinedContext}
 }
 
 async function executeAgent({ message, role = "buyer", userId, sellerId, conversationHistory = [] }) {
-  const { tools: toolNames, isGreeting } = classifyIntent(message, role);
+  // [Safety] Strip prompt-injection patterns from user message
+  const safeMessage = sanitizePromptInput(message);
+  if (safeMessage.blocked) {
+    console.warn(`[Agent] message injection blocked: "${message}" → "${safeMessage.sanitized}"`);
+  }
+
+  // [Safety] Strip injection from conversation history (prevents multi-turn poisoning)
+  const safeHistory = (conversationHistory || []).map((m) => ({
+    ...m,
+    content: sanitizePromptInput(m.content || "").sanitized,
+  }));
+
+  const { tools: toolNames, isGreeting } = classifyIntent(safeMessage.sanitized, role);
 
   if (isGreeting) return { text: buildRoleGreeting(role), products: [] };
 
-  const baseParams = extractParams(message, role, userId, sellerId);
+  const baseParams = extractParams(safeMessage.sanitized, role, userId, sellerId);
 
   const toolResults = await Promise.all(
     toolNames.map(async (name) => {
       const tool = getTool(name);
       if (!tool) return { context: "" };
       try {
-        const params = { ...baseParams, query: message };
+        const params = { ...baseParams, query: safeMessage.sanitized };
         return await tool.execute(params);
       } catch (err) {
         console.error(`[Agent] Tool ${name} failed:`, err.message);
@@ -115,7 +129,7 @@ async function executeAgent({ message, role = "buyer", userId, sellerId, convers
 
   const systemPrompt = buildSystemPrompt(role, toolResults);
 
-  const history = conversationHistory.map((m) => ({
+  const history = safeHistory.map((m) => ({
     role: m.role === "assistant" ? "assistant" : "user",
     content: m.content,
   }));
@@ -126,7 +140,7 @@ async function executeAgent({ message, role = "buyer", userId, sellerId, convers
       Authorization: `Bearer ${AI_API_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ prompt: message, systemPrompt, history }),
+    body: JSON.stringify({ prompt: safeMessage.sanitized, systemPrompt, history }),
   });
 
   if (!res.ok) {

@@ -278,6 +278,11 @@ const productSchema = new mongoose.Schema(
       type: String,
       select: false,
     },
+    // [Phase 3 - 5.2] Tracks when the embedding was last generated/refreshed
+    embeddingUpdatedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
