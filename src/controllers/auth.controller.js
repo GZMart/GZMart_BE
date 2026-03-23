@@ -555,7 +555,9 @@ export const updateProfile = async (req, res, next) => {
       dateOfBirth,
       gender,
       aboutMe,
+      profileImage, // Shop cover photo URL (Cloudinary)
       location, // GPS coordinates { lat, lng, address }
+      shopDecoration, // Seller shop homepage layout { blocks: [], version }
     } = req.body;
 
     logger.info("Profile update - raw req.body:", {
@@ -578,6 +580,7 @@ export const updateProfile = async (req, res, next) => {
     if (dateOfBirth) updateFields.dateOfBirth = dateOfBirth;
     if (gender) updateFields.gender = gender;
     if (aboutMe) updateFields.aboutMe = aboutMe;
+    if (profileImage !== undefined) updateFields.profileImage = profileImage;
 
     // Handle GPS location update
     if (location) {
@@ -592,6 +595,24 @@ export const updateProfile = async (req, res, next) => {
           lng: parseFloat(parsedLocation.lng),
           address: parsedLocation.address || address || "",
         };
+      }
+    }
+
+    // Seller shop decoration (layout blocks + product/category widgets)
+    if (shopDecoration !== undefined) {
+      const parsed =
+        typeof shopDecoration === "string"
+          ? JSON.parse(shopDecoration)
+          : shopDecoration;
+      if (parsed && typeof parsed === "object") {
+        const decoration = {
+          blocks: Array.isArray(parsed.blocks) ? parsed.blocks : [],
+          version: parsed.version || "desktop",
+        };
+        if (parsed.widgets && typeof parsed.widgets === "object") {
+          decoration.widgets = parsed.widgets;
+        }
+        updateFields.shopDecoration = decoration;
       }
     }
 
