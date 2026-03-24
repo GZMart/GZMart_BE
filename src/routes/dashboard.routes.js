@@ -21,6 +21,8 @@ import {
   getUserGrowth,
   getQuickStats,
   getAllDashboardData,
+  getSellerOrderCounts,
+  getSellerRecentOrders,
 } from "../controllers/dashboard.controller.js";
 import { protect, authorize } from "../middlewares/auth.middleware.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
@@ -328,5 +330,20 @@ router.get("/quick-stats", authorize("admin"), asyncHandler(getQuickStats));
  *         description: Success with all dashboard data
  */
 router.get("/admin/all", authorize("admin"), asyncHandler(getAllDashboardData));
+
+/**
+ * @route   GET /api/dashboard/seller-order-counts
+ * @desc    Get seller order counts by status (pending, confirmed, packing, shipping, toShip, cancellation, RMA)
+ * @access  Private (Seller, Admin)
+ */
+router.get("/seller-order-counts", asyncHandler(getSellerOrderCounts));
+
+/**
+ * @route   GET /api/dashboard/seller-recent-orders
+ * @desc    Get recent orders filtered by seller products
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 20)
+ */
+router.get("/seller-recent-orders", asyncHandler(getSellerRecentOrders));
 
 export default router;

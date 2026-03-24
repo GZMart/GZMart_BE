@@ -3,6 +3,7 @@ import {
   saveMessage,
   getConversationsByUser,
   getMessagesByConversation,
+  getUnreadCountByUser,
 } from "../services/chat.service.js";
 import User from "../models/User.js";
 
@@ -113,6 +114,18 @@ export const getAutoReplySettings = async (req, res) => {
     res
       .status(500)
       .json({ message: "Error fetching chat settings", error: error.message });
+  }
+};
+
+// GET /api/chat/unread/count
+export const getUnreadCount = async (req, res) => {
+  try {
+    const userId = req.user?._id;
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    const count = await getUnreadCountByUser(userId);
+    res.json({ count });
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching unread count", error: error.message });
   }
 };
 

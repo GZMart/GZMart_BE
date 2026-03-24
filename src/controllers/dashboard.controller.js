@@ -166,7 +166,7 @@ export const getSalesTrend = asyncHandler(async (req, res) => {
  * @access  Private (Seller, Admin)
  */
 export const getComparisonStats = asyncHandler(async (req, res) => {
-  const { period } = req.query; // 'month', 'week'
+  const { period } = req.query; // calendar: month, week — rolling (aligns with revenue-trend): daily, weekly, monthly, quarterly, yearly
 
   const comparison = await dashboardService.getComparisonStats(
     req.user._id,
@@ -374,7 +374,6 @@ export const getAllDashboardData = asyncHandler(async (req, res) => {
     userGrowthPeriod = "monthly",
   } = req.query;
 
-  // Fetch all dashboard data in parallel
   const [
     overviewStats,
     topProducts,
@@ -415,5 +414,39 @@ export const getAllDashboardData = asyncHandler(async (req, res) => {
       quickStats,
     },
     timestamp: new Date().toISOString(),
+  });
+});
+
+/**
+ * @desc    Get seller order counts by status
+ * @route   GET /api/dashboard/seller-order-counts
+ * @access  Private (Seller, Admin)
+ */
+export const getSellerOrderCounts = asyncHandler(async (req, res) => {
+  const counts = await dashboardService.getSellerOrderCounts(req.user._id);
+
+  res.status(200).json({
+    success: true,
+    data: counts,
+  });
+});
+
+/**
+ * @desc    Get recent orders for seller
+ * @route   GET /api/dashboard/seller-recent-orders
+ * @access  Private (Seller, Admin)
+ */
+export const getSellerRecentOrders = asyncHandler(async (req, res) => {
+  const { limit } = req.query;
+
+  const orders = await dashboardService.getSellerRecentOrders(
+    req.user._id,
+    parseInt(limit) || 20,
+  );
+
+  res.status(200).json({
+    success: true,
+    count: orders.length,
+    data: orders,
   });
 });

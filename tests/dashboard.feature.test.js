@@ -168,8 +168,12 @@ describe("Function B – Revenue Statistics", () => {
   // DB-TC-07
   test("DB-TC-07 – Period comparison (month) shows current, previous, and growth %", async () => {
     mockOrderAggregate
-      .mockResolvedValueOnce([{ orders: 10, revenue: 1_000_000, quantity: 20 }]) // current month
-      .mockResolvedValueOnce([{ orders: 8, revenue: 800_000, quantity: 16 }]); // previous month
+      .mockResolvedValueOnce([
+        { orders: 10, revenue: 1_000_000, quantity: 20, profit: 300_000 },
+      ]) // current month
+      .mockResolvedValueOnce([
+        { orders: 8, revenue: 800_000, quantity: 16, profit: 200_000 },
+      ]); // previous month
 
     const result = await getComparisonStats(SELLER_ID, "month");
 
@@ -180,13 +184,18 @@ describe("Function B – Revenue Statistics", () => {
     expect(result.previousPeriod.orders).toBe(8);
     expect(result.growth.orders).toBe(25); // (10-8)/8 * 100
     expect(result.growth.revenue).toBe(25); // (1M-0.8M)/0.8M * 100
+    expect(result.growth.profit).toBe(50); // (300k-200k)/200k * 100
   });
 
   // DB-TC-08
   test("DB-TC-08 – Period comparison (week) returns correct shape", async () => {
     mockOrderAggregate
-      .mockResolvedValueOnce([{ orders: 5, revenue: 500_000, quantity: 10 }])
-      .mockResolvedValueOnce([{ orders: 4, revenue: 400_000, quantity: 8 }]);
+      .mockResolvedValueOnce([
+        { orders: 5, revenue: 500_000, quantity: 10, profit: 100_000 },
+      ])
+      .mockResolvedValueOnce([
+        { orders: 4, revenue: 400_000, quantity: 8, profit: 80_000 },
+      ]);
 
     const result = await getComparisonStats(SELLER_ID, "week");
 
@@ -194,6 +203,43 @@ describe("Function B – Revenue Statistics", () => {
     expect(result).toHaveProperty("previousPeriod");
     expect(result).toHaveProperty("growth");
     expect(result.growth.orders).toBe(25);
+  });
+
+  // DB-TC-08b – Rolling daily window (matches revenue-trend) uses two aggregate calls with $lt for previous window
+  test("DB-TC-08b – Period comparison (daily rolling) returns shape and growth", async () => {
+    mockOrderAggregate
+      .mockResolvedValueOnce([
+        { orders: 3, revenue: 300_000, quantity: 5, profit: 60_000 },
+      ])
+      .mockResolvedValueOnce([
+        { orders: 2, revenue: 200_000, quantity: 4, profit: 40_000 },
+      ]);
+
+    const result = await getComparisonStats(SELLER_ID, "daily");
+
+    expect(result.currentPeriod.orders).toBe(3);
+    expect(result.currentPeriod.revenue).toBe(300_000);
+    expect(result.growth.orders).toBe(50); // (3-2)/2 * 100
+    expect(result.growth.revenue).toBe(50); // (300k-200k)/200k * 100
+    expect(result.growth.profit).toBe(50); // (60k-40k)/40k * 100
+  });
+
+  // DB-TC-08c – Zero baseline: previous window had no sales → +100% when current has activity
+  test("DB-TC-08c – Comparison with zero previous period returns +100% growth", async () => {
+    mockOrderAggregate
+      .mockResolvedValueOnce([
+        { orders: 3, revenue: 301_000, quantity: 6, profit: -79_000 },
+      ])
+      .mockResolvedValueOnce([
+        { orders: 0, revenue: 0, quantity: 0, profit: 0 },
+      ]);
+
+    const result = await getComparisonStats(SELLER_ID, "daily");
+
+    expect(result.growth.orders).toBe(100);
+    expect(result.growth.revenue).toBe(100);
+    expect(result.growth.quantity).toBe(100);
+    expect(result.growth.profit).toBe(-100);
   });
 });
 
