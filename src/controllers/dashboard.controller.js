@@ -243,6 +243,27 @@ export const getTopSellingProductsWithProfit = asyncHandler(async (req, res) => 
 });
 
 /**
+ * @desc    Get product analytics grouped by category
+ * @route   GET /api/dashboard/product-by-category
+ * @access  Private (Seller, Admin)
+ */
+export const getProductAnalyticsByCategory = asyncHandler(async (req, res) => {
+  const { period, limit } = req.query;
+
+  const analytics = await dashboardService.getProductAnalyticsByCategory(
+    req.user._id,
+    period || "monthly",
+    parseInt(limit) || 8,
+  );
+
+  res.status(200).json({
+    success: true,
+    period: period || "monthly",
+    data: analytics,
+  });
+});
+
+/**
  * @desc    Get overview stats (revenue, orders, users, products with trends)
  * @route   GET /api/dashboard/overview-stats
  * @access  Private (Admin only)

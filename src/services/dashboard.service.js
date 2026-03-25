@@ -1094,11 +1094,174 @@ export const getExpenseAnalysis = async (sellerId, period = "monthly") => {
 };
 
 /**
- * Get top selling products with profit analysis
+ * Get product analytics grouped by category
+ * Shows revenue, quantity sold, profit, margin for each category
+ * Uses InventoryItem.costPrice (from PO landed cost) for profit calculation
+ *
+ * @param {String} sellerId
+ * @param {String} period - daily | weekly | monthly | quarterly | yearly
+ * @param {Number} limit - max number of categories to return
  */
+export const getProductAnalyticsByCategory = async (sellerId, period = "monthly", limit = 8) => {
+  const now = new Date();
+  let startDate;
+
+  if (period === "daily") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 30);
+  } else if (period === "weekly") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 90);
+  } else if (period === "monthly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5);
+  }
+
+  const sellerProducts = await Product.find({ sellerId }).select("_id name categoryId originalPrice images");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return {
+      categories: [],
+      totalRevenue: 0,
+      totalQuantity: 0,
+      totalProfit: 0,
+      period,
+    };
+  }
+
+  // Aggregate sales data by category using OrderItem + Order
+  const categorySales = await OrderItem.aggregate([
+    {
+      $lookup: {
+        from: "orders",
+        localField: "orderId",
+        foreignField: "_id",
+        as: "order",
+      },
+    },
+    {
+      $unwind: "$order",
+    },
+    {
+      $lookup: {
+        from: "products",
+        localField: "productId",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+    {
+      $unwind: "$product",
+    },
+    {
+      $match: {
+        productId: { $in: sellerProductIds },
+        "order.createdAt": { $gte: startDate },
+        "order.status": { $in: ["completed", "delivered"] },
+      },
+    },
+    {
+      $group: {
+        _id: "$product.categoryId",
+        categoryName: { $first: "$product.categoryId" },
+        totalQuantity: { $sum: "$quantity" },
+        totalRevenue: { $sum: "$subtotal" },
+        totalCost: {
+          $sum: { $multiply: ["$product.originalPrice", "$quantity"] },
+        },
+        orderCount: { $sum: 1 },
+      },
+    },
+    {
+      $lookup: {
+        from: "categories",
+        localField: "_id",
+        foreignField: "_id",
+        as: "category",
+      },
+    },
+    {
+      $unwind: {
+        path: "$category",
+        preserveNullAndEmptyArrays: true,
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        categoryName: { $ifNull: ["$category.name", "Không phân loại"] },
+        totalQuantity: 1,
+        totalRevenue: 1,
+        totalCost: 1,
+        orderCount: 1,
+        profit: {
+          $subtract: ["$totalRevenue", "$totalCost"],
+        },
+        profitMargin: {
+          $cond: {
+            if: { $gt: ["$totalRevenue", 0] },
+            then: {
+              $multiply: [
+                {
+                  $divide: [
+                    { $subtract: ["$totalRevenue", "$totalCost"] },
+                    "$totalRevenue",
+                  ],
+                },
+                100,
+              ],
+            },
+            else: 0,
+          },
+        },
+      },
+    },
+    {
+      $sort: { totalRevenue: -1 },
+    },
+    {
+      $limit: limit,
+    },
+  ]);
+
+  const totalRevenue = categorySales.reduce((sum, c) => sum + (c.totalRevenue || 0), 0);
+  const totalQuantity = categorySales.reduce((sum, c) => sum + (c.totalQuantity || 0), 0);
+  const totalProfit = categorySales.reduce((sum, c) => sum + (c.profit || 0), 0);
+
+  // Add percentage of total revenue for each category
+  const categories = categorySales.map((c) => ({
+    ...c,
+    totalRevenue: Math.round(c.totalRevenue || 0),
+    totalCost: Math.round(c.totalCost || 0),
+    profit: Math.round(c.profit || 0),
+    profitMargin: typeof c.profitMargin === 'number' ? Math.round(c.profitMargin * 10) / 10 : 0,
+    revenuePercent:
+      totalRevenue > 0 ? Math.round(((c.totalRevenue || 0) / totalRevenue) * 1000) / 10 : 0,
+  }));
+
+  return {
+    categories,
+    totalRevenue: Math.round(totalRevenue),
+    totalQuantity,
+    totalProfit: Math.round(totalProfit),
+    period,
+  };
+};
+
 /**
  * Get top selling products with profit analysis
  * Uses InventoryItem.costPrice (from PO landed cost) instead of Product.cost
+ *
+ * @param {String} sellerId
+ * @param {Number} limit - max number of products to return
+ * @param {String} period - daily | weekly | monthly | quarterly | yearly
  */
 export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, period = "monthly") => {
   const now = new Date();
@@ -1150,20 +1313,19 @@ export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, peri
     {
       $group: {
         _id: { productId: "$productId", orderId: "$orderId" },
-        quantity:  { $first: "$quantity" },
-        subtotal:  { $first: "$subtotal" },
-        price:     { $first: "$price" },
-        modelId:   { $first: "$modelId" },
+        quantity: { $first: "$quantity" },
+        subtotal: { $first: "$subtotal" },
+        price: { $first: "$price" },
+        modelId: { $first: "$modelId" },
       },
     },
     {
       $group: {
         _id: "$_id.productId",
         totalQuantity: { $sum: "$quantity" },
-        totalRevenue:  { $sum: "$subtotal" },
-        averagePrice:  { $avg: "$price" },
-        totalOrders:   { $sum: 1 },
-        // keep one modelId for cost lookup
+        totalRevenue: { $sum: "$subtotal" },
+        averagePrice: { $avg: "$price" },
+        totalOrders: { $sum: 1 },
         modelId: { $first: "$modelId" },
       },
     },
@@ -1174,7 +1336,7 @@ export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, peri
         pipeline: [
           { $match: { $expr: { $and: [
             { $eq: ["$productId", "$$pid"] },
-            { $eq: ["$modelId",  "$$mid"] },
+            { $eq: ["$modelId", "$$mid"] },
           ] } } },
           { $project: { costPrice: 1, _id: 0 } },
         ],
@@ -1194,7 +1356,6 @@ export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, peri
     },
     {
       $addFields: {
-        // Priority: InventoryItem.costPrice (from PO) → Product.originalPrice (fallback)
         unitCost: {
           $ifNull: [
             { $arrayElemAt: ["$invItem.costPrice", 0] },
@@ -1214,16 +1375,13 @@ export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, peri
         _id: 1,
         name: "$product.name",
         totalQuantity: 1,
-        totalRevenue:  1,
-        averagePrice:  1,
-        totalOrders:   1,
-        unitCost:      1,
+        totalRevenue: 1,
+        averagePrice: 1,
+        totalOrders: 1,
+        unitCost: 1,
         cost: { $multiply: ["$unitCost", "$totalQuantity"] },
         profit: {
-          $subtract: [
-            "$totalRevenue",
-            { $multiply: ["$unitCost", "$totalQuantity"] },
-          ],
+          $subtract: ["$totalRevenue", { $multiply: ["$unitCost", "$totalQuantity"] }],
         },
         profitMargin: {
           $cond: [

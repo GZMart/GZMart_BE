@@ -13,6 +13,7 @@ import {
   getProfitLossAnalysis,
   getExpenseAnalysis,
   getTopSellingProductsWithProfit,
+  getProductAnalyticsByCategory,
   getOverviewStats,
   getTopProducts,
   getRecentOrders,
@@ -167,6 +168,18 @@ router.get("/expense", asyncHandler(getExpenseAnalysis));
 router.get(
   "/top-products-profit",
   asyncHandler(getTopSellingProductsWithProfit),
+);
+
+/**
+ * @route   GET /api/dashboard/product-by-category
+ * @desc    Get product analytics grouped by category (revenue, quantity, profit, margin)
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 8), period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'monthly')
+ * @returns { categories: [], totalRevenue, totalQuantity, totalProfit, period }
+ */
+router.get(
+  "/product-by-category",
+  asyncHandler(getProductAnalyticsByCategory),
 );
 
 // ============= ADMIN DASHBOARD ENDPOINTS =============
