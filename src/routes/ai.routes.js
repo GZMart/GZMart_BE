@@ -290,6 +290,10 @@ router.post("/price-suggest", async (req, res) => {
       cachedAt: result.cachedAt || null,
       // [Multi-strategy Redis cache] Include all strategies for instant switching
       allStrategies: result.allStrategies || null,
+      // [Hướng 2] Chi tiết chi phí nhập hàng + biên lợi nhuận
+      costData: result.costData || null,
+      marginInfo: result.marginInfo || null,
+      suggestedMarginPct: result.suggestedMarginPct || null,
     });
   } catch (error) {
     console.error("[AI price-suggest] Error:", error);
@@ -325,7 +329,8 @@ router.post("/price-suggest-batch", async (req, res) => {
 
     // Phase 1: vector search + batch cache (no LLM). Cache hit → skip rate limit & 30s cooldown.
     // [Phase 3 - 5.1] Pass strategy for Pricing Personas
-    const prep = await prepareBatchPriceSuggestion({ sellerId, productId, modelIds, strategy });
+    // [Fix] Also pass productName so prepareBatchPriceSuggestion can use it in draft mode.
+    const prep = await prepareBatchPriceSuggestion({ sellerId, productId, productName: safeProductName.sanitized, modelIds, strategy });
 
     if (prep.context) {
       return res.json({
@@ -335,9 +340,11 @@ router.post("/price-suggest-batch", async (req, res) => {
     }
 
     if (prep.success && prep.fromCache) {
+      // [Hướng 2] Luôn đính costData mới nhất (từ PO/tồn kho) — cache Redis cũ có thể không có
       return res.json({
         success: true,
         fromCache: true,
+        fromRedis: true,
         cachedAt: prep.cachedAt || null,
         results: prep.results,
         product: prep.product,
@@ -345,6 +352,8 @@ router.post("/price-suggest-batch", async (req, res) => {
         competitors: prep.competitors || [],
         // [Phase 3 - 5.1]
         strategy: prep.strategy || strategy,
+        // [Hướng 2] costData từ PO/tồn kho (luôn được fetch trước cache check)
+        costData: prep.costData || null,
       });
     }
 
@@ -394,6 +403,12 @@ router.post("/price-suggest-batch", async (req, res) => {
       competitors: result.competitors || [],
       // [Phase 3 - 5.1]
       strategy: result.strategy || strategy,
+      // [Hướng 2] Chi tiết chi phí nhập hàng + biên lợi nhuận
+      costData: result.costData || null,
+      // [Multi-strategy Redis cache] All 4 strategies for instant switching
+      allStrategies: result.allStrategies || null,
+      // [Analyzed timestamp] Displayed in modal header
+      analyzedAt: result.analyzedAt || null,
     });
   } catch (error) {
     console.error("[AI price-suggest-batch] Error:", error);

@@ -203,14 +203,19 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
 /**
  * Get orders filtered by specific status
  */
-export const getOrdersByStatus = async (status, pagination = {}) => {
+export const getOrdersByStatus = async (status, pagination = {}, sellerId) => {
   const { page = 1, limit = 10 } = pagination;
   const skip = (page - 1) * limit;
 
+  if (!sellerId) {
+    throw new ErrorResponse("Seller ID is required", 400);
+  }
+
   const validStatuses = [
     "pending",
-    "processing",
-    "shipped",
+    "confirmed",
+    "packing",
+    "shipping",
     "delivered",
     "delivered_pending_confirmation",
     "completed",
@@ -218,6 +223,9 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
     "refunded",
     "refund_pending",
     "under_investigation",
+    // Backward-compatible statuses
+    "processing",
+    "shipped",
   ];
 
   if (!validStatuses.includes(status)) {
@@ -227,7 +235,39 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
     );
   }
 
-  const filter = { status };
+  const sellerProducts = await Product.find({ sellerId }).select("_id");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return {
+      total: 0,
+      page: Number(page),
+      limit: Number(limit),
+      pages: 0,
+      statusCounts: {},
+      data: [],
+    };
+  }
+
+  const orderItems = await OrderItem.find({
+    productId: { $in: sellerProductIds },
+  }).select("orderId");
+  const orderIds = [
+    ...new Set(orderItems.map((item) => item.orderId.toString())),
+  ].map((id) => new mongoose.Types.ObjectId(id));
+
+  if (orderIds.length === 0) {
+    return {
+      total: 0,
+      page: Number(page),
+      limit: Number(limit),
+      pages: 0,
+      statusCounts: {},
+      data: [],
+    };
+  }
+
+  const filter = { _id: { $in: orderIds }, status };
 
   const orders = await Order.find(filter)
     .populate('userId', 'fullName email phone')
@@ -245,6 +285,7 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
   const total = await Order.countDocuments(filter);
 
   const statusCounts = await Order.aggregate([
+    { $match: { _id: { $in: orderIds } } },
     { $group: { _id: "$status", count: { $sum: 1 } } },
   ]);
 

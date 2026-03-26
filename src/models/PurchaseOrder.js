@@ -212,6 +212,11 @@ const purchaseOrderSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    completedAt: {
+      type: Date,
+      default: null,
+      description: "Ngày PO được đánh dấu COMPLETED — dùng cho dashboard cost analysis",
+    },
   },
   {
     timestamps: true,
