@@ -10,6 +10,7 @@ import {
   getProductAnalytics,
   getSalesTrend,
   getComparisonStats,
+  getGrowthComparison,
   getProfitLossAnalysis,
   getExpenseAnalysis,
   getTopSellingProductsWithProfit,
@@ -134,6 +135,17 @@ router.get("/sales-trend", asyncHandler(getSalesTrend));
  * @query   period: 'month' | 'week' (default: 'month')
  */
 router.get("/comparison", asyncHandler(getComparisonStats));
+
+/**
+ * @route   GET /api/dashboard/growth-comparison
+ * @desc    Get growth comparison with optional custom date range
+ * @access  Private (Seller, Admin)
+ * @query   period: 'week' | 'month' | 'year' (default: 'week')
+ * @query   startDate: ISO date string (required for custom range)
+ * @query   endDate: ISO date string (required for custom range)
+ * @returns Object with revenueGrowth, profitGrowth, ordersGrowth, current/previous values
+ */
+router.get("/growth-comparison", asyncHandler(getGrowthComparison));
 
 // ============= PROFIT & LOSS ANALYSIS =============
 
