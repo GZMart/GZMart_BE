@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+import mongoose, { isValidObjectId } from "mongoose";
 import crypto from "crypto";
 import Product from "../../../models/Product.js";
 import PriceSuggestionCache from "../../../models/PriceSuggestionCache.js";
@@ -8,6 +8,35 @@ import embeddingService from "../../embedding.service.js";
 import multiStrategyCache from "../../multiStrategyCache.service.js";
 import { registerTool } from "../tools.js";
 import { sanitizeProductName } from "../../../utils/promptSanitizer.js";
+
+/**
+ * Chuẩn hóa SKU để so khớp PO / kho (GIÀY041 vs GIAY041, khoảng trắng, v.v.).
+ */
+function normalizeSkuKey(s) {
+  if (!s || typeof s !== "string") return "";
+  return s
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/Đ/g, "D");
+}
+
+/** Hai SKU có cùng khóa chuẩn hóa không */
+function skusMatch(a, b) {
+  if (!a || !b) return false;
+  return normalizeSkuKey(a) === normalizeSkuKey(b);
+}
+
+/** Các biến thể để query Mongo ($in) — PO có thể lưu GIÀY… hoặc GIAY… */
+function buildSkuQueryVariants(sku) {
+  if (!sku || typeof sku !== "string") return [];
+  const t = sku.trim();
+  if (!t) return [];
+  const upper = t.toUpperCase();
+  const folded = normalizeSkuKey(t);
+  return [...new Set([upper, folded].filter(Boolean))];
+}
 
 const AI_API_URL = process.env.AI_API_URL || "https://textgeneration.trongducdoan25.workers.dev/";
 const AI_API_TOKEN = process.env.AI_API_TOKEN;
@@ -158,39 +187,137 @@ function computeMarketStats(competitors) {
  * @param {string} sku - SKU của model cần lấy chi phí
  * @returns {Object} Chi tiết chi phí nhập hàng
  */
-async function fetchCostData(productId, sku) {
-  const DEFAULT_EXCHANGE_RATE = 3500; // VNĐ/CNY
+/**
+ * Chọn dòng PO phù hợp: ưu tiên modelId, sau đó khớp SKU (có chuẩn hóa dấu).
+ */
+function findPoLine(po, sku, modelId) {
+  if (!po?.items?.length) return null;
+  if (modelId && isValidObjectId(modelId)) {
+    const mid = String(modelId);
+    const byModel = po.items.find((i) => i.modelId?.toString() === mid);
+    if (byModel) return byModel;
+  }
+  if (sku && String(sku).trim()) {
+    const bySku = po.items.find((i) => skusMatch(i.sku, sku));
+    if (bySku) return bySku;
+  }
+  return null;
+}
 
-  // 1. Tìm PO gần nhất đã COMPLETED cho sản phẩm này (có sku trùng)
-  //    Sắp xếp theo completedAt descending → lấy đơn mới nhất
-  const latestPO = await PurchaseOrder.findOne({
-    status: { $in: ["COMPLETED", "Completed"] },
-    "items.sku": sku.toUpperCase(),
+/**
+ * Tìm PO theo productId trên dòng hàng (khi SKU listing ≠ SKU trên PO).
+ */
+async function findPoByLinkedProduct(productId, sku, modelId) {
+  if (!productId || !isValidObjectId(productId)) return null;
+  const pid = new mongoose.Types.ObjectId(productId);
+
+  const tryStatuses = [
+    { list: ["COMPLETED", "Completed"], estimate: false },
+    { list: ["ORDERED", "ARRIVED_VN"], estimate: true },
+  ];
+
+  for (const { list, estimate } of tryStatuses) {
+    const pos = await PurchaseOrder.find({
+      status: { $in: list },
+      "items.productId": pid,
+    })
+      .sort({ updatedAt: -1 })
+      .limit(30)
+      .lean();
+
+    for (const po of pos) {
+      const lines = (po.items || []).filter((i) => i.productId?.toString() === pid.toString());
+      if (!lines.length) continue;
+
+      let item = null;
+      if (modelId && isValidObjectId(modelId)) {
+        const mid = String(modelId);
+        item = lines.find((l) => l.modelId?.toString() === mid);
+      }
+      if (!item && sku?.trim()) {
+        item = lines.find((l) => skusMatch(l.sku, sku));
+      }
+      if (!item && lines.length === 1) {
+        item = lines[0];
+      }
+      if (item) {
+        return { po, item, isEstimate: estimate };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Lấy PO từ InventoryItem.costSourcePoId (đồng bộ với màn hình tồn kho / "via PO").
+ */
+async function fetchCostDataFromInventoryPoLink(productId, modelId) {
+  if (!productId || !isValidObjectId(productId) || !modelId || !isValidObjectId(modelId)) {
+    return null;
+  }
+  const inv = await InventoryItem.findOne({
+    productId: new mongoose.Types.ObjectId(productId),
+    modelId: new mongoose.Types.ObjectId(modelId),
+    costSourcePoId: { $ne: null },
   })
     .sort({ updatedAt: -1 })
     .lean();
 
-  if (!latestPO) {
-    // Fallback: thử tìm PO đang ORDERED hoặc ARRIVED_VN (hàng đang về)
-    const inTransitPO = await PurchaseOrder.findOne({
-      status: { $in: ["ORDERED", "ARRIVED_VN"] },
-      "items.sku": sku.toUpperCase(),
+  if (!inv?.costSourcePoId) return null;
+
+  const po = await PurchaseOrder.findById(inv.costSourcePoId).lean();
+  if (!po) return null;
+
+  const item = findPoLine(po, inv.sku, modelId);
+  if (!item) return null;
+
+  const estimate = !["COMPLETED", "Completed"].includes(po.status || "");
+  return buildCostBreakdown(po, item.sku, estimate, modelId, item);
+}
+
+async function fetchCostData(productId, sku, modelId = null) {
+  const skuTrim = typeof sku === "string" ? sku.trim() : "";
+  const variants = buildSkuQueryVariants(skuTrim);
+
+  const findPoBySkuVariants = async (statusList) => {
+    if (!variants.length) return null;
+    return PurchaseOrder.findOne({
+      status: { $in: statusList },
+      "items.sku": { $in: variants },
     })
       .sort({ updatedAt: -1 })
       .lean();
+  };
 
-    if (!inTransitPO) {
-      return {
-        hasCostData: false,
-        message: "Chưa có dữ liệu nhập hàng nào cho SKU này.",
-      };
-    }
+  // 1) PO hoàn thành — khớp SKU (nhiều biến thể chữ)
+  let latestPO = await findPoBySkuVariants(["COMPLETED", "Completed"]);
+  let isEstimate = false;
 
-    // Có PO đang vận chuyển → vẫn tính chi phí (estimate)
-    return buildCostBreakdown(inTransitPO, sku, true);
+  if (!latestPO) {
+    latestPO = await findPoBySkuVariants(["ORDERED", "ARRIVED_VN"]);
+    if (latestPO) isEstimate = true;
   }
 
-  return buildCostBreakdown(latestPO, sku, false);
+  if (latestPO) {
+    return buildCostBreakdown(latestPO, skuTrim || latestPO.items?.[0]?.sku, isEstimate, modelId);
+  }
+
+  // 2) Fallback: dòng PO đã gắn productId + modelId (SKU có thể lệch dấu / nhập tay)
+  const linked = await findPoByLinkedProduct(productId, skuTrim, modelId);
+  if (linked) {
+    return buildCostBreakdown(linked.po, linked.item.sku, linked.isEstimate, modelId, linked.item);
+  }
+
+  // 3) Fallback: bản ghi tồn kho trỏ thẳng tới PO
+  const fromInv = await fetchCostDataFromInventoryPoLink(productId, modelId);
+  if (fromInv) return fromInv;
+
+  return {
+    hasCostData: false,
+    message: skuTrim
+      ? "Chưa có dữ liệu nhập hàng nào cho SKU/phiên bản này (hoặc PO chưa ở trạng thái hoàn thành)."
+      : "Chưa có SKU trên listing hoặc chưa liên kết phiên bản với phiếu nhập.",
+  };
 }
 
 /**
@@ -200,15 +327,14 @@ async function fetchCostData(productId, sku) {
  * @param {Object} po - PurchaseOrder document (lean)
  * @param {string} sku - SKU cần tính chi phí
  * @param {boolean} isEstimate - true nếu PO chưa COMPLETED (chi phí có thể thay đổi)
+ * @param {string|null} modelId - ObjectId model (ưu tiên khớp dòng PO)
+ * @param {Object|null} explicitItem - dòng PO đã xác định (bỏ qua tìm lại)
  */
-function buildCostBreakdown(po, sku, isEstimate = false) {
+function buildCostBreakdown(po, sku, isEstimate = false, modelId = null, explicitItem = null) {
   const DEFAULT_EXCHANGE_RATE = 3500;
   const rate = po.importConfig?.exchangeRate || DEFAULT_EXCHANGE_RATE;
 
-  // Tìm item trong PO
-  const item = po.items?.find(
-    (i) => i.sku?.toUpperCase() === sku.toUpperCase()
-  );
+  const item = explicitItem || findPoLine(po, sku, modelId);
 
   if (!item) {
     return { hasCostData: false, message: "Không tìm thấy item trong PO." };
@@ -668,7 +794,7 @@ Phân tích rating:
 - Luôn đảm bảo biên lợi nhuận > 10%.
 
 Trả về ĐÚNG JSON (không markdown):
-{"suggestedPrice": <số nguyên VND>, "reasoning": "<giải thích 2-3 dòng tiếng Việt, nếu có chi phí PO thì giải thích kèm biên lợi nhuận và chi phí>"}`;
+{"suggestedPrice": <số nguyên VND>, "reasoning": "<câu giải thích ngắn gọn tổng hợp 1-2 dòng tiếng Việt về quyết định định giá>"}`;
 
   const fmt = (n) => (n != null && typeof n === "number" ? Math.round(n) : "N/A");
   const prompt = `Sản phẩm: ${safeProductName.sanitized}
@@ -711,9 +837,9 @@ Khi đề xuất giá, hãy GIẢI THÍCH RÕ:
 1. Giá đề xuất có đảm bảo biên ≥ 10% trên landed cost không?
 2. So với thị trường (avg ${refAvg.toLocaleString("vi-VN")}₫), giá này có cạnh tranh không?
 3. Các chi phí nào ảnh hưởng nhiều nhất đến giá vốn?
-` : `- Chưa có dữ liệu chi phí nhập hàng từ Purchase Order.
+` : `- Chưa có thông tin phiếu nhập (Purchase Order) cho sản phẩm này → KHÔNG thể tính giá vốn landed.
 - Giá vốn tạm thời = giá hiện tại của seller.
-- Nếu có dữ liệu PO, biên lợi nhuận sẽ được tính chính xác hơn.`}
+- TRONG PHẦN reasoning, CẦN ghi rõ: "⚠️ Chưa có thông tin phiếu nhập. Không thể tính chính xác giá vốn và biên lợi nhuận."`}
 - Nếu seller có rating cao hơn đáng kể so với đối thủ (≥0.3⭐), có thể đề xuất giá cao hơn avg 5-10%.
 - Nếu seller có rating thấp hơn avg, khuyến khích cải thiện chất lượng thay vì giảm giá.
 - Nếu confidence = "low", tránh đề xuất giá quá thấp vì dữ liệu thị trường mỏng.`;
@@ -756,13 +882,43 @@ Khi đề xuất giá, hãy GIẢI THÍCH RÕ:
         );
         suggested = refAvg;
       }
-      // [Hướng 2] Enhance reasoning với chi tiết chi phí nếu có PO
+      // [Hướng 2] Enhance reasoning: tạo lý giải chi tiết từng dòng chi phí
       let reasoning = parsed.reasoning || "Đề xuất theo phân tích thị trường nâng cao.";
       if (costData?.hasCostData) {
+        const lines = [];
+        lines.push(`Giá đề xuất: ${suggested.toLocaleString("vi-VN")}₫`);
+
+        // Chi phí nhập hàng chi tiết
+        lines.push("Chi tiết giá vốn landed:");
+        lines.push(`  1. Giá hàng (CNY→VND): ${costData.breakdown.productCostCny}¥ × ${costData.breakdown.exchangeRate.toLocaleString("vi-VN")}₫ = ${costData.breakdown.productCostVnd.toLocaleString("vi-VN")}₫`);
+        lines.push(`  2. Phí dịch vụ mua hàng (${(costData.breakdown.buyingServiceFeeRate * 100).toFixed(1)}%): +${costData.breakdown.buyingServiceFeeVnd.toLocaleString("vi-VN")}₫`);
+        if (costData.breakdown.shippingCostPerUnit > 0) {
+          lines.push(`  3. Cước vận chuyển QT (${costData.breakdown.chargeableWeightKg}kg × ${costData.breakdown.shippingRatePerKg.toLocaleString("vi-VN")}₫/kg): +${costData.breakdown.shippingCostPerUnit.toLocaleString("vi-VN")}₫`);
+        } else {
+          lines.push(`  3. Cước vận chuyển QT: Chưa có dữ liệu`);
+        }
+        if (costData.breakdown.taxPerUnit > 0) {
+          lines.push(`  4. Thuế nhập khẩu: +${costData.breakdown.taxPerUnit.toLocaleString("vi-VN")}₫`);
+        } else {
+          lines.push(`  4. Thuế nhập khẩu: Không có`);
+        }
+        if (costData.breakdown.fixedCosts.perUnit > 0) {
+          lines.push(`  5. Chi phí cố định (ship nội TQ + đóng gói + ship nội VN): +${costData.breakdown.fixedCosts.perUnit.toLocaleString("vi-VN")}₫`);
+        } else {
+          lines.push(`  5. Chi phí cố định: Không có`);
+        }
+        lines.push(`  ➤ TỔNG GIÁ VỐN LANDED: ${costData.landedCostPerUnit.toLocaleString("vi-VN")}₫`);
+
         const suggestedMarginPct = costData.landedCostPerUnit > 0
           ? ((suggested - costData.landedCostPerUnit) / costData.landedCostPerUnit * 100).toFixed(1)
           : "N/A";
-        reasoning = `Giá đề xuất ${suggested.toLocaleString("vi-VN")}₫ đảm bảo biên lợi nhuận ${suggestedMarginPct}% trên giá vốn landed ${costData.landedCostPerUnit.toLocaleString("vi-VN")}₫. ${parsed.reasoning || ""}`;
+        lines.push(`Biên lợi nhuận trên giá vốn landed: ${suggestedMarginPct}%`);
+
+        if (parsed.reasoning) {
+          lines.push(`Phân tích: ${parsed.reasoning}`);
+        }
+
+        reasoning = lines.join("\n");
       }
       return {
         suggestedPrice: Math.round(suggested),
@@ -780,6 +936,8 @@ Khi đề xuất giá, hãy GIẢI THÍCH RÕ:
   let fallbackReasoning = "Đề xuất theo giá trung bình có trọng số thị trường.";
   if (costData?.hasCostData) {
     fallbackReasoning = `Giá đề xuất ${(fallbackAvg || 0).toLocaleString("vi-VN")}₫ đảm bảo biên lợi nhuận ${((fallbackAvg > 0 && costData.landedCostPerUnit > 0) ? ((fallbackAvg - costData.landedCostPerUnit) / costData.landedCostPerUnit * 100).toFixed(1) : "N/A")}% trên giá vốn landed ${costData.landedCostPerUnit.toLocaleString("vi-VN")}₫.`;
+  } else {
+    fallbackReasoning = "Chưa có thông tin phiếu nhập (Purchase Order) cho sản phẩm này. Không thể tính chính xác giá vốn landed. Giá đề xuất dựa hoàn toàn vào phân tích thị trường.";
   }
   return {
     suggestedPrice: fallbackAvg || marketStats.avg,
@@ -803,23 +961,44 @@ async function execute({ sellerId, query, productId, modelId, strategy = "balanc
   //   };
   // }
 
-  // 1. Find seller's products matching the query
-  // [Phase 1 - 3.2] Added rating to select
-  const sellerProducts = await Product.find({
-    sellerId: sellerOid,
-    status: "active",
-    ...(productId ? { _id: new mongoose.Types.ObjectId(productId) } : {}),
-  })
-    .select("name originalPrice rating sold models categoryId brand")
-    .limit(5)
-    .lean();
+  // 1. Resolve the listing being priced: saved product by id, or draft name from the form.
+  // [Fix] Previously, a non-ObjectId productId (e.g. temp-*) skipped _id in the query,
+  // so Product.find returned arbitrary active listings and sellerProducts[0] was wrong —
+  // the UI and LLM then showed another product's name while searchTerm still used `query`.
+  let targetProduct;
+  const q = typeof query === "string" ? query.trim() : "";
 
-  if (!sellerProducts.length) {
-    return { context: "Shop chưa có sản phẩm active nào để phân tích giá." };
+  if (productId && isValidObjectId(productId)) {
+    const found = await Product.findOne({
+      sellerId: sellerOid,
+      status: "active",
+      _id: new mongoose.Types.ObjectId(productId),
+    })
+      .select("name originalPrice rating sold models categoryId brand")
+      .lean();
+
+    if (!found) {
+      return { context: "Không tìm thấy sản phẩm này trong shop của bạn." };
+    }
+    targetProduct = found;
+  } else if (q) {
+    targetProduct = {
+      _id: null,
+      name: q,
+      originalPrice: 0,
+      models: [],
+      rating: 0,
+      categoryId: null,
+      brand: null,
+    };
+  } else {
+    return {
+      context:
+        "Cần nhập tên sản phẩm khi tạo mới, hoặc mở đề xuất giá từ sản phẩm đã lưu (productId hợp lệ).",
+    };
   }
 
-  const targetProduct = sellerProducts[0];
-  const searchTerm = query || targetProduct.name;
+  const searchTerm = q || targetProduct.name;
   let competitors = [];
   try {
     const queryVector = await embeddingService.getEmbedding(searchTerm);
@@ -950,16 +1129,17 @@ async function execute({ sellerId, query, productId, modelId, strategy = "balanc
     : 0;
 
   // [Hướng 2] Lấy chi phí nhập hàng từ PurchaseOrder
-  // Dùng SKU của model được chọn hoặc SKU đầu tiên
+  // Dùng SKU của model được chọn hoặc SKU đầu tiên; luôn truyền modelId để fallback theo productId / tồn kho
   const targetSku = selectedModel?.sku || targetProduct.models?.[0]?.sku || "";
+  const modelIdStr = selectedModel?._id?.toString() || null;
   let costData = null;
-  if (targetSku) {
+  if (targetSku || (targetProduct._id && modelIdStr)) {
     try {
-      costData = await fetchCostData(targetProduct._id, targetSku);
+      costData = await fetchCostData(targetProduct._id, targetSku, modelIdStr);
       if (costData?.hasCostData) {
         console.log(`[priceSuggestion] [Hướng 2] Cost data loaded from PO ${costData.poCode}: landed cost = ${costData.landedCostPerUnit.toLocaleString("vi-VN")}₫`);
       } else {
-        console.log(`[priceSuggestion] [Hướng 2] No cost data for SKU ${targetSku}: ${costData?.message || "unknown"}`);
+        console.log(`[priceSuggestion] [Hướng 2] No cost data for SKU ${targetSku || "(empty)"} model ${modelIdStr || "(none)"}: ${costData?.message || "unknown"}`);
       }
     } catch (err) {
       console.warn(`[priceSuggestion] [Hướng 2] fetchCostData error:`, err.message);
@@ -969,7 +1149,9 @@ async function execute({ sellerId, query, productId, modelId, strategy = "balanc
 
   // [Phase 2 - 4.2] Check cache before calling LLM
   // [Multi-strategy Redis cache] Check all 4 strategies at once — switching strategy is instant
-  const productIdStr = targetProduct._id.toString();
+  const productIdStr = targetProduct._id
+    ? targetProduct._id.toString()
+    : `draft-${sellerOid}-${crypto.createHash("sha256").update(searchTerm).digest("hex").slice(0, 24)}`;
 
   // Use raw competitor list for cache key (same format as makeMarketHash in multiStrategyCache)
   const competitorsForCache = competitors.map((c) => ({
@@ -983,6 +1165,16 @@ async function execute({ sellerId, query, productId, modelId, strategy = "balanc
   );
   if (redisCached && redisCached.suggestedPrice != null) {
     console.log(`[priceSuggestion] Redis cache HIT for "${strategy}" on product ${productIdStr}`);
+    // Luôn ưu tiên costData vừa tính từ PO/tồn kho — cache Redis cũ thường không có trường này
+    const mergedCostData = costData ?? redisCached.costData ?? null;
+    const mergedMargin = mergedCostData?.hasCostData
+      ? calculateMargin(Number(currentPrice), mergedCostData.landedCostPerUnit)
+      : null;
+    const sug = Number(redisCached.suggestedPrice);
+    const mergedSuggestedMarginPct = mergedCostData?.hasCostData && mergedCostData.landedCostPerUnit > 0 && sug > 0
+      ? Math.round(((sug - mergedCostData.landedCostPerUnit) / mergedCostData.landedCostPerUnit) * 1000) / 10
+      : redisCached.suggestedMarginPct ?? null;
+
     return {
       context: redisCached.context || "",
       suggestedPrice: redisCached.suggestedPrice,
@@ -998,8 +1190,9 @@ async function execute({ sellerId, query, productId, modelId, strategy = "balanc
       fromCache: true,
       fromRedis: true,
       cachedAt: redisCached.savedAt || null,
-      // [Hướng 2] Cost data
-      costData: redisCached.costData || null,
+      costData: mergedCostData,
+      marginInfo: mergedMargin,
+      suggestedMarginPct: mergedSuggestedMarginPct,
     };
   }
   console.log(`[priceSuggestion] Redis cache MISS for "${strategy}" on product ${productIdStr}`);
@@ -1081,13 +1274,14 @@ async function execute({ sellerId, query, productId, modelId, strategy = "balanc
   }));
 
   const productObj = {
-    id: targetProduct._id,
+    id: targetProduct._id ?? null,
     name: targetProduct.name,
     currentPrice,
     brand: sellerBrand,
     rating: sellerRating,
     modelId: selectedModel?._id?.toString() || null,
     modelSku: selectedModel?.sku || null,
+    isDraftListing: !targetProduct._id,
   };
 
   // [Hướng 2] Tính margin dựa trên landed cost (nếu có)
@@ -1272,27 +1466,200 @@ ${competitorLines.join("\n")}
 /**
  * [Batch] Phase 1: product + vector search + batch cache read. No LLM.
  * [Phase 3 - 5.1] Added strategy parameter for Pricing Personas.
+ * [Fix] Added draft-mode support: when productId is not a valid ObjectId,
+ *       use productName for vector search and handle locally-defined variants.
  * Returns { fromCache } | { pendingLLM, precompute } | { context } error.
  */
-async function prepareBatchPriceSuggestion({ sellerId, productId, modelIds, strategy = "balanced" }) {
+async function prepareBatchPriceSuggestion({ sellerId, productId, productName, modelIds, strategy = "balanced" }) {
   if (!sellerId) return { context: "Cần sellerId để đề xuất giá." };
   if (!modelIds || !modelIds.length) return { context: "Cần danh sách modelIds." };
 
   const sellerOid = new mongoose.Types.ObjectId(sellerId);
   const MAX_BATCH = 50;
   const safeModelIds = modelIds.slice(0, MAX_BATCH);
+  const q = typeof productName === "string" ? productName.trim() : "";
 
-  const sellerProducts = await Product.find({
-    sellerId: sellerOid,
-    status: "active",
-    ...(productId ? { _id: new mongoose.Types.ObjectId(productId) } : {}),
-  })
+  // ── Draft mode: product not yet saved ──────────────────────────────────────
+  // productId is a temp string (e.g. "temp-1742000000000") or empty.
+  // We still need to run vector search to find competitors, so we build a
+  // synthetic targetProduct from the form data and treat all modelIds as
+  // "local" variants (no DB _id yet — they will be resolved via tierIndex).
+  const isDraft = !productId || !isValidObjectId(productId);
+
+  if (isDraft) {
+    if (!q) {
+      return { context: "Cần nhập tên sản phẩm để phân tích giá." };
+    }
+
+    // Build a synthetic targetProduct so downstream code (vector search,
+    // LLM prompt) uses the correct name.
+    const targetProduct = {
+      _id: null,
+      name: q,
+      originalPrice: 0,
+      models: [],
+      rating: 0,
+      categoryId: null,
+      brand: null,
+    };
+    const draftId = `draft-${sellerOid}-${crypto.createHash("sha256").update(q).digest("hex").slice(0, 24)}`;
+
+    // For draft mode, ALL modelIds are treated as "local" — keyed by clientId (e.g. m-0-1).
+    const parseTierIndexFromClientModelId = (id) => {
+      if (typeof id !== "string") return [];
+      if (id.startsWith("m-idx-")) return [];
+      if (id.startsWith("m-")) {
+        const rest = id.slice(2);
+        if (!rest) return [];
+        return rest
+          .split("-")
+          .map((n) => parseInt(n, 10))
+          .filter((n) => !Number.isNaN(n));
+      }
+      if (/^\d+(?:-\d+)*$/.test(id)) {
+        return id
+          .split("-")
+          .map((n) => parseInt(n, 10))
+          .filter((n) => !Number.isNaN(n));
+      }
+      return [];
+    };
+    const localModelMap = new Map();
+    safeModelIds.forEach((id) => {
+      localModelMap.set(String(id), {
+        _id: id,
+        tierIndex: parseTierIndexFromClientModelId(String(id)),
+        price: 0,
+        sku: "",
+      });
+    });
+
+    const allLocalModelIds = [...localModelMap.keys()];
+
+    // Do vector search using the draft product name
+    let competitors = [];
+    let topSeller = null;
+    let marketStats = computeMarketStats([]);
+    try {
+      const queryVector = await embeddingService.getEmbedding(q);
+      const queryResult = await Product.aggregate([
+        {
+          $vectorSearch: {
+            index: "product_vector_index",
+            path: "embedding",
+            queryVector,
+            numCandidates: 60,
+            limit: 15,
+            filter: { status: "active" },
+          },
+        },
+        { $match: { sellerId: { $ne: sellerOid } } },
+        {
+          $project: {
+            name: 1, originalPrice: 1, "models.price": 1,
+            rating: 1, sold: 1, categoryId: 1, score: { $meta: "vectorSearchScore" },
+          },
+        },
+        { $match: { score: { $gte: 0.82 } } },
+      ]);
+      if (queryResult.length) competitors = queryResult;
+      else throw new Error("No competitors met the similarity threshold");
+    } catch {
+      const tokens = q.split(/\s+/).filter((w) => w.length > 2).slice(0, 4);
+      const nameRegex = new RegExp(tokens.join("|"), "i");
+      competitors = await Product.find({
+        sellerId: { $ne: sellerOid },
+        status: "active",
+        name: nameRegex,
+      })
+        .select("name originalPrice models.price rating sold categoryId")
+        .limit(20)
+        .lean();
+    }
+
+    if (!competitors.length) {
+      return { context: `Không tìm thấy sản phẩm đối thủ để so sánh cho "${q}".` };
+    }
+
+    marketStats = computeMarketStats(competitors);
+    topSeller = [...competitors].sort((a, b) => (b.sold ?? 0) - (a.sold ?? 0))[0];
+    const sellerRating = 0;
+    const avgCompetitorRating = competitors.length
+      ? (competitors.reduce((sum, c) => sum + (c.rating ?? 0), 0) / competitors.length).toFixed(1)
+      : 0;
+    const refAvg = marketStats.confidence === "high"
+      ? marketStats.clusterWeightedAvg : marketStats.weightedAvg;
+    const obfuscatedCompetitors = competitors.map((c) => ({
+      id: obfuscateCompetitorId(c._id),
+      name: c.name,
+      price: c.models?.[0]?.price || c.originalPrice,
+      rating: c.rating ?? 0,
+      sold: c.sold ?? 0,
+      score: c.score ?? null,
+      brand: c.brand ?? null,
+    }));
+    const marketData = {
+      min: marketStats.min, avg: marketStats.avg, max: marketStats.max,
+      weightedAvg: marketStats.weightedAvg,
+      median: marketStats.median || marketStats.weightedAvg,
+      clusterMin: marketStats.clusterMin || marketStats.min,
+      clusterAvg: marketStats.clusterAvg || refAvg,
+      clusterMax: marketStats.clusterMax || marketStats.max,
+      clusterWeightedAvg: marketStats.clusterWeightedAvg || refAvg,
+      clusterMedian: marketStats.clusterMedian || marketStats.median || refAvg,
+      clusterCount: marketStats.clusterCount,
+      totalCount: marketStats.totalCount,
+      confidence: marketStats.confidence,
+      count: competitors.length,
+      topSeller: topSeller
+        ? { name: topSeller.name, sold: topSeller.sold, price: topSeller.models?.[0]?.price || topSeller.originalPrice }
+        : null,
+    };
+
+    // Group all local models under price 0 so they all get the same suggestion
+    const priceGroups = new Map();
+    priceGroups.set(0, allLocalModelIds);
+
+    return {
+      pendingLLM: true,
+      precompute: {
+        productIdStr: draftId,
+        sellerId,
+        batchCacheKey: "",
+        targetProduct,
+        // In draft mode modelMap is empty; we use localModelMap below
+        modelMap: localModelMap,
+        localModelMap,
+        validModelIds: allLocalModelIds,
+        marketStats,
+        topSeller,
+        sellerRating,
+        avgCompetitorRating,
+        obfuscatedCompetitors,
+        marketData,
+        priceGroups,
+        strategy,
+        sellerBrand: "No-brand",
+        totalStock: 0,
+        costData: null,
+        competitors,
+        isDraftMode: true,
+      },
+    };
+  }
+
+  // ── Normal mode: product exists in DB ─────────────────────────────────────
+  const filter = { sellerId: sellerOid, status: "active" };
+  if (productId && isValidObjectId(productId)) {
+    filter._id = new mongoose.Types.ObjectId(productId);
+  }
+  const sellerProducts = await Product.find(filter)
     .select("name originalPrice rating sold models categoryId brand tiers")
     .limit(5)
     .lean();
 
   if (!sellerProducts.length) {
-    return { context: "Shop chưa có sản phẩm active nào để phân tích giá." };
+    return { context: "Không tìm thấy sản phẩm này trong shop của bạn." };
   }
 
   const targetProduct = sellerProducts[0];
@@ -1305,9 +1672,6 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, modelIds, stra
   });
 
   const validModelIds = safeModelIds.filter((id) => modelMap.has(id));
-  if (!validModelIds.length) {
-    return { context: "Không tìm thấy variant nào hợp lệ trong sản phẩm này." };
-  }
 
   let competitors = [];
   let topSeller = null;
@@ -1404,10 +1768,11 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, modelIds, stra
   // [Hướng 2] Lấy chi phí nhập hàng từ PurchaseOrder cho batch (move up for Redis cache check)
   const firstModel = targetProduct.models?.[0];
   const firstSku = firstModel?.sku || "";
+  const firstModelId = firstModel?._id?.toString() || null;
   let costData = null;
-  if (firstSku) {
+  if (firstSku || (targetProduct._id && firstModelId)) {
     try {
-      costData = await fetchCostData(targetProduct._id, firstSku);
+      costData = await fetchCostData(targetProduct._id, firstSku, firstModelId);
       if (costData?.hasCostData) {
         console.log(`[priceSuggestion] [Batch - Hướng 2] Cost from PO ${costData.poCode}: landed cost = ${costData.landedCostPerUnit.toLocaleString("vi-VN")}₫`);
       }
@@ -1429,25 +1794,38 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, modelIds, stra
   );
 
   if (redisAllStrategies) {
-    // Reconstruct batch results from cached strategy results
-    const results = validModelIds.map((modelId) => {
-      const model = modelMap.get(modelId);
-      const currentPrice = model?.price ?? targetProduct.originalPrice;
-      const cached = redisAllStrategies[strategy];
+    // Reconstruct batch results for ALL 4 strategies so the modal can switch instantly.
+    // The cached strategy results are keyed by "balanced" | "penetration" | "profit" | "clearance".
+    const buildResultsForStrategy = (stratKey) => {
+      const cached = redisAllStrategies[stratKey];
+      if (!cached || cached.suggestedPrice == null) return null;
 
-      if (cached && cached.suggestedPrice != null) {
-        const refAvgForCalc = marketStats.confidence === "high"
-          ? marketStats.clusterWeightedAvg
-          : (marketStats.weightedAvg || marketStats.avg);
-        const floorPrice = costData?.hasCostData ? costData.landedCostPerUnit : currentPrice;
-        let suggested = Number(cached.suggestedPrice);
-        if (suggested > 0 && suggested < floorPrice) suggested = floorPrice;
+      const refAvgForCalc = marketStats.confidence === "high"
+        ? marketStats.clusterWeightedAvg
+        : (marketStats.weightedAvg || marketStats.avg);
+      const floorPrice = costData?.hasCostData ? costData.landedCostPerUnit : 0;
+      let suggested = Number(cached.suggestedPrice);
+      if (suggested > 0 && suggested < floorPrice) suggested = floorPrice;
 
-        const discountPct = refAvgForCalc > 0 ? ((refAvgForCalc - suggested) / refAvgForCalc) * 100 : 0;
-        const suggestedMarginPct = costData?.hasCostData && costData.landedCostPerUnit > 0
-          ? ((suggested - costData.landedCostPerUnit) / costData.landedCostPerUnit) * 100
+      const discountPct = refAvgForCalc > 0 ? ((refAvgForCalc - suggested) / refAvgForCalc) * 100 : 0;
+      const suggestedMarginPct = costData?.hasCostData && costData.landedCostPerUnit > 0
+        ? ((suggested - costData.landedCostPerUnit) / costData.landedCostPerUnit) * 100
+        : 0;
+      const currentMarginInfo = costData?.hasCostData
+        ? calculateMargin(0, costData.landedCostPerUnit)
+        : null;
+
+      return validModelIds.map((modelId) => {
+        const model = modelMap.get(modelId);
+        const currentPrice = model?.price ?? targetProduct.originalPrice;
+        const variantFloor = costData?.hasCostData ? costData.landedCostPerUnit : currentPrice;
+        let variantSuggested = suggested;
+        if (variantSuggested > 0 && variantSuggested < variantFloor) variantSuggested = variantFloor;
+        const variantDiscountPct = refAvgForCalc > 0 ? ((refAvgForCalc - variantSuggested) / refAvgForCalc) * 100 : 0;
+        const variantMarginPct = costData?.hasCostData && costData.landedCostPerUnit > 0
+          ? ((variantSuggested - costData.landedCostPerUnit) / costData.landedCostPerUnit) * 100
           : 0;
-        const currentMarginInfo = costData?.hasCostData
+        const variantMarginInfo = costData?.hasCostData
           ? calculateMargin(currentPrice, costData.landedCostPerUnit)
           : null;
 
@@ -1456,31 +1834,40 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, modelIds, stra
           sku: model?.sku || null,
           tierIndex: model?.tierIndex || [],
           currentPrice,
-          suggestedPrice: Math.round(suggested),
+          suggestedPrice: Math.round(variantSuggested),
           reasoning: cached.reasoning || "",
-          discountPct: Math.round(discountPct * 10) / 10,
+          discountPct: Math.round(variantDiscountPct * 10) / 10,
           riskLevel: cached.riskLevel || "safe",
           warning: cached.warning || null,
           warningMessage: cached.warningMessage || null,
           fromCache: true,
           fromRedis: true,
-          strategy,
+          strategy: stratKey,
           costData: costData || null,
-          marginInfo: currentMarginInfo || null,
-          suggestedMarginPct: Math.round(suggestedMarginPct * 10) / 10,
+          marginInfo: variantMarginInfo || null,
+          suggestedMarginPct: Math.round(variantMarginPct * 10) / 10,
+          analyzedAt: redisAllStrategies._cachedAt || null,
         };
-      }
-      return null;
-    }).filter(Boolean);
+      });
+    };
 
-    if (results.length === validModelIds.length) {
-      console.log(`[priceSuggestion] [Batch] Redis cache HIT for ${results.length} models on product ${productIdStr}`);
+    const resultsForRequestedStrategy = buildResultsForStrategy(strategy)
+      || buildResultsForStrategy("balanced");
+
+    // Build allStrategies from cache so frontend can switch without a refetch
+    const allStrategies = {};
+    for (const strat of ["balanced", "penetration", "profit", "clearance"]) {
+      allStrategies[strat] = redisAllStrategies[strat] || null;
+    }
+
+    if (resultsForRequestedStrategy && resultsForRequestedStrategy.length === validModelIds.length) {
+      console.log(`[priceSuggestion] [Batch] Redis cache HIT for ${resultsForRequestedStrategy.length} models on product ${productIdStr}`);
       return {
         success: true,
         fromCache: true,
         fromRedis: true,
         cachedAt: redisAllStrategies._cachedAt || null,
-        results,
+        results: resultsForRequestedStrategy,
         product: {
           id: targetProduct._id,
           name: targetProduct.name,
@@ -1492,6 +1879,9 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, modelIds, stra
         competitors: obfuscatedCompetitors,
         strategy,
         costData: costData || null,
+        // [Multi-strategy Redis cache] Return all 4 strategies for instant switching
+        allStrategies,
+        analyzedAt: redisAllStrategies._cachedAt || null,
       };
     }
   }
@@ -1511,8 +1901,8 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, modelIds, stra
       competitors: p.competitors,
       // [Phase 3 - 5.1]
       strategy: p.strategy || strategy,
-      // [Hướng 2]
-      costData: p.costData || null,
+      // [Hướng 2] Ưu tiên costData vừa fetch từ PO — payload Mongo cũ có thể không có
+      costData: costData ?? p.costData ?? null,
     };
   }
 
@@ -1560,7 +1950,9 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, modelIds, stra
 
 /**
  * [Batch] Phase 2: LLM + per-model results + save cache.
- * [Phase 3 - 5.1] Added strategy support for Pricing Personas.
+ * Computes ALL 4 strategies (balanced, penetration, profit, clearance) in one shot,
+ * saves them all to Redis, and returns the requested strategy.
+ * [Phase 3 - 5.1] Strategy support for Pricing Personas.
  */
 async function finalizeBatchPriceSuggestion(precompute) {
   const {
@@ -1591,38 +1983,84 @@ async function finalizeBatchPriceSuggestion(precompute) {
     ? marketStats.clusterWeightedAvg
     : (marketStats.weightedAvg || marketStats.avg);
 
-  const priceToSuggestion = new Map();
-  for (const [currentPrice] of priceGroups) {
-    try {
-      const llmResult = await askLLM(
-        targetProduct.name, currentPrice, marketStats, topSeller, sellerRating,
-        avgCompetitorRating, strategy, totalStock, costData, // [Hướng 2]
-      );
-      priceToSuggestion.set(currentPrice, llmResult);
-    } catch {
-      priceToSuggestion.set(currentPrice, {
-        suggestedPrice: refAvg || marketStats.avg,
-        reasoning: "Đề xuất theo giá trung bình thị trường.",
-      });
+  // ── marketDataObj & competitorsObj (same shape as single-variant flow) ──
+  const competitorsObj = competitors.map((c) => ({
+    id: obfuscateCompetitorId(c._id),
+    name: c.name,
+    price: c.models?.[0]?.price || c.originalPrice,
+    rating: c.rating ?? 0,
+    sold: c.sold ?? 0,
+    score: c.score ?? null,
+    brand: c.brand ?? null,
+  }));
+
+  const analyzedAt = Date.now();
+
+  // ── Step 1: Diff with Redis — reuse any strategy already cached ──
+  const competitorsForCache = (competitors || []).map((c) => ({
+    models: c.models ? [{ price: c.models[0]?.price }] : undefined,
+    originalPrice: c.originalPrice,
+  }));
+  const batchRefPrice = targetProduct.originalPrice || 0;
+
+  const { cached: cachedStrats, missing: missingStrats } = await multiStrategyCache.diffStrategies(
+    productIdStr, batchRefPrice, competitorsForCache, sellerId
+  );
+  console.log(`[priceSuggestion] [Batch] Redis: ${cachedStrats.length} cached (${cachedStrats.join(", ")}), ${missingStrats.length} missing (${missingStrats.join(", ")})`);
+
+  // Take the first price as the representative for the canonical LLM analysis.
+  // All strategy outputs are valid for any price point — the per-variant
+  // floor-price guard (landed cost) is applied later in the result mapping.
+  const STRATEGIES_TO_COMPUTE = ["balanced", "penetration", "profit", "clearance"];
+  const firstPrice = [...priceGroups.keys()][0] ?? targetProduct.originalPrice ?? 0;
+
+  // ── Step 2: Compute missing strategies IN PARALLEL (not sequential) ──
+  // This is the same pattern as the single-variant flow.
+  // ~1 LLM call latency (≈5–15s) instead of 4× sequential (≈20–60s → timeout).
+  const priceToAllStrategies = new Map([[firstPrice, {}]]);
+
+  const llmPromises = missingStrats.map((strat) =>
+    askLLM(
+      targetProduct.name, firstPrice, marketStats, topSeller, sellerRating,
+      avgCompetitorRating, strat, totalStock, costData,
+    ).then((result) => ({ strat, result }))
+      .catch(() => ({
+        strat,
+        result: { suggestedPrice: refAvg || marketStats.avg, reasoning: "Đề xuất theo giá trung bình thị trường." },
+      }))
+  );
+
+  const llmResults = await Promise.all(llmPromises);
+  for (const { strat, result } of llmResults) {
+    priceToAllStrategies.get(firstPrice)[strat] = result;
+  }
+
+  // Also load already-cached strategies from Redis so allStrategies is complete
+  for (const strat of cachedStrats) {
+    const cached = await multiStrategyCache.getStrategy(
+      productIdStr, batchRefPrice, competitorsForCache, sellerId, strat
+    );
+    if (cached && cached.suggestedPrice != null) {
+      priceToAllStrategies.get(firstPrice)[strat] = cached;
     }
   }
 
-  const results = validModelIds.map((modelId) => {
-    const model = modelMap.get(modelId);
-    const currentPrice = model?.price ?? targetProduct.originalPrice;
-    const llmResult = priceToSuggestion.get(currentPrice) || { suggestedPrice: refAvg || marketStats.avg, reasoning: "" };
+  // ── Step 3: Build allStrategies — one per strategy ──
+  const allStrategies = {};
+
+  for (const strat of STRATEGIES_TO_COMPUTE) {
+    const llmResult = priceToAllStrategies.get(firstPrice)?.[strat]
+      || { suggestedPrice: refAvg || marketStats.avg, reasoning: "" };
+
     let suggested = Number(llmResult.suggestedPrice);
 
-    // [Hướng 2] Floor price = landed cost (không phải currentPrice)
-    const floorPrice = costData?.hasCostData ? costData.landedCostPerUnit : currentPrice;
+    // Floor price guard
+    const floorPrice = costData?.hasCostData ? costData.landedCostPerUnit : firstPrice;
     if (suggested > 0 && suggested < floorPrice) suggested = floorPrice;
 
-    // [Hướng 2] Tính margin vs landed cost
     const suggestedMarginPct = costData?.hasCostData && costData.landedCostPerUnit > 0
       ? ((suggested - costData.landedCostPerUnit) / costData.landedCostPerUnit) * 100
       : 0;
-
-    // [Phase 3 - P2] Discount % vs cluster-weighted-avg when high confidence
     const discountPct = refAvg > 0 ? ((refAvg - suggested) / refAvg) * 100 : 0;
     let riskLevel = "safe", warning = null, warningMessage = null;
     if (suggested === floorPrice && suggested > 0 && costData?.hasCostData) {
@@ -1639,7 +2077,35 @@ async function finalizeBatchPriceSuggestion(precompute) {
       warningMessage = `Giá đề xuất thấp hơn ${Math.round(discountPct)}% so với trung bình.`;
     }
 
-    // [Hướng 2] Tính current margin
+    allStrategies[strat] = {
+      suggestedPrice: Math.round(suggested),
+      reasoning: llmResult.reasoning || "",
+      warning,
+      riskLevel,
+      warningMessage,
+      discountPct: Math.round(discountPct * 10) / 10,
+      suggestedMarginPct: Math.round(suggestedMarginPct * 10) / 10,
+      marketData,
+      competitors: competitorsObj,
+      analyzedAt,
+    };
+  }
+
+  // ── Step 4: Build per-variant results for the REQUESTED strategy ──
+  const results = validModelIds.map((modelId) => {
+    const model = modelMap.get(modelId);
+    const currentPrice = model?.price ?? targetProduct.originalPrice;
+    const stratResult = allStrategies[strategy] || allStrategies["balanced"];
+
+    // Re-clamp per-variant (variant floor may differ from the first group's floor)
+    let suggested = stratResult.suggestedPrice;
+    const variantFloor = costData?.hasCostData ? costData.landedCostPerUnit : currentPrice;
+    if (suggested > 0 && suggested < variantFloor) suggested = variantFloor;
+
+    const variantDiscountPct = refAvg > 0 ? ((refAvg - suggested) / refAvg) * 100 : 0;
+    const variantMarginPct = costData?.hasCostData && costData.landedCostPerUnit > 0
+      ? ((suggested - costData.landedCostPerUnit) / costData.landedCostPerUnit) * 100
+      : 0;
     const currentMarginInfo = costData?.hasCostData
       ? calculateMargin(currentPrice, costData.landedCostPerUnit)
       : null;
@@ -1650,26 +2116,28 @@ async function finalizeBatchPriceSuggestion(precompute) {
       tierIndex: model?.tierIndex || [],
       currentPrice,
       suggestedPrice: Math.round(suggested),
-      reasoning: llmResult.reasoning || "",
-      discountPct: Math.round(discountPct * 10) / 10,
-      riskLevel,
-      warning,
-      warningMessage,
+      reasoning: stratResult.reasoning || "",
+      discountPct: Math.round(variantDiscountPct * 10) / 10,
+      riskLevel: stratResult.riskLevel || "safe",
+      warning: stratResult.warning || null,
+      warningMessage: stratResult.warningMessage || null,
       fromCache: false,
       strategy,
       // [Hướng 2]
       costData: costData || null,
       marginInfo: currentMarginInfo || null,
-      suggestedMarginPct: Math.round(suggestedMarginPct * 10) / 10,
+      suggestedMarginPct: Math.round(variantMarginPct * 10) / 10,
+      analyzedAt,
     };
   });
 
   const productPayload = {
-    id: targetProduct._id,
+    id: targetProduct._id ?? null,
     name: targetProduct.name,
     brand: targetProduct.brand || "No-brand",
     rating: sellerRating,
-    totalModels: targetProduct.models?.length ?? 0,
+    totalModels: (targetProduct.models?.length ?? 0) || (precompute.localModelMap ? precompute.localModelMap.size : 0),
+    isDraftListing: !targetProduct._id,
   };
 
   const fullPayload = {
@@ -1677,23 +2145,22 @@ async function finalizeBatchPriceSuggestion(precompute) {
     product: productPayload,
     marketData,
     competitors: obfuscatedCompetitors,
-    // [Phase 3 - 5.1]
     strategy,
-    // [Hướng 2]
     costData: costData || null,
+    // [Multi-strategy Redis cache] All 4 strategies — enables instant switching in UI
+    allStrategies,
+    analyzedAt,
   };
 
-  saveBatchToCache(productIdStr, sellerId, batchCacheKey, fullPayload).catch(() => {});
+  // batchCacheKey is empty string in draft mode (no MongoDB cache); skip save
+  if (batchCacheKey) {
+    saveBatchToCache(productIdStr, sellerId, batchCacheKey, fullPayload).catch(() => {});
+  }
 
-  // Also save to Redis multi-strategy cache (Tầng 1) for fast retrieval
-  const competitorsForRedis = competitors.map((c) => ({
-    models: c.models ? [{ price: c.models[0]?.price }] : undefined,
-    originalPrice: c.originalPrice,
-  }));
-  const batchRefPrice = targetProduct.originalPrice || 0;
-  const allStrategiesForRedis = { [strategy]: results[0] || {} };
+  // ── Step 5: Save ALL 4 strategies to Redis (non-blocking) ──
+  // competitorsForCache & batchRefPrice already declared at Step 1
   multiStrategyCache.saveAllStrategies(
-    productIdStr, batchRefPrice, competitorsForRedis, sellerId, allStrategiesForRedis
+    productIdStr, batchRefPrice, competitorsForCache, sellerId, allStrategies
   ).catch((err) => console.warn("[priceSuggestion] [Batch] Redis save failed:", err.message));
 
   return {
