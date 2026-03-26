@@ -5,6 +5,7 @@ import Deal from "../models/Deal.js";
 import Voucher from "../models/Voucher.js";
 import User from "../models/User.js";
 import { executeAgent } from "./agent/agentExecutor.js";
+import { sanitizePromptInput } from "../utils/promptSanitizer.js";
 
 const AI_API_URL =
   process.env.AI_API_URL ||
@@ -365,12 +366,15 @@ function isShoppingRelated(message) {
 }
 
 async function chat({ message, conversationHistory = [], role = "buyer", userId, sellerId }) {
-  if (role === "buyer" && !isShoppingRelated(message)) {
+  // [Safety] Defense-in-depth: sanitize even if called without going through routes
+  const safeMessage = sanitizePromptInput(message);
+
+  if (role === "buyer" && !isShoppingRelated(safeMessage.sanitized)) {
     return REJECTION_MSG;
   }
 
   const { text, products, toolsUsed } = await executeAgent({
-    message,
+    message: safeMessage.sanitized,
     role,
     userId,
     sellerId,

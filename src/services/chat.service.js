@@ -146,6 +146,18 @@ export const getConversationsByUser = async (userId) => {
     .populate("participants", "fullName firstName lastName email avatar role"); // Added role and firstName/lastName
 };
 
+/**
+ * Count unread messages for a user (messages received by this user that are not read).
+ * Used by the seller dashboard badge.
+ */
+export const getUnreadCountByUser = async (userId) => {
+  const count = await Message.countDocuments({
+    receiver: userId,
+    isRead: false,
+  });
+  return count;
+};
+
 export const getMessagesByConversation = async (
   conversationId,
   page = 1,
