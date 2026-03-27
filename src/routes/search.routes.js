@@ -1,6 +1,7 @@
 import express from "express";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import * as searchController from "../controllers/search.controller.js";
+import { uploadMemory } from "../middlewares/uploadMemory.middleware.js";
 
 const router = express.Router();
 
@@ -79,7 +80,6 @@ router.get("/filters", asyncHandler(searchController.getAvailableFilters));
  *       200:
  *         description: Success
  */
-import { uploadMemory } from "../middlewares/uploadMemory.middleware.js";
 router.post("/image", uploadMemory.single("image"), asyncHandler(searchController.imageSearch));
 
 export default router;
