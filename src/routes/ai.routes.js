@@ -1,7 +1,17 @@
 import express from "express";
+import mongoose from "mongoose";
 import aiService from "../services/ai.service.js";
+import {
+  executePriceSuggestion,
+  prepareBatchPriceSuggestion,
+  finalizeBatchPriceSuggestion,
+} from "../services/agent/tools/priceSuggestion.js";
+import PriceSuggestRateLimit from "../models/PriceSuggestRateLimit.js";
+import { sanitizePromptInput, sanitizeProductName } from "../utils/promptSanitizer.js";
+import multiStrategyCache from "../services/multiStrategyCache.service.js";
 
 const router = express.Router();
+
 
 function simulateStream(res, fullText, conversationId, chunkSize = 12) {
   return new Promise((resolve) => {
@@ -47,6 +57,12 @@ router.post("/stream", async (req, res) => {
         .json({ message: "Missing required field: message" });
     }
 
+    // [Safety] Strip prompt-injection patterns from user message
+    const safeMessage = sanitizePromptInput(message);
+    if (safeMessage.blocked) {
+      console.warn(`[AI stream] message injection blocked: "${message}" → "${safeMessage.sanitized}"`);
+    }
+
     const validRoles = ["buyer", "seller", "admin"];
     const safeRole = validRoles.includes(role) ? role : "buyer";
 
@@ -89,7 +105,7 @@ router.post("/stream", async (req, res) => {
     let fullText;
     try {
       fullText = await aiService.chat({
-        message,
+        message: safeMessage.sanitized,
         conversationHistory: validHistory,
         role: safeRole,
         userId,
@@ -182,4 +198,234 @@ router.post("/refresh-cache", async (req, res) => {
   }
 });
 
+
+/**
+ * POST /api/ai/price-suggest
+ * Dedicated endpoint for the 🪄 AI Suggest button on the seller product listing.
+ * Returns structured JSON (not streamed) with a suggested price and market data.
+ *
+ * Body: { productId?, productName?, sellerId, modelId?, strategy? }
+ * [Phase 3 - 5.1] strategy parameter added for Pricing Personas.
+ */
+router.post("/price-suggest", async (req, res) => {
+  try {
+    // [Phase 2 - 4.1] modelId added for variant-aware price suggestion
+    // [Phase 3 - 5.1] strategy added for Pricing Personas
+    const { productId, productName, sellerId, modelId, strategy = "balanced" } = req.body || {};
+
+    // [Safety] Strip prompt-injection patterns from seller-controlled productName
+    const safeProductName = sanitizeProductName(productName || "");
+    if (safeProductName.blocked) {
+      console.warn(`[AI price-suggest] productName injection blocked: "${productName}" → "${safeProductName.sanitized}"`);
+    }
+
+    if (!sellerId) {
+      return res.status(400).json({ success: false, message: "Missing sellerId" });
+    }
+
+    // [Phase 1 - 3.3] Rate Limiting: 50 requests/day per seller, 30s cooldown per product
+    try {
+      let rateLimit = await PriceSuggestRateLimit.findOne({
+        sellerId: new mongoose.Types.ObjectId(sellerId),
+      });
+
+      if (rateLimit) {
+        const check = rateLimit.checkAndIncrement(productId);
+        if (!check.allowed) {
+          return res.json({
+            success: false,
+            message: check.message,
+            rateLimit: check.reason,
+          });
+        }
+        await rateLimit.save();
+      } else {
+        // First request — create record
+        const newLimit = new PriceSuggestRateLimit({
+          sellerId: new mongoose.Types.ObjectId(sellerId),
+        });
+        const check = newLimit.checkAndIncrement(productId);
+        if (!check.allowed) {
+          return res.json({
+            success: false,
+            message: check.message,
+            rateLimit: check.reason,
+          });
+        }
+        await newLimit.save();
+      }
+    } catch (err) {
+      // DB issue — allow through, do not block user
+      console.error("[rateLimit] Error:", err.message);
+    }
+
+    // [Phase 2 - 4.1] Pass modelId so execute() can resolve the correct variant price
+    // [Phase 3 - 5.1] Pass strategy for Pricing Personas
+    // [Safety] Pass sanitized productName — query is sanitized again inside askLLM()
+    const result = await executePriceSuggestion({ sellerId, productId, query: safeProductName.sanitized, modelId, strategy });
+
+    if (!result.suggestedPrice) {
+      // Tool returned a context-only result (e.g., no products found)
+      return res.json({
+        success: false,
+        message: result.context || "Không thể đề xuất giá.",
+      });
+    }
+
+    return res.json({
+      success: true,
+      suggestedPrice: result.suggestedPrice,
+      reasoning: result.reasoning,
+      warning: result.warning || null,
+      riskLevel: result.riskLevel || "safe",
+      warningMessage: result.warningMessage || null,
+      discountPct: result.discountPct || null,
+      // [Phase 3 - 5.1] Strategy metadata
+      strategy: result.strategy || strategy,
+      marketData: result.marketData,
+      competitors: result.competitors || [],
+      product: result.product,
+      // [Phase 2 - 4.2] Cache metadata for frontend UX indicators
+      fromCache: result.fromCache || false,
+      cachedAt: result.cachedAt || null,
+      // [Multi-strategy Redis cache] Include all strategies for instant switching
+      allStrategies: result.allStrategies || null,
+      // [Hướng 2] Chi tiết chi phí nhập hàng + biên lợi nhuận
+      costData: result.costData || null,
+      marginInfo: result.marginInfo || null,
+      suggestedMarginPct: result.suggestedMarginPct || null,
+    });
+  } catch (error) {
+    console.error("[AI price-suggest] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+/**
+ * POST /api/ai/price-suggest-batch
+ * Batch price suggestion for all variants of a product.
+ * Returns structured JSON with per-variant suggestions + shared market data.
+ *
+ * Body: { productId?, productName?, sellerId, modelIds: string[], strategy? }
+ * [Phase 3 - 5.1] strategy parameter added for Pricing Personas.
+ */
+router.post("/price-suggest-batch", async (req, res) => {
+  try {
+    const { productId, productName, sellerId, modelIds, strategy = "balanced" } = req.body || {};
+
+    // [Safety] Strip prompt-injection patterns from seller-controlled productName
+    const safeProductName = sanitizeProductName(productName || "");
+    if (safeProductName.blocked) {
+      console.warn(`[AI price-suggest-batch] productName injection blocked: "${productName}" → "${safeProductName.sanitized}"`);
+    }
+
+    if (!sellerId) {
+      return res.status(400).json({ success: false, message: "Missing sellerId" });
+    }
+    if (!modelIds || !Array.isArray(modelIds) || !modelIds.length) {
+      return res.status(400).json({ success: false, message: "Missing or invalid modelIds array" });
+    }
+
+    // Phase 1: vector search + batch cache (no LLM). Cache hit → skip rate limit & 30s cooldown.
+    // [Phase 3 - 5.1] Pass strategy for Pricing Personas
+    // [Fix] Also pass productName so prepareBatchPriceSuggestion can use it in draft mode.
+    const prep = await prepareBatchPriceSuggestion({ sellerId, productId, productName: safeProductName.sanitized, modelIds, strategy });
+
+    if (prep.context) {
+      return res.json({
+        success: false,
+        message: prep.context,
+      });
+    }
+
+    if (prep.success && prep.fromCache) {
+      // [Hướng 2] Luôn đính costData mới nhất (từ PO/tồn kho) — cache Redis cũ có thể không có
+      return res.json({
+        success: true,
+        fromCache: true,
+        fromRedis: true,
+        cachedAt: prep.cachedAt || null,
+        results: prep.results,
+        product: prep.product,
+        marketData: prep.marketData,
+        competitors: prep.competitors || [],
+        // [Phase 3 - 5.1]
+        strategy: prep.strategy || strategy,
+        // [Hướng 2] costData từ PO/tồn kho (luôn được fetch trước cache check)
+        costData: prep.costData || null,
+      });
+    }
+
+    // Phase 2: rate limit only when we will call LLM (cache miss)
+    try {
+      let rateLimit = await PriceSuggestRateLimit.findOne({
+        sellerId: new mongoose.Types.ObjectId(sellerId),
+      });
+
+      if (rateLimit) {
+        const check = rateLimit.checkAndIncrement(productId);
+        if (!check.allowed) {
+          return res.json({
+            success: false,
+            message: check.message,
+            rateLimit: check.reason,
+          });
+        }
+        await rateLimit.save();
+      } else {
+        const newLimit = new PriceSuggestRateLimit({ sellerId: new mongoose.Types.ObjectId(sellerId) });
+        const check = newLimit.checkAndIncrement(productId);
+        if (!check.allowed) {
+          return res.json({ success: false, message: check.message, rateLimit: check.reason });
+        }
+        await newLimit.save();
+      }
+    } catch (err) {
+      console.error("[rateLimit] Error:", err.message);
+    }
+
+    const result = await finalizeBatchPriceSuggestion(prep.precompute);
+
+    if (!result.success || !result.results?.length) {
+      return res.json({
+        success: false,
+        message: "Không thể đề xuất giá cho các biến thể này.",
+      });
+    }
+
+    return res.json({
+      success: true,
+      fromCache: false,
+      results: result.results,
+      product: result.product,
+      marketData: result.marketData,
+      competitors: result.competitors || [],
+      // [Phase 3 - 5.1]
+      strategy: result.strategy || strategy,
+      // [Hướng 2] Chi tiết chi phí nhập hàng + biên lợi nhuận
+      costData: result.costData || null,
+      // [Multi-strategy Redis cache] All 4 strategies for instant switching
+      allStrategies: result.allStrategies || null,
+      // [Analyzed timestamp] Displayed in modal header
+      analyzedAt: result.analyzedAt || null,
+    });
+  } catch (error) {
+    console.error("[AI price-suggest-batch] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Clear all Redis price-suggestion cache
+router.post("/price-suggest-cache/clear", async (req, res) => {
+  try {
+    const result = await multiStrategyCache.clearAllCache();
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("[AI price-suggest-cache/clear] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 export default router;
+

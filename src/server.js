@@ -31,6 +31,7 @@ import dashboardRoutes from "./routes/dashboard.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
 import voucherRoutes from "./routes/voucher.routes.js";
 import shopProgramRoutes from "./routes/shopProgram.routes.js";
+import shopDecorationRoutes from "./routes/shopDecoration.routes.js";
 import comboPromotionRoutes from "./routes/comboPromotion.routes.js";
 import addOnDealRoutes from "./routes/addOnDeal.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
@@ -54,6 +55,7 @@ import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
 import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
 import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
 import { startCoinJobs } from "./jobs/coinExpirationJob.js";
+import { runBatchEmbedding } from "./jobs/batchEmbedding.job.js";
 // Load environment variables
 dotenv.config();
 
@@ -209,6 +211,7 @@ app.use("/api/upload", uploadRoutes);
 app.use("/api/vouchers/system", systemVoucherRoutes);
 app.use("/api/vouchers", voucherRoutes);
 app.use("/api/seller/shop-programs", shopProgramRoutes);
+app.use("/api/seller/shop-decoration", shopDecorationRoutes);
 app.use("/api/seller/combos", comboPromotionRoutes);
 app.use("/api/seller/addons", addOnDealRoutes);
 app.use("/api/payments", paymentRoutes);
@@ -290,7 +293,9 @@ server.listen(PORT, HOST, () => {
   startOrderCleanupJob();
   startRmaAutoApprovalJob();
   startExchangeRateJob();
-  startCoinJobs(); // Start coin expiration jobs
+  startCoinJobs();
+  // [Phase 3 - 5.2] Batch embedding cron — registered at import time
+  runBatchEmbedding();
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s

@@ -56,7 +56,7 @@ export const getOrdersByStatus = asyncHandler(async (req, res) => {
   const result = await orderSellerService.getOrdersByStatus(status, {
     page: Number(page) || 1,
     limit: Number(limit) || 10,
-  });
+  }, req.user._id);
 
   res.status(200).json({
     success: true,
