@@ -309,6 +309,13 @@ productSchema.virtual("totalStock").get(function () {
   return this.models.reduce((sum, model) => sum + model.stock, 0);
 });
 
+productSchema.virtual("price").get(function () {
+  if (!this.models || this.models.length === 0) return null;
+  const prices = this.models.map((m) => m.price).filter((p) => typeof p === "number");
+  if (prices.length === 0) return null;
+  return Math.min(...prices);
+});
+
 productSchema.virtual("sku").get(function () {
   if (!this.models || this.models.length === 0) return null;
   return this.models[0].sku;

@@ -43,6 +43,7 @@ import aiRoutes from "./routes/ai.routes.js";
 import reviewRoutes from "./routes/review.routes.js";
 import promotionPublicRoutes from "./routes/promotionPublic.routes.js";
 import followRoutes from "./routes/follow.routes.js";
+import livestreamRoutes from "./routes/livestream.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
@@ -55,6 +56,8 @@ import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
 import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
 import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
 import { startCoinJobs } from "./jobs/coinExpirationJob.js";
+import { startLivestreamCleanupJob } from "./jobs/livestreamCleanup.job.js";
+import { setSocketIO } from "./utils/socketIO.js";
 import { runBatchEmbedding } from "./jobs/batchEmbedding.job.js";
 // Load environment variables
 dotenv.config();
@@ -221,6 +224,7 @@ app.use("/api/exchange-rate", exchangeRateRoutes);
 app.use("/api/ghn", ghnRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/follows", followRoutes);
+app.use("/api/livestream", livestreamRoutes);
 app.use("/api/coins", coinRoutes);
 app.use("/api/seller-applications", sellerApplicationRoutes);
 app.use("/api/notifications", notificationRoutes);
@@ -271,11 +275,6 @@ const io = new SocketIOServer(server, {
   allowEIO3: true,
 });
 
-import { setSocketIO } from "./utils/socketIO.js";
-
-// Setup socket handlers
-// setupSocketHandlers(io);
-
 // Make io instance globally accessible for controllers
 setSocketIO(io);
 
@@ -294,6 +293,7 @@ server.listen(PORT, HOST, () => {
   startRmaAutoApprovalJob();
   startExchangeRateJob();
   startCoinJobs();
+  startLivestreamCleanupJob();
   // [Phase 3 - 5.2] Batch embedding cron — registered at import time
   runBatchEmbedding();
 });
