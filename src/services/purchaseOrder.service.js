@@ -492,6 +492,7 @@ export const receiveOrderAndCalculateLandedCost = async (
 
     purchaseOrder.status = "Completed";
     purchaseOrder.receivedDate = new Date();
+    purchaseOrder.completedAt = new Date();
     purchaseOrder.completedBy = userId;
     purchaseOrder.shippingCost = lcSummary.intlShippingVnd;
     purchaseOrder.finalAmount = lcSummary.totalLandedCost;
@@ -763,6 +764,7 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
     // ============================================================
     purchaseOrder.status = "Completed";
     purchaseOrder.receivedDate = new Date();
+    purchaseOrder.completedAt = new Date();
     purchaseOrder.completedBy = userId;
     await purchaseOrder.save({ session });
 

@@ -171,6 +171,11 @@ const userSchema = new mongoose.Schema(
         cooldownHours: { type: Number, default: 24 }, // 24 hours cooldown before sending another auto-reply
       },
     },
+    /** Shop decoration config for seller: { blocks: [{ id, type, props }], version: 'desktop'|'mobile' } */
+    shopDecoration: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({ blocks: [], version: "desktop" }),
+    },
     hasPassword: {
       type: Boolean,
       default: true,
