@@ -55,6 +55,8 @@ import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
 import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
 import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
 import { startCoinJobs } from "./jobs/coinExpirationJob.js";
+import { startLivestreamCleanupJob } from "./jobs/livestreamCleanup.job.js";
+import { setSocketIO } from "./utils/socketIO.js";
 // Load environment variables
 dotenv.config();
 
@@ -270,11 +272,6 @@ const io = new SocketIOServer(server, {
   allowEIO3: true,
 });
 
-import { setSocketIO } from "./utils/socketIO.js";
-
-// Setup socket handlers
-// setupSocketHandlers(io);
-
 // Make io instance globally accessible for controllers
 setSocketIO(io);
 
@@ -292,7 +289,8 @@ server.listen(PORT, HOST, () => {
   startOrderCleanupJob();
   startRmaAutoApprovalJob();
   startExchangeRateJob();
-  startCoinJobs(); // Start coin expiration jobs
+  startCoinJobs();
+  startLivestreamCleanupJob();
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s

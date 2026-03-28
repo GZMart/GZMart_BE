@@ -3,13 +3,12 @@ import { saveMessage, handleAutoReply } from "./services/chat.service.js";
 import { setupLiveStreamHandlers } from "./services/livestreamSocket.service.js";
 
 export default function setupSocketHandlers(io) {
-  setupLiveStreamHandlers(io);
-
-  // User-socket mapping để gửi events trực tiếp đến user
   const userSocketMap = new Map();
 
   io.on("connection", (socket) => {
     logger.info(`Socket connected: ${socket.id}`);
+
+    setupLiveStreamHandlers(io, socket);
 
     // Join user-specific room for video call notifications
     socket.on("join_user_room", (userId) => {
