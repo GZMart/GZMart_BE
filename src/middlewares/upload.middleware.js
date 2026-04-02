@@ -4,13 +4,17 @@ import { storage } from "../config/cloudinary.js";
 
 // File filter
 const fileFilter = (req, file, cb) => {
-  // Allowed file types
+  // Allowed file types (Gồm cả Ảnh, Video và Document)
   const allowedTypes = [
     "image/jpeg",
     "image/jpg",
     "image/png",
     "image/gif",
     "image/webp",
+    "video/mp4",
+    "video/mpeg",
+    "video/quicktime",
+    "video/webm",
     "application/pdf",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -21,10 +25,10 @@ const fileFilter = (req, file, cb) => {
   } else {
     return cb(
       new ErrorResponse(
-        "Invalid file type. Only images, PDF, and Word documents are allowed.",
-        400
+        "Invalid file type. Only images, videos (MP4/MOV), PDF, and Word documents are allowed.",
+        400,
       ),
-      false
+      false,
     );
   }
 };
@@ -34,7 +38,7 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB max file size
+    fileSize: 10 * 1024 * 1024, // Giới hạn cứng 10MB cho mọi file
   },
 });
 

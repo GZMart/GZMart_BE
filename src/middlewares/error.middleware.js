@@ -20,6 +20,8 @@ export class ErrorResponse extends Error {
 export const errorHandler = (err, req, res, next) => {
   let error = { ...err };
   error.message = err.message;
+  // Giữ lại statusCode nếu là custom ErrorResponse (ví dụ: lỗi sai định dạng file từ fileFilter)
+  error.statusCode = err.statusCode;
 
   // Log error
   logger.error("Error occurred:", {
@@ -46,7 +48,9 @@ export const errorHandler = (err, req, res, next) => {
 
   // Mongoose validation error
   if (err.name === "ValidationError") {
-    const message = Object.values(err.errors).map((val) => val.message);
+    const message = Object.values(err.errors)
+      .map((val) => val.message)
+      .join(", "); // Nối các lỗi lại cho dễ đọc
     error = new ErrorResponse(message, 400);
   }
 
@@ -61,23 +65,24 @@ export const errorHandler = (err, req, res, next) => {
     error = new ErrorResponse(message, 401);
   }
 
-  // Multer errors (file upload)
+  // Multer errors (file upload & file size limit)
   if (err.name === "MulterError") {
     let message = "File upload error";
 
     if (err.code === "LIMIT_FILE_SIZE") {
-      message = "File size too large. Maximum size is 10MB";
+      message = "File size too large. Maximum allowed size is 10MB.";
     } else if (err.code === "LIMIT_FILE_COUNT") {
-      message = "Too many files";
+      message = "Too many files uploaded at once.";
     } else if (err.code === "LIMIT_UNEXPECTED_FILE") {
-      message = "Unexpected file field";
+      message = "Unexpected file field name in form-data.";
     }
 
     error = new ErrorResponse(message, 400);
   }
 
+  // Trả về response cuối cùng
   res.status(error.statusCode || 500).json({
     success: false,
-    message: error.message || "Server Error",
+    message: error.message || "Internal Server Error",
   });
 };

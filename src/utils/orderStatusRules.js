@@ -6,28 +6,31 @@
 const orderStatusRules = {
   // From pending, can transition to:
   pending: {
-    confirmable: true,
+    confirmable: false,
     cancellable: true,
     canShip: false,
-    description: 'Chờ xác nhận',
-    nextStates: ['confirmed', 'cancelled'],
+    description: "Chờ xử lý",
+    nextStates: ["confirmed", "cancelled"],
   },
   // From confirmed, can transition to:
   confirmed: {
     confirmable: false,
     cancellable: true,
     canShip: true,
-    description: 'Đã xác nhận',
-    nextStates: ['shipping', 'cancelled'],
+    description: "Đã xác nhận",
+    nextStates: ["packed", "shipped", "cancelled"],
     requiresShipperId: false,
   },
+  // From processing, can transition to:
+  // removed 'processing' - canonical flow uses 'confirmed' instead
   // From shipping, can transition to:
-  shipping: {
+  // 'shipping' replaced by canonical 'shipped' status
+  shipped: {
     confirmable: false,
     cancellable: false,
     canShip: false,
-    description: 'Đang giao',
-    nextStates: ['delivered'],
+    description: "Đang giao",
+    nextStates: ["delivered"],
     requiresShipperId: true,
   },
   // From delivered, cannot transition
@@ -35,7 +38,7 @@ const orderStatusRules = {
     confirmable: false,
     cancellable: false,
     canShip: false,
-    description: 'Đã giao',
+    description: "Đã giao",
     nextStates: [],
     isFinal: true,
   },
@@ -44,7 +47,7 @@ const orderStatusRules = {
     confirmable: false,
     cancellable: false,
     canShip: false,
-    description: 'Đã hủy',
+    description: "Đã hủy",
     nextStates: [],
     isFinal: true,
   },
@@ -57,7 +60,11 @@ const orderStatusRules = {
  * @param {Object} order - Order object
  * @returns {Object} - { isValid: boolean, message: string }
  */
-export const validateStatusTransition = (currentStatus, newStatus, order = {}) => {
+export const validateStatusTransition = (
+  currentStatus,
+  newStatus,
+  order = {},
+) => {
   const rules = orderStatusRules[currentStatus];
 
   if (!rules) {
@@ -70,16 +77,16 @@ export const validateStatusTransition = (currentStatus, newStatus, order = {}) =
   if (!rules.nextStates.includes(newStatus)) {
     return {
       isValid: false,
-      message: `Cannot transition from '${currentStatus}' to '${newStatus}'. Valid transitions: ${rules.nextStates.join(', ')}`,
+      message: `Cannot transition from '${currentStatus}' to '${newStatus}'. Valid transitions: ${rules.nextStates.join(", ")}`,
       validTransitions: rules.nextStates,
     };
   }
 
   // Check specific requirements for shipping status
-  if (newStatus === 'shipping' && rules.requiresShipperId && !order.shipperId) {
+  if (newStatus === "shipping" && rules.requiresShipperId && !order.shipperId) {
     return {
       isValid: false,
-      message: 'Shipper ID is required to move order to shipping status',
+      message: "Shipper ID is required to move order to shipping status",
     };
   }
 

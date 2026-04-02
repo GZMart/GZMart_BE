@@ -291,6 +291,12 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
   const total =
     subtotal + appliedShippingCost + tax - discount + appliedGiftBoxFee;
 
+  // Estimate coin usage for preview (user's reward_point)
+  const user = await User.findById(req.user._id);
+  const balanceBefore = user?.reward_point || 0;
+  const payableBeforeCoin = Math.max(0, total);
+  const coinEstimate = Math.min(balanceBefore, payableBeforeCoin);
+
   res.status(200).json({
     success: true,
     data: {
@@ -303,6 +309,10 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
       itemCount: cartItems.length,
       appliedVouchers: validVouchers,
       voucherErrors,
+      // Coin preview fields
+      payableBeforeCoin,
+      coinEstimate,
+      balanceBefore,
     },
   });
 });
@@ -531,10 +541,11 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       throw new ErrorResponse("User not found", 404);
     }
 
-    const coinPlanAmount = Math.min(
-      Math.max(0, userInTx.reward_point || 0),
-      payableBeforeCoin,
-    );
+    // Respect client preference whether to use GZCoin. Default: use coins.
+    const useCoin = req.body.useCoin === false ? false : true;
+    const coinPlanAmount = useCoin
+      ? Math.min(Math.max(0, userInTx.reward_point || 0), payableBeforeCoin)
+      : 0;
 
     const order = await Order.create(
       [
@@ -850,18 +861,21 @@ export const generateInvoice = asyncHandler(async (req, res, next) => {
            </thead>
            <tbody>
               ${itemsHTML}
-              <tr class="total-row">
-                 <td colspan="3" style="text-align: right;">Subtotal:</td>
-                 <td style="text-align: right;">$${order.subtotal.toLocaleString()}</td>
-              </tr>
-              <tr>
-                 <td colspan="3" style="text-align: right;">Shipping:</td>
-                 <td style="text-align: right;">$${order.shippingCost.toLocaleString()}</td>
-              </tr>
-              <tr>
-                 <td colspan="3" style="text-align: right; font-size: 1.2em; font-weight: bold;">Total:</td>
-                 <td style="text-align: right; font-size: 1.2em; font-weight: bold;">$${order.totalPrice.toLocaleString()}</td>
-              </tr>
+                <tr class="total-row">
+                  <td colspan="3" style="text-align: right;">Subtotal:</td>
+                  <td style="text-align: right;">$${order.subtotal.toLocaleString()}</td>
+                </tr>
+                <tr>
+                  <td colspan="3" style="text-align: right;">Shipping:</td>
+                  <td style="text-align: right;">$${order.shippingCost.toLocaleString()}</td>
+                </tr>
+                ${order.giftBoxFee ? `<tr><td colspan="3" style="text-align: right;">Gift Box Fee:</td><td style="text-align: right;">$${(order.giftBoxFee || 0).toLocaleString()}</td></tr>` : ""}
+                ${order.discountAmount ? `<tr><td colspan="3" style="text-align: right;">Discount:</td><td style="text-align: right;">-$${(order.discountAmount || 0).toLocaleString()}</td></tr>` : ""}
+                ${order.coinUsedAmount ? `<tr><td colspan="3" style="text-align: right;">GZCoin Used:</td><td style="text-align: right;">-$${(order.coinUsedAmount || 0).toLocaleString()} <div style="font-size:0.85em;color:#777">(Deducted from your GZCoin balance)</div></td></tr>` : ""}
+                <tr>
+                  <td colspan="3" style="text-align: right; font-size: 1.2em; font-weight: bold;">Total:</td>
+                  <td style="text-align: right; font-size: 1.2em; font-weight: bold;">$${order.totalPrice.toLocaleString()}</td>
+                </tr>
            </tbody>
         </table>
       </div>
@@ -963,6 +977,16 @@ export const cancelOrder = asyncHandler(async (req, res, next) => {
   order.cancelledAt = Date.now();
   order.cancellationReason = req.body.reason || "User cancelled";
   await order.save();
+
+  orderTrackingService.notifyBuyerStatusChange(
+    order._id.toString(),
+    "cancelled",
+    {
+      orderNumber: order.orderNumber,
+      buyerId: order.userId,
+      cancellationReason: order.cancellationReason,
+    },
+  );
 
   // Re-stock Inventory
   const items = await OrderItem.find({ orderId: order._id }).populate(
@@ -1097,6 +1121,22 @@ export const confirmReceipt = asyncHandler(async (req, res, next) => {
   await order.save();
 
   // Notify via Socket
+  // Derive sellerId from order items if order.sellerId not present
+  let notifySellerId = null;
+  try {
+    const oi = await OrderItem.findOne({ orderId: order._id }).populate({
+      path: "productId",
+      select: "sellerId",
+      populate: { path: "sellerId", select: "_id" },
+    });
+    if (oi && oi.productId) {
+      notifySellerId =
+        oi.productId.sellerId?._id || oi.productId.sellerId || null;
+    }
+  } catch (e) {
+    console.error("Error deriving sellerId for notify on confirmReceipt:", e);
+  }
+
   orderTrackingService.notifyBuyerStatusChange(
     order._id.toString(),
     "completed",
@@ -1104,6 +1144,7 @@ export const confirmReceipt = asyncHandler(async (req, res, next) => {
       orderNumber: order.orderNumber,
       completedAt: order.completedAt,
       buyerId: order.userId,
+      sellerId: notifySellerId,
     },
   );
 
@@ -1156,6 +1197,22 @@ export const markAsDelivered = asyncHandler(async (req, res, next) => {
   await order.save();
 
   // Notify via Socket
+  // Derive sellerId from order items if order.sellerId not present
+  let notifySellerId = null;
+  try {
+    const oi = await OrderItem.findOne({ orderId: order._id }).populate({
+      path: "productId",
+      select: "sellerId",
+      populate: { path: "sellerId", select: "_id" },
+    });
+    if (oi && oi.productId) {
+      notifySellerId =
+        oi.productId.sellerId?._id || oi.productId.sellerId || null;
+    }
+  } catch (e) {
+    console.error("Error deriving sellerId for notify on markAsDelivered:", e);
+  }
+
   orderTrackingService.notifyBuyerStatusChange(
     order._id.toString(),
     "delivered",
@@ -1163,6 +1220,7 @@ export const markAsDelivered = asyncHandler(async (req, res, next) => {
       orderNumber: order.orderNumber,
       deliveredAt: order.deliveredAt,
       buyerId: order.userId,
+      sellerId: notifySellerId,
     },
   );
 
