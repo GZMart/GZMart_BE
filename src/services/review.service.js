@@ -32,7 +32,7 @@ class ReviewService {
       throw new ErrorResponse("Product not found", 404);
     }
 
-    // Check if user has already reviewed this product in this order (or non-order review)
+    // Check if user has already reviewed this product FOR THIS SPECIFIC ORDER
     const existingReview = await Review.findOne({
       productId,
       userId,
@@ -40,10 +40,13 @@ class ReviewService {
     });
 
     if (existingReview) {
-      throw new ErrorResponse("You have already reviewed this product", 400);
+      throw new ErrorResponse(
+        "You have already reviewed this product for this order",
+        400,
+      );
     }
 
-    // If orderId provided, verify user purchased this product
+    // Verify purchase if orderId is provided
     let verifiedPurchase = false;
     if (orderId) {
       console.log("=== DEBUG: Fetching order ===");
@@ -51,17 +54,14 @@ class ReviewService {
         const order = await Order.findOne({
           _id: orderId,
           userId,
-        }).populate({
-          path: "items",
-        });
+        }).populate("items");
 
-        if (!order) {
-          console.log("Order not found");
-          // Don't throw - allow review creation without verified purchase
-        } else if (order.items && order.items.length > 0) {
-          // Check if any item in the order has the requested productId
+        if (order && order.items && order.items.length > 0) {
           const hasProduct = order.items.some((item) => {
-            return item.productId && item.productId.toString() === productId.toString();
+            return (
+              item.productId &&
+              item.productId.toString() === productId.toString()
+            );
           });
 
           if (hasProduct) {
@@ -71,13 +71,12 @@ class ReviewService {
         }
       } catch (error) {
         console.log("Error verifying purchase:", error.message);
-        // Don't throw - allow review creation even if order verification fails
       }
     }
 
     let review;
     try {
-      // Create review
+      // Create new review
       review = await Review.create({
         productId,
         userId,
@@ -88,32 +87,12 @@ class ReviewService {
         variant: reviewData.variant || null,
         images: reviewData.images || [],
         verifiedPurchase,
-        status: "approved", // Default to approved
+        status: "approved",
       });
     } catch (error) {
-      // Backward-compatibility fallback for legacy unique index {productId, userId}
-      if (error?.code === 11000) {
-        review = await Review.findOne({ productId, userId });
-        if (!review) {
-          throw new ErrorResponse("Duplicate field value entered", 400);
-        }
-
-        review.orderId = orderId || review.orderId || null;
-        review.rating = reviewData.rating;
-        review.title = reviewData.title || null;
-        review.content = reviewData.content;
-        review.variant = reviewData.variant || null;
-        review.images = reviewData.images || [];
-        review.verifiedPurchase = verifiedPurchase;
-        review.status = "approved";
-        review.helpful = 0;
-        review.unhelpful = 0;
-        review.helpfulBy = [];
-        review.unhelpfulBy = [];
-        await review.save();
-      } else {
-        throw error;
-      }
+      console.error("Error creating review:", error);
+      // Ném lỗi rõ ràng nếu có lỗi từ DB (như thiếu trường bắt buộc, v.v.)
+      throw new ErrorResponse(error.message || "Failed to create review", 400);
     }
 
     console.log("Review created:", review._id);
@@ -156,7 +135,7 @@ class ReviewService {
   }
 
   /**
-   * Create or update reviews for all products in an order with same review content.
+   * Create or update reviews for all products in an order
    */
   async createOrUpdateOrderReviews(userId, orderId, reviewData) {
     const order = await Order.findOne({ _id: orderId, userId }).populate({
@@ -188,16 +167,13 @@ class ReviewService {
       const productId = item.productId;
       const variantLabel = this.formatVariantLabel(item.tierSelections);
 
-      // Ensure product still exists
       const product = await Product.findById(productId).select("_id");
-      if (!product) {
-        continue;
-      }
+      if (!product) continue;
 
       let review = await Review.findOne({ userId, orderId, productId });
 
       if (review) {
-        // Replace old review content with new one (edit behavior)
+        // UPDATE (EDIT) existing review for THIS order
         review.rating = reviewData.rating;
         review.title = reviewData.title || null;
         review.content = reviewData.content;
@@ -207,6 +183,7 @@ class ReviewService {
         review.status = "approved";
         await review.save();
       } else {
+        // CREATE new review for THIS order
         try {
           review = await Review.create({
             productId,
@@ -221,29 +198,11 @@ class ReviewService {
             status: "approved",
           });
         } catch (error) {
-          // Backward-compatibility fallback for legacy unique index {productId, userId}
-          if (error?.code === 11000) {
-            review = await Review.findOne({ productId, userId });
-            if (!review) {
-              throw new ErrorResponse("Duplicate field value entered", 400);
-            }
-
-            review.orderId = orderId;
-            review.rating = reviewData.rating;
-            review.title = reviewData.title || null;
-            review.content = reviewData.content;
-            review.images = reviewData.images || [];
-            review.variant = variantLabel || reviewData.variant || null;
-            review.verifiedPurchase = true;
-            review.status = "approved";
-            review.helpful = 0;
-            review.unhelpful = 0;
-            review.helpfulBy = [];
-            review.unhelpfulBy = [];
-            await review.save();
-          } else {
-            throw error;
-          }
+          console.error(
+            `Failed to create review for product ${productId}:`,
+            error.message,
+          );
+          continue; // Skip if creation fails for this specific item
         }
       }
 

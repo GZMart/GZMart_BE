@@ -1,12 +1,12 @@
 let ioInstance = null;
 
-export function setSocketIO(io) {
+export const setSocketIO = (io) => {
   ioInstance = io;
-}
+};
 
-export function getSocketIO() {
+export const getSocketIO = () => {
   if (!ioInstance) {
-    console.warn('Socket.IO instance not initialized yet');
+    console.warn("Socket.io has not been initialized yet!");
   }
   return ioInstance;
-}
+};

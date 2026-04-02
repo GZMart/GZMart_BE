@@ -13,6 +13,7 @@ router
 
 // Geocoding endpoints
 router.post("/geocode", addressController.geocodeAddress);
+router.post("/geocode-string", addressController.geocodeAddressString);
 router.post("/reverse-geocode", addressController.reverseGeocodeAddress);
 router.post("/calculate-distance", addressController.calculateDistance);
 

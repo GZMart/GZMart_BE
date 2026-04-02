@@ -97,6 +97,7 @@ reviewSchema.index({ productId: 1, status: 1 });
 reviewSchema.index({ userId: 1, createdAt: -1 });
 reviewSchema.index({ productId: 1, rating: 1 });
 reviewSchema.index({ createdAt: -1 });
-reviewSchema.index({ productId: 1, userId: 1, orderId: 1 }, { unique: true }); // One review per product per user per order
+// Quan trọng: Thay đổi Index Unique để bao gồm orderId
+reviewSchema.index({ productId: 1, userId: 1, orderId: 1 }, { unique: true });
 
 export default mongoose.model("Review", reviewSchema);

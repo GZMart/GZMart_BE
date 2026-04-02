@@ -58,15 +58,16 @@ export const createAddress = async (req, res, next) => {
       await Address.updateMany({ userId }, { isDefault: false });
     }
 
-    // Auto-geocode if location not provided
+    // Auto-geocode if location not provided. Also capture formattedAddress for normalization.
     let finalLocation = location;
+    let formattedAddress = null;
     if (
       !location ||
       !location.lat ||
       !location.lng ||
-      !geocodingService.isValidCoordinates(location.lat, location.lng)
+      !geocodingService.isValidCoordinates(location?.lat, location?.lng)
     ) {
-      const geocoded = await geocodingService.geocodeAddress({
+      let geocoded = await geocodingService.geocodeAddress({
         street,
         details,
         wardName,
@@ -79,14 +80,29 @@ export const createAddress = async (req, res, next) => {
           lat: geocoded.lat,
           lng: geocoded.lng,
         };
+        formattedAddress = geocoded.formattedAddress || null;
         console.log(
-          `[Address] Auto-geocoded address: ${geocoded.formattedAddress} -> (${geocoded.lat}, ${geocoded.lng})`,
+          `[Address] Auto-geocoded address: ${formattedAddress} -> (${geocoded.lat}, ${geocoded.lng})`,
         );
       } else {
         console.warn(
           "[Address] Geocoding failed. Address saved without GPS coordinates.",
         );
       }
+    }
+
+    // If we didn't get formattedAddress from geocode, try reverse geocoding from coords
+    if (
+      !formattedAddress &&
+      finalLocation &&
+      finalLocation.lat &&
+      finalLocation.lng
+    ) {
+      const rev = await geocodingService.reverseGeocode(
+        finalLocation.lat,
+        finalLocation.lng,
+      );
+      if (rev && rev.formattedAddress) formattedAddress = rev.formattedAddress;
     }
 
     const newAddress = await Address.create({
@@ -103,6 +119,7 @@ export const createAddress = async (req, res, next) => {
       details,
       isDefault: shouldBeDefault,
       location: finalLocation, // Include GPS location (original or geocoded)
+      formattedAddress: formattedAddress,
     });
 
     if (shouldBeDefault) {
@@ -176,10 +193,27 @@ export const updateAddress = async (req, res, next) => {
           lat: geocoded.lat,
           lng: geocoded.lng,
         };
+        updateData.formattedAddress =
+          geocoded.formattedAddress || updateData.formattedAddress || null;
         console.log(
           `[Address] Auto-geocoded updated address: (${geocoded.lat}, ${geocoded.lng})`,
         );
       }
+    }
+
+    // If formattedAddress still missing but we have coordinates, try reverse geocoding
+    if (
+      !updateData.formattedAddress &&
+      updateData.location &&
+      updateData.location.lat &&
+      updateData.location.lng
+    ) {
+      const rev = await geocodingService.reverseGeocode(
+        updateData.location.lat,
+        updateData.location.lng,
+      );
+      if (rev && rev.formattedAddress)
+        updateData.formattedAddress = rev.formattedAddress;
     }
 
     address = await Address.findByIdAndUpdate(id, updateData, {
@@ -293,6 +327,37 @@ export const geocodeAddress = async (req, res, next) => {
           lat: result.lat,
           lng: result.lng,
         },
+        formattedAddress: result.formattedAddress,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Geocode a raw address string
+ * POST /api/addresses/geocode-string
+ * Body: { address: string }
+ */
+export const geocodeAddressString = async (req, res, next) => {
+  try {
+    const { address } = req.body;
+    if (!address || typeof address !== "string") {
+      throw new ErrorResponse("Address string is required", 400);
+    }
+
+    const result = await geocodingService.geocodeAddressString(address);
+    if (!result) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Unable to geocode address string" });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        location: { lat: result.lat, lng: result.lng },
         formattedAddress: result.formattedAddress,
       },
     });

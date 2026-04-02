@@ -8,8 +8,12 @@ import axios from "axios";
 
 class GeocodingService {
   constructor() {
-    this.apiKey = process.env.GOOGLE_MAPS_API_KEY;
-    this.baseUrl = "https://maps.googleapis.com/maps/api/geocode/json";
+    this.googleApiKey = process.env.GOOGLE_MAPS_API_KEY;
+    this.googleBaseUrl = "https://maps.googleapis.com/maps/api/geocode/json";
+
+    // Support Goong as geocoding provider. If GOONG_API_KEY present, we'll use Goong first.
+    this.goongApiKey = process.env.GOONG_API_KEY;
+    this.goongBaseUrl = process.env.GOONG_BASE_URL || "https://rsapi.goong.io";
   }
 
   /**
@@ -40,30 +44,63 @@ class GeocodingService {
    */
   async geocodeAddress(addressComponents) {
     try {
-      // If API key not configured, skip geocoding
-      if (!this.apiKey || this.apiKey === "your_google_maps_api_key_here") {
+      const fullAddress = this.buildFullAddress(addressComponents);
+
+      // If Goong configured, try Goong first
+      if (this.goongApiKey) {
+        try {
+          const resp = await axios.get(`${this.goongBaseUrl}/Geocode`, {
+            params: {
+              address: fullAddress,
+              api_key: this.goongApiKey,
+            },
+            timeout: 5000,
+          });
+
+          const data = resp.data;
+          const result =
+            data.results && data.results.length ? data.results[0] : null;
+          if (result) {
+            const loc = result.geometry?.location || result.geometry || result;
+            return {
+              lat: Number(loc.lat),
+              lng: Number(loc.lng),
+              formattedAddress:
+                result.formatted_address ||
+                result.formattedAddress ||
+                fullAddress,
+            };
+          }
+        } catch (err) {
+          console.warn(
+            "[Geocoding] Goong geocoding failed, falling back to Google:",
+            err.message,
+          );
+        }
+      }
+
+      // Fallback to Google if configured
+      if (
+        !this.googleApiKey ||
+        this.googleApiKey === "your_google_maps_api_key_here"
+      ) {
         console.warn(
-          "[Geocoding] Google Maps API key not configured. Skipping geocoding.",
+          "[Geocoding] No geocoding API key configured (Goong or Google). Skipping geocoding.",
         );
         return null;
       }
 
-      const fullAddress = this.buildFullAddress(addressComponents);
-
-      // Call Google Maps Geocoding API
-      const response = await axios.get(this.baseUrl, {
+      const response = await axios.get(this.googleBaseUrl, {
         params: {
           address: fullAddress,
-          key: this.apiKey,
-          language: "vi", // Vietnamese language for results
-          region: "vn", // Vietnam region bias
+          key: this.googleApiKey,
+          language: "vi",
+          region: "vn",
         },
-        timeout: 5000, // 5 second timeout
+        timeout: 5000,
       });
 
       const data = response.data;
-
-      // Check if geocoding was successful
       if (data.status !== "OK" || !data.results || data.results.length === 0) {
         console.warn(
           `[Geocoding] Failed to geocode address: ${fullAddress}. Status: ${data.status}`,
@@ -81,7 +118,6 @@ class GeocodingService {
       };
     } catch (error) {
       console.error("[Geocoding] Error geocoding address:", error.message);
-      // Don't throw error - geocoding is optional
       return null;
     }
   }
@@ -94,17 +130,58 @@ class GeocodingService {
    */
   async reverseGeocode(lat, lng) {
     try {
-      if (!this.apiKey || this.apiKey === "your_google_maps_api_key_here") {
+      // Try Goong first if configured
+      if (this.goongApiKey) {
+        try {
+          const resp = await axios.get(`${this.goongBaseUrl}/ReverseGeocode`, {
+            params: {
+              lat: lat,
+              lng: lng,
+              api_key: this.goongApiKey,
+            },
+            timeout: 5000,
+          });
+          const data = resp.data;
+          const result =
+            data.results && data.results.length ? data.results[0] : null;
+          if (result) {
+            const parsed = {
+              formattedAddress:
+                result.formatted_address ||
+                result.formattedAddress ||
+                result.name ||
+                "",
+              street: result.street || "",
+              ward: result.sublocality || result.ward || "",
+              district: result.district || "",
+              province: result.province || "",
+              country: result.country || "",
+            };
+            return parsed;
+          }
+        } catch (err) {
+          console.warn(
+            "[Geocoding] Goong reverse geocoding failed, falling back to Google:",
+            err.message,
+          );
+        }
+      }
+
+      // Fallback to Google reverse geocode
+      if (
+        !this.googleApiKey ||
+        this.googleApiKey === "your_google_maps_api_key_here"
+      ) {
         console.warn(
-          "[Geocoding] Google Maps API key not configured. Skipping reverse geocoding.",
+          "[Geocoding] No geocoding API key configured (Goong or Google). Skipping reverse geocoding.",
         );
         return null;
       }
 
-      const response = await axios.get(this.baseUrl, {
+      const response = await axios.get(this.googleBaseUrl, {
         params: {
           latlng: `${lat},${lng}`,
-          key: this.apiKey,
+          key: this.googleApiKey,
           language: "vi",
           region: "vn",
         },
@@ -121,8 +198,6 @@ class GeocodingService {
       }
 
       const result = data.results[0];
-
-      // Parse address components
       const addressComponents = result.address_components;
       const parsed = {
         formattedAddress: result.formatted_address,
@@ -156,6 +231,83 @@ class GeocodingService {
     } catch (error) {
       console.error(
         "[Geocoding] Error reverse geocoding coordinates:",
+        error.message,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Geocode a raw address string (fallback endpoint used by frontend)
+   * @param {String} address
+   * @returns {Promise<Object|null>} - { lat, lng, formattedAddress } or null
+   */
+  async geocodeAddressString(address) {
+    try {
+      if (!address) return null;
+
+      // Try Goong first
+      if (this.goongApiKey) {
+        try {
+          const resp = await axios.get(`${this.goongBaseUrl}/geocode`, {
+            params: {
+              address,
+              api_key: this.goongApiKey,
+            },
+            timeout: 5000,
+          });
+          const data = resp.data;
+          const result =
+            data.results && data.results.length ? data.results[0] : null;
+          if (result) {
+            const loc = result.geometry?.location || result.geometry || result;
+            return {
+              lat: Number(loc.lat),
+              lng: Number(loc.lng),
+              formattedAddress:
+                result.formatted_address || result.formattedAddress || address,
+            };
+          }
+        } catch (err) {
+          console.warn(
+            "[Geocoding] Goong geocode-string failed, falling back to Google:",
+            err.message,
+          );
+        }
+      }
+
+      // Fallback to Google
+      if (
+        !this.googleApiKey ||
+        this.googleApiKey === "your_google_maps_api_key_here"
+      )
+        return null;
+
+      const response = await axios.get(this.googleBaseUrl, {
+        params: {
+          address,
+          key: this.googleApiKey,
+          language: "vi",
+          region: "vn",
+        },
+        timeout: 5000,
+      });
+
+      const data = response.data;
+      if (data.status !== "OK" || !data.results || data.results.length === 0)
+        return null;
+
+      const result = data.results[0];
+      const location = result.geometry.location;
+
+      return {
+        lat: location.lat,
+        lng: location.lng,
+        formattedAddress: result.formatted_address,
+      };
+    } catch (error) {
+      console.error(
+        "[Geocoding] Error geocoding address string:",
         error.message,
       );
       return null;

@@ -59,6 +59,7 @@ import { startCoinJobs } from "./jobs/coinExpirationJob.js";
 import { startLivestreamCleanupJob } from "./jobs/livestreamCleanup.job.js";
 import { setSocketIO } from "./utils/socketIO.js";
 import { runBatchEmbedding } from "./jobs/batchEmbedding.job.js";
+import { initProductSoldReconcileJob } from "./jobs/productSoldReconcile.job.js";
 // Load environment variables
 dotenv.config();
 
@@ -229,6 +230,8 @@ app.use("/api/coins", coinRoutes);
 app.use("/api/seller-applications", sellerApplicationRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/rma", rmaRoutes);
+app.use("/api/chat", chatRoutes); // Register chat routes
+app.use("/api/ai", aiRoutes); // Register AI routes
 
 // Error handler
 app.use(errorHandler);
@@ -282,9 +285,6 @@ import setupSocketHandlers from "./socket.js";
 // Setup socket handlers
 setupSocketHandlers(io);
 
-app.use("/api/chat", chatRoutes); // Register chat routes
-app.use("/api/ai", aiRoutes); // Register AI routes
-
 server.listen(PORT, HOST, () => {
   logger.info(`Server is running on port ${PORT}`);
   // Initialize cron jobs
@@ -293,6 +293,7 @@ server.listen(PORT, HOST, () => {
   startRmaAutoApprovalJob();
   startExchangeRateJob();
   startCoinJobs();
+  initProductSoldReconcileJob();
   startLivestreamCleanupJob();
   // [Phase 3 - 5.2] Batch embedding cron — registered at import time
   runBatchEmbedding();

@@ -237,9 +237,12 @@ export const createProduct = async (productData, sellerId) => {
     (sum, model) => sum + (Number(model.stock) || 0),
     0,
   );
-  const status = productData.status === "draft" 
-    ? "draft" 
-    : (totalStock > 0 ? "active" : "out_of_stock");
+  const status =
+    productData.status === "draft"
+      ? "draft"
+      : totalStock > 0
+        ? "active"
+        : "out_of_stock";
 
   const product = new Product({
     name,
@@ -928,11 +931,11 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
   const productQuery = {
     sellerId,
   };
-  
+
   if (!options.includeHidden) {
     productQuery.status = { $in: PUBLIC_VISIBLE_STATUSES };
   }
-  
+
   if (categoryId) {
     productQuery.categoryId = categoryId;
   }
@@ -984,7 +987,9 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
 
   // Attach min/max price per product so the FE seller listing can show price ranges.
   const enrichedProducts = products.map((p) => {
-    const prices = (p.models || []).map((m) => m.price).filter((x) => typeof x === "number");
+    const prices = (p.models || [])
+      .map((m) => m.price)
+      .filter((x) => typeof x === "number");
     return {
       ...p,
       minPrice: prices.length ? Math.min(...prices) : p.originalPrice || 0,
@@ -1048,10 +1053,7 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
       }
 
       // Inject categoryList
-      if (
-        mod.type === "category_list" &&
-        widgetData.categoryList?.length > 0
-      ) {
+      if (mod.type === "category_list" && widgetData.categoryList?.length > 0) {
         mod.props = {
           ...(mod.props || {}),
           categories: widgetData.categoryList,
