@@ -36,16 +36,22 @@ export const getRevenueStats = asyncHandler(async (req, res) => {
  * @access  Private (Seller, Admin)
  */
 export const getRevenueOverTime = asyncHandler(async (req, res) => {
-  const { period } = req.query; // 'daily', 'weekly', 'monthly'
+  const { period, startDate, endDate } = req.query;
+
+  const customRange = startDate && endDate
+    ? { startDate, endDate }
+    : null;
 
   const revenueData = await dashboardService.getRevenueOverTime(
     req.user._id,
     period || "daily",
+    customRange,
   );
 
   res.status(200).json({
     success: true,
     period: period || "daily",
+    customRange,
     data: revenueData,
   });
 });
@@ -181,21 +187,53 @@ export const getComparisonStats = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Get growth comparison with optional custom date range
+ * @route   GET /api/dashboard/growth-comparison
+ * @access  Private (Seller, Admin)
+ */
+export const getGrowthComparison = asyncHandler(async (req, res) => {
+  const { period, startDate, endDate } = req.query;
+
+  const customRange = startDate && endDate
+    ? { startDate, endDate }
+    : null;
+
+  const comparison = await dashboardService.getGrowthComparison(
+    req.user._id,
+    period || "week",
+    customRange,
+  );
+
+  res.status(200).json({
+    success: true,
+    period: period || "week",
+    customRange,
+    data: comparison,
+  });
+});
+
+/**
  * @desc    Get profit and loss analysis
  * @route   GET /api/dashboard/profit-loss
  * @access  Private (Seller, Admin)
  */
 export const getProfitLossAnalysis = asyncHandler(async (req, res) => {
-  const { period } = req.query; // 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
+  const { period, startDate, endDate } = req.query;
+
+  const customRange = startDate && endDate
+    ? { startDate, endDate }
+    : null;
 
   const analysis = await dashboardService.getProfitLossAnalysis(
     req.user._id,
     period || "daily",
+    customRange,
   );
 
   res.status(200).json({
     success: true,
     period: period || "daily",
+    customRange,
     data: analysis,
   });
 });
@@ -206,16 +244,22 @@ export const getProfitLossAnalysis = asyncHandler(async (req, res) => {
  * @access  Private (Seller, Admin)
  */
 export const getExpenseAnalysis = asyncHandler(async (req, res) => {
-  const { period } = req.query; // 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
+  const { period, startDate, endDate } = req.query;
+
+  const customRange = startDate && endDate
+    ? { startDate, endDate }
+    : null;
 
   const analysis = await dashboardService.getExpenseAnalysis(
     req.user._id,
     period || "monthly",
+    customRange,
   );
 
   res.status(200).json({
     success: true,
     period: period || "monthly",
+    customRange,
     data: analysis,
   });
 });

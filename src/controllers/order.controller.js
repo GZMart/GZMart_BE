@@ -6,7 +6,6 @@ import Product from "../models/Product.js";
 import InventoryItem from "../models/InventoryItem.js";
 import InventoryTransaction from "../models/InventoryTransaction.js";
 // import FlashSaleProduct from "../models/FlashSaleProduct.js";
-import Voucher from "../models/Voucher.js";
 import Deal from "../models/Deal.js";
 import User from "../models/User.js";
 import Coin from "../models/Coin.js";
@@ -53,7 +52,9 @@ export const getCheckoutInfo = asyncHandler(async (req, res, next) => {
 // Helper: Calculate Shipping Fee
 const calculateShippingFee = (subtotal, city = "") => {
   // Free shipping for orders > 500k
-  if (subtotal >= 500000) return 0;
+  if (subtotal >= 500000) {
+return 0;
+}
 
   // Example logic: HCM = 20k, others = 35k
   // In reality, this would call a shipping provider API
@@ -72,9 +73,7 @@ const normalizeFee = (value, fallback = 0) => {
 };
 
 // Helper: Generate Order Number
-const generateOrderNumber = () => {
-  return "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
-};
+const generateOrderNumber = () => `ORD-${  Date.now()  }-${  Math.floor(Math.random() * 1000)}`;
 
 // Deduct GZCoin using packets with nearest expiration first.
 const deductCoinsForOrder = async ({
@@ -120,7 +119,9 @@ const deductCoinsForOrder = async ({
   const usageDetails = [];
 
   for (const packet of packets) {
-    if (remaining <= 0) break;
+    if (remaining <= 0) {
+break;
+}
 
     const useAmount = Math.min(packet.remainingAmount, remaining);
     packet.remainingAmount -= useAmount;
@@ -218,7 +219,9 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
   // 2. Calculate Subtotal (re-check promotion prices)
   let subtotal = 0;
   for (const item of cartItems) {
-    if (!item.productId) continue;
+    if (!item.productId) {
+continue;
+}
     const product = item.productId;
 
     // Find model for this variant
@@ -330,10 +333,24 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     includeGiftBox,
     notes,
     city,
-    quantity,
+    _quantity,
     voucherIds,
     cartItemIds,
+    liveItems,
+    liveSessionVoucherId,
+    fromLiveSession,
   } = req.body;
+
+  // DEBUG: log raw request payload to diagnose 400
+  console.log("[createOrder] Request payload:", {
+    hasShippingAddress: !!shippingAddress,
+    paymentMethod,
+    hasLiveItems: Array.isArray(liveItems),
+    liveItemsCount: liveItems?.length,
+    liveItems,
+    cartItemIds,
+    voucherIds,
+  });
 
   if (!shippingAddress || !paymentMethod) {
     return next(
@@ -344,40 +361,137 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     );
   }
 
-  // 1. Get Cart
-  const cart = await Cart.findOne({ userId: req.user._id });
-  if (!cart) {
-    return next(new ErrorResponse("Cart is empty", 400));
-  }
+  // Track live order item IDs (persisted inside transaction)
+  const liveOrderItemIds = [];
 
-  // Build query to get cart items
-  const query = { cartId: cart._id };
-  // If cartItemIds provided, only get those specific items
-  if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
-    query._id = { $in: cartItemIds };
-  }
+  /** Sum of (unit price × qty) for live lines — same logic as OrderItem.effectivePrice */
+  let liveItemsMonetarySubtotal = 0;
 
-  const cartItems = await CartItem.find(query).populate("productId");
-  if (cartItems.length === 0) {
-    return next(new ErrorResponse("Cart is empty", 400));
-  }
+  // === Pre-transaction validation for live session items ===
+  if (liveItems && liveItems.length > 0) {
+    for (const liveItem of liveItems) {
+      const product = await Product.findById(liveItem.productId)
+        .select("name models sellerId images tiers")
+        .lean();
+      if (!product) {
+        return next(new ErrorResponse(`Product ${liveItem.productId} not found`, 400));
+      }
 
-  // SECURITY FIX (BUG 8): Validate that all cartItemIds belong to this user's cart
-  if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
-    const foundItemIds = cartItems.map((item) => item._id.toString());
-    const requestedItemIds = cartItemIds.map((id) => id.toString());
-    const invalidItems = requestedItemIds.filter(
-      (id) => !foundItemIds.includes(id),
-    );
+      // Find the model matching color + size by examining tierIndex
+      let targetModel = null;
+      if (product.models && product.models.length > 0) {
+        if (product.tiers && product.tiers.length > 0) {
+          // Map color/size strings to tierIndex positions
+          const colorIdx = product.tiers.findIndex((t) =>
+            /color|màu|mau/.test(t.name.toLowerCase()),
+          );
+          const sizeIdx = product.tiers.findIndex((t) =>
+            /size|kích|kich/.test(t.name.toLowerCase()),
+          );
 
-    if (invalidItems.length > 0) {
-      return next(
-        new ErrorResponse(
-          "Some cart items do not belong to your cart or do not exist",
-          403,
-        ),
-      );
+          targetModel = product.models.find((m) => {
+            if (!m.tierIndex || m.tierIndex.length === 0) {
+return false;
+}
+            const colorMatch =
+              colorIdx === -1 ||
+              m.tierIndex[colorIdx] ===
+                product.tiers[colorIdx].options?.findIndex(
+                  (o) =>
+                    String(o).toLowerCase() ===
+                    String(liveItem.color || "Default").toLowerCase(),
+                );
+            const sizeMatch =
+              sizeIdx === -1 ||
+              m.tierIndex[sizeIdx] ===
+                product.tiers[sizeIdx].options?.findIndex(
+                  (o) =>
+                    String(o).toLowerCase() ===
+                    String(liveItem.size || "Default").toLowerCase(),
+                );
+            return colorMatch && sizeMatch;
+          });
+        }
+      }
+
+      // If no tier-based model found, use first active model
+      if (!targetModel) {
+        targetModel =
+          product.models?.find((m) => m.isActive !== false) ||
+          product.models?.[0];
+      }
+
+      if (!targetModel) {
+        return next(new ErrorResponse(`Variant not found for product ${product.name}`, 400));
+      }
+      if (targetModel.stock < liveItem.quantity) {
+        return next(new ErrorResponse(
+          `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
+          400,
+        ));
+      }
+
+      const clientPrice = Number(liveItem.price);
+      const lineUnit =
+        Number.isFinite(clientPrice) && clientPrice > 0
+          ? clientPrice
+          : Number(targetModel.price) || 0;
+      const qty = Math.max(1, Number(liveItem.quantity) || 1);
+      liveItemsMonetarySubtotal += lineUnit * qty;
     }
+  }
+
+  // 1. Get Cart — skip if order contains only live-session items
+  let cartItems = [];
+  let cart = null;
+  const hasLiveItems = Array.isArray(liveItems) && liveItems.length > 0;
+
+  if (!hasLiveItems) {
+    // ── Normal cart order (no live-session items) ──────────────────
+    cart = await Cart.findOne({ userId: req.user._id });
+    if (!cart) {
+      return next(new ErrorResponse("Cart is empty", 400));
+    }
+
+    const query = { cartId: cart._id };
+    if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+      query._id = { $in: cartItemIds };
+    }
+
+    cartItems = await CartItem.find(query).populate("productId");
+    if (cartItems.length === 0) {
+      console.error("[createOrder] cartItems query returned 0 results.", {
+        userId: req.user._id,
+        cartId: cart?._id,
+        cartItemIds,
+        query,
+      });
+      return next(new ErrorResponse("Cart is empty", 400));
+    }
+
+    // SECURITY FIX (BUG 8): Validate that all cartItemIds belong to this user's cart
+    if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+      const foundItemIds = cartItems.map((item) => item._id.toString());
+      const requestedItemIds = cartItemIds.map((id) => id.toString());
+      const invalidItems = requestedItemIds.filter(
+        (id) => !foundItemIds.includes(id),
+      );
+
+      if (invalidItems.length > 0) {
+        return next(
+          new ErrorResponse(
+            "Some cart items do not belong to your cart or do not exist",
+            403,
+          ),
+        );
+      }
+    }
+  } else {
+    // ── Live-session-only order: cart may be empty — this is fine ──
+    console.log("[createOrder] Live-session-only order — skipping cart validation.", {
+      liveItems: liveItems.length,
+      cartItemIds,
+    });
   }
 
   // DUPLICATE ORDER PREVENTION (BUG 9): Check for recent duplicate orders
@@ -408,7 +522,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   const validItems = [];
 
   for (const item of cartItems) {
-    if (!item.productId) continue; // Skip deleted products
+    if (!item.productId) {
+continue;
+} // Skip deleted products
 
     // Find model to get SKU
     const product = item.productId;
@@ -489,13 +605,15 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     subtotal += finalPrice * item.quantity;
     validItems.push({
       cartItem: item,
-      model: model,
-      product: product,
-      flashSaleInfo: flashSaleInfo,
+      model,
+      product,
+      flashSaleInfo,
       finalPrice,
       isShopProgram,
     });
   }
+
+  subtotal += liveItemsMonetarySubtotal;
 
   // 3. Validate Vouchers & Calculate Discount
   const {
@@ -568,6 +686,8 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           isActive: true,
           items: [],
           resourcesDeducted: false, // Will be set to true after deduction
+          liveSessionVoucherId: liveSessionVoucherId || null,
+          fromLiveSession: fromLiveSession || null,
         },
       ],
       { session },
@@ -617,7 +737,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
             subtotal: finalPrice * cartItem.quantity,
             originalPrice: model.price,
             isFlashSale: flashSaleInfo.isFlashSale,
-            isShopProgram: isShopProgram,
+            isShopProgram,
           },
         ],
         { session },
@@ -626,8 +746,115 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       orderItemIds.push(orderItem[0]._id);
     }
 
-    // Add order items to order document
-    createdOrder.items = orderItemIds;
+    // Create OrderItem documents for live session items
+    for (const liveItem of liveItems || []) {
+      // Re-fetch product and model within transaction for consistency
+      const product = await Product.findById(liveItem.productId)
+        .select("name models sellerId images tiers")
+        .lean()
+        .session(session);
+
+      if (!product) {
+        throw new ErrorResponse(`Product ${liveItem.productId} not found`, 400);
+      }
+
+      let targetModel = null;
+      if (product.models && product.models.length > 0) {
+        if (product.tiers && product.tiers.length > 0) {
+          const colorIdx = product.tiers.findIndex((t) =>
+            /color|màu|mau/.test(t.name.toLowerCase()),
+          );
+          const sizeIdx = product.tiers.findIndex((t) =>
+            /size|kích|kich/.test(t.name.toLowerCase()),
+          );
+
+          targetModel = product.models.find((m) => {
+            if (!m.tierIndex || m.tierIndex.length === 0) {
+return false;
+}
+            const colorMatch =
+              colorIdx === -1 ||
+              m.tierIndex[colorIdx] ===
+                product.tiers[colorIdx].options?.findIndex(
+                  (o) =>
+                    String(o).toLowerCase() ===
+                    String(liveItem.color || "Default").toLowerCase(),
+                );
+            const sizeMatch =
+              sizeIdx === -1 ||
+              m.tierIndex[sizeIdx] ===
+                product.tiers[sizeIdx].options?.findIndex(
+                  (o) =>
+                    String(o).toLowerCase() ===
+                    String(liveItem.size || "Default").toLowerCase(),
+                );
+            return colorMatch && sizeMatch;
+          });
+        }
+      }
+
+      if (!targetModel) {
+        targetModel =
+          product.models?.find((m) => m.isActive !== false) ||
+          product.models?.[0];
+      }
+
+      if (!targetModel) {
+        throw new ErrorResponse(`Variant not found for product ${product.name}`, 400);
+      }
+      if (targetModel.stock < liveItem.quantity) {
+        throw new ErrorResponse(
+          `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
+          400,
+        );
+      }
+
+      const effectivePrice = liveItem.price ?? targetModel.price ?? 0;
+
+      // Create OrderItem document
+      const orderItem = await OrderItem.create(
+        [
+          {
+            orderId: createdOrder._id,
+            productId: liveItem.productId,
+            modelId: targetModel._id,
+            sku: targetModel.sku || null,
+            tierSelections: new Map(
+              (product.tiers || []).map((tier, idx) => [
+                tier.name,
+                idx ===
+                  product.tiers.findIndex((t) =>
+                    /color|màu|mau/.test(t.name.toLowerCase()),
+                  )
+                  ? String(liveItem.color || 'Default')
+                  : idx ===
+                    product.tiers.findIndex((t) =>
+                      /size|kích|kich/.test(t.name.toLowerCase()),
+                    )
+                    ? String(liveItem.size || 'Default')
+                    : 'Default',
+              ]),
+            ),
+            quantity: liveItem.quantity,
+            subtotal: effectivePrice * liveItem.quantity,
+            originalPrice: targetModel.price || effectivePrice,
+            price: effectivePrice,
+            color: liveItem.color || 'Default',
+            size: liveItem.size || 'Default',
+            image: liveItem.image || product.images?.[0] || null,
+            name: product.name,
+            isFlashSale: false,
+            isShopProgram: false,
+          },
+        ],
+        { session },
+      );
+
+      liveOrderItemIds.push(orderItem[0]._id);
+    }
+
+    // Add order items to order document (include both cart and live items)
+    createdOrder.items = [...orderItemIds, ...liveOrderItemIds];
     await createdOrder.save({ session });
 
     // 6. Deduct Resources ONLY for COD (Cash on Delivery)
@@ -720,7 +947,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 // @desc    Get my orders
 // @route   GET /api/orders
 // @access  Private
-export const getMyOrders = asyncHandler(async (req, res, next) => {
+export const getMyOrders = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const skip = (page - 1) * limit;
