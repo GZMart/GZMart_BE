@@ -27,6 +27,7 @@ function buildRoleGreeting(role) {
     return "Xin chào! Tôi là trợ lý AI của GZMart dành cho người bán. Tôi có thể giúp bạn:\n" +
       "📊 Phân tích doanh thu và xu hướng bán hàng\n" +
       "📦 Kiểm tra tồn kho và cảnh báo hết hàng\n" +
+      "📈 Dự báo nhu cầu và cảnh báo nhập hàng\n" +
       "📋 Xem đơn hàng cần xử lý\n" +
       "⭐ Tổng hợp đánh giá sản phẩm\n" +
       "🔄 Theo dõi yêu cầu đổi/trả\n\n" +
