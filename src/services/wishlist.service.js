@@ -298,14 +298,11 @@ class WishlistService {
    * Check if product is in wishlists
    */
   async isInWishlists(userId, productId, variant = {}) {
-    console.log("isInWishlists called:", { userId, productId, variant });
     const normalizedVariant = this._normalizeVariantInput(variant);
 
     const wishlist = await Wishlist.findOne({ userId });
-    console.log("Wishlist document:", wishlist);
 
     if (!wishlist) {
-      console.log("No wishlist document found");
       return false;
     }
 
@@ -319,9 +316,6 @@ class WishlistService {
       // For explicit variant checks, do not fallback to legacy product-level array.
       // This prevents S/M variants from sharing one boolean state.
       if ((wishlist.wishlistItems || []).length === 0) {
-        console.log(
-          "No variant-level wishlistItems found; explicit variant check -> false",
-        );
         return false;
       }
 

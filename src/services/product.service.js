@@ -11,6 +11,7 @@ import ComboPromotion from "../models/ComboPromotion.js";
 import AddOnDeal from "../models/AddOnDeal.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { generateSKU } from "../utils/skuGenerator.js";
+import { normalizeSku, skuMatch } from "../utils/skuUtils.js";
 
 // Public storefront visibility: include in-stock and out-of-stock products,
 // but keep draft/inactive hidden.
@@ -179,7 +180,7 @@ export const createProduct = async (productData, sellerId) => {
   const normalizedSKUs = [];
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
-    let sku = model.sku ? String(model.sku).toUpperCase().trim() : null;
+    let sku = model.sku ? normalizeSku(model.sku) : null;
 
     if (!sku) {
       let attempts = 0;
@@ -197,7 +198,7 @@ export const createProduct = async (productData, sellerId) => {
       model.sku = sku;
     }
 
-    model.sku = String(sku).toUpperCase();
+    model.sku = sku;
     normalizedSKUs.push(model.sku);
   }
 
@@ -682,22 +683,30 @@ export const updateProduct = async (productId, updateData, sellerId) => {
     throw new ErrorResponse("Not authorized to update this product", 403);
   }
 
+  // Collect SKUs of new variants that need InventoryItem (must be done before save
+  // so we know which models are new vs existing).
+  const newVariantSkus = new Set();
   if (updateData.models) {
     const prices = updateData.models.map((m) => m.price);
     updateData.originalPrice = Math.min(...prices);
 
     // Preserve existing SKUs or generate new ones if missing
     const existingModels = product.models || [];
+    const existingSkusForMatch = new Set(
+      (await InventoryItem.find({ productId: product._id })).map((inv) => normalizeSku(inv.sku)),
+    );
     updateData.models = updateData.models.map((model, idx) => {
-      if (!model.sku) {
+      if (model.sku) {
+        model.sku = normalizeSku(model.sku);
+      } else {
         const existingModel = existingModels.find(
           (em) =>
             JSON.stringify(em.tierIndex) === JSON.stringify(model.tierIndex),
         );
         if (existingModel?.sku) {
-          model.sku = existingModel.sku;
+          model.sku = normalizeSku(existingModel.sku);
         } else if (existingModels[idx]?.sku) {
-          model.sku = existingModels[idx].sku;
+          model.sku = normalizeSku(existingModels[idx].sku);
         } else {
           model.sku = generateSKU(
             product.name,
@@ -711,9 +720,14 @@ export const updateProduct = async (productId, updateData, sellerId) => {
       // Never allow the product edit form to overwrite stock directly.
       const existingModel = existingModels.find(
         (em) =>
-          em.sku === model.sku || em._id?.toString() === model._id?.toString(),
+          skuMatch(em.sku, model.sku) || em._id?.toString() === model._id?.toString(),
       );
       model.stock = existingModel ? existingModel.stock : model.stock || 0;
+
+      // Mark new variants (no InventoryItem yet) so we create one after save.
+      if (model.sku && !existingSkusForMatch.has(normalizeSku(model.sku))) {
+        newVariantSkus.add(model.sku);
+      }
 
       return model;
     });
@@ -723,6 +737,24 @@ export const updateProduct = async (productId, updateData, sellerId) => {
   delete updateData.stock;
 
   Object.assign(product, updateData);
+
+  await product.save();
+
+  // Auto-create InventoryItem for new variants AFTER save (model._id is now available).
+  if (newVariantSkus.size > 0) {
+    for (const model of product.models) {
+      if (newVariantSkus.has(model.sku)) {
+        await InventoryItem.create({
+          productId: product._id,
+          modelId: model._id,
+          sku: model.sku,
+          quantity: model.stock || 0,
+          costPrice: model.costPrice || 0,
+          lastRestockDate: model.stock > 0 ? new Date() : null,
+        });
+      }
+    }
+  }
 
   // Derive status from InventoryItem totals (authoritative) rather than model.stock cache.
   const inventoryItems = await InventoryItem.find({ productId: product._id });
