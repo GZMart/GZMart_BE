@@ -4,6 +4,7 @@ import Product from "../models/Product.js";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import mongoose from "mongoose";
 import { ErrorResponse } from "../utils/errorResponse.js";
+import { normalizeSku, skuMatch } from "../utils/skuUtils.js";
 
 /**
  * Stock In - Add inventory
@@ -27,7 +28,7 @@ export const stockIn = async (transactionData, userId) => {
     throw new ErrorResponse("Product model not found", 404);
   }
 
-  if (model.sku !== sku.toUpperCase()) {
+  if (!skuMatch(model.sku, sku)) {
     throw new ErrorResponse("SKU does not match model", 400);
   }
 
@@ -38,7 +39,7 @@ export const stockIn = async (transactionData, userId) => {
   try {
     // Find or create inventory item
     let inventoryItem = await InventoryItem.findOne({
-      sku: sku.toUpperCase(),
+      sku: normalizeSku(sku),
       warehouseId,
     }).session(session);
 
@@ -49,7 +50,7 @@ export const stockIn = async (transactionData, userId) => {
           {
             productId,
             modelId,
-            sku: sku.toUpperCase(),
+            sku: normalizeSku(sku),
             quantity: 0,
             costPrice: model.costPrice || 0,
             warehouseId,
@@ -91,7 +92,7 @@ export const stockIn = async (transactionData, userId) => {
         {
           productId,
           modelId,
-          sku: sku.toUpperCase(),
+          sku: normalizeSku(sku),
           type: "in",
           quantity,
           stockBefore,
@@ -140,7 +141,7 @@ export const stockOut = async (transactionData, userId) => {
     throw new ErrorResponse("Product model not found", 404);
   }
 
-  if (model.sku !== sku.toUpperCase()) {
+  if (!skuMatch(model.sku, sku)) {
     throw new ErrorResponse("SKU does not match model", 400);
   }
 
@@ -151,7 +152,7 @@ export const stockOut = async (transactionData, userId) => {
   try {
     // Find inventory item
     const inventoryItem = await InventoryItem.findOne({
-      sku: sku.toUpperCase(),
+      sku: normalizeSku(sku),
       warehouseId,
     }).session(session);
 
@@ -188,7 +189,7 @@ export const stockOut = async (transactionData, userId) => {
         {
           productId,
           modelId,
-          sku: sku.toUpperCase(),
+          sku: normalizeSku(sku),
           type: "out",
           quantity: -quantity, // Negative for stock out
           stockBefore,
@@ -238,7 +239,7 @@ export const adjustStock = async (transactionData, userId) => {
     throw new ErrorResponse("Product model not found", 404);
   }
 
-  if (model.sku !== sku.toUpperCase()) {
+  if (!skuMatch(model.sku, sku)) {
     throw new ErrorResponse("SKU does not match model", 400);
   }
 
@@ -249,7 +250,7 @@ export const adjustStock = async (transactionData, userId) => {
   try {
     // Find or create inventory item
     let inventoryItem = await InventoryItem.findOne({
-      sku: sku.toUpperCase(),
+      sku: normalizeSku(sku),
       warehouseId,
     }).session(session);
 
@@ -259,7 +260,7 @@ export const adjustStock = async (transactionData, userId) => {
           {
             productId,
             modelId,
-            sku: sku.toUpperCase(),
+            sku: normalizeSku(sku),
             quantity: 0,
             costPrice: model.costPrice || 0,
             warehouseId,
@@ -333,7 +334,7 @@ export const adjustStock = async (transactionData, userId) => {
         {
           productId,
           modelId,
-          sku: sku.toUpperCase(),
+          sku: normalizeSku(sku),
           type: "adjust",
           quantity,
           stockBefore,
@@ -378,7 +379,7 @@ export const getTransactions = async (filters = {}, options = {}) => {
   const query = {};
 
   if (productId) query.productId = productId;
-  if (sku) query.sku = sku.toUpperCase();
+  if (sku) query.sku = normalizeSku(sku);
   if (type) query.type = type;
   if (createdBy) query.createdBy = createdBy;
 
@@ -464,7 +465,7 @@ export const getProductInventorySummary = async (productId) => {
   const modelsSummary = await Promise.all(
     product.models.map(async (model) => {
       const inventoryItem = inventoryItems.find(
-        (item) => item.sku === model.sku,
+        (item) => skuMatch(item.sku, model.sku),
       );
 
       return {
@@ -589,7 +590,7 @@ export const bulkStockUpdate = async (updates, userId) => {
  */
 export const getInventoryItemBySKU = async (sku, warehouseId = null) => {
   const inventoryItem = await InventoryItem.findOne({
-    sku: sku.toUpperCase(),
+    sku: normalizeSku(sku),
     warehouseId,
   })
     .populate("productId", "name slug images")
@@ -658,7 +659,7 @@ export const reserveStock = async (sku, quantity, warehouseId = null) => {
 
   try {
     const inventoryItem = await InventoryItem.findOne({
-      sku: sku.toUpperCase(),
+      sku: normalizeSku(sku),
       warehouseId,
     }).session(session);
 
@@ -700,7 +701,7 @@ export const releaseReservedStock = async (
 
   try {
     const inventoryItem = await InventoryItem.findOne({
-      sku: sku.toUpperCase(),
+      sku: normalizeSku(sku),
       warehouseId,
     }).session(session);
 
@@ -740,7 +741,7 @@ export const confirmStock = async (
 
   try {
     const inventoryItem = await InventoryItem.findOne({
-      sku: sku.toUpperCase(),
+      sku: normalizeSku(sku),
       warehouseId,
     }).session(session);
 
@@ -767,7 +768,7 @@ export const confirmStock = async (
         {
           productId: inventoryItem.productId,
           modelId: inventoryItem.modelId,
-          sku: sku.toUpperCase(),
+          sku: normalizeSku(sku),
           type: "out",
           quantity: -quantity,
           stockBefore,
@@ -813,7 +814,7 @@ export const confirmStock = async (
  * after applying all "out"/"adjust" transactions chronologically.
  */
 export const getLotBreakdownBySku = async (sku, warehouseId = null) => {
-  const normalizedSku = sku.toUpperCase();
+  const normalizedSku = normalizeSku(sku);
 
   const inventoryItem = await InventoryItem.findOne({
     sku: normalizedSku,

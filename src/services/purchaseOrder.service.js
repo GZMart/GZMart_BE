@@ -5,6 +5,7 @@ import InventoryItem from "../models/InventoryItem.js";
 import InventoryTransaction from "../models/InventoryTransaction.js";
 import Supplier from "../models/Supplier.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
+import { normalizeSku, skuMatch } from "../utils/skuUtils.js";
 
 /**
  * ===================================================================
@@ -409,12 +410,12 @@ export const receiveOrderAndCalculateLandedCost = async (
           404,
         );
       }
-      if (model.sku !== item.sku) {
+      if (!skuMatch(model.sku, item.sku)) {
         throw new ErrorResponse(`SKU mismatch for ${item.productName}`, 400);
       }
 
       let inventoryItem = await InventoryItem.findOne({
-        sku: item.sku,
+        sku: normalizeSku(item.sku),
         warehouseId: purchaseOrder.warehouseId,
       }).session(session);
 
@@ -427,7 +428,7 @@ export const receiveOrderAndCalculateLandedCost = async (
             {
               productId: item.productId,
               modelId: item.modelId,
-              sku: item.sku,
+              sku: normalizeSku(item.sku),
               quantity: item.quantity,
               costPrice: landedCostPerUnit,
               costSource: "po",
@@ -470,7 +471,7 @@ export const receiveOrderAndCalculateLandedCost = async (
           {
             productId: item.productId,
             modelId: item.modelId,
-            sku: item.sku,
+            sku: normalizeSku(item.sku),
             type: "in",
             quantity: item.quantity,
             stockBefore,
@@ -665,7 +666,7 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
       }
 
       // Verify SKU matches
-      if (model.sku !== item.sku) {
+      if (!skuMatch(model.sku, item.sku)) {
         throw new ErrorResponse(
           `SKU mismatch for product: ${item.productName}. Expected: ${item.sku}, Found: ${model.sku}`,
           400,
@@ -676,7 +677,7 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
       // STEP 3.1: Update Inventory Item (Single Source of Truth for Stock)
       // ============================================================
       let inventoryItem = await InventoryItem.findOne({
-        sku: item.sku,
+        sku: normalizeSku(item.sku),
         warehouseId: purchaseOrder.warehouseId,
       }).session(session);
 
@@ -689,7 +690,7 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
             {
               productId: item.productId,
               modelId: item.modelId,
-              sku: item.sku,
+              sku: normalizeSku(item.sku),
               quantity: item.quantity,
               costPrice: landedCostPerUnit,
               costSource: "po",
@@ -738,7 +739,7 @@ export const completePurchaseOrder = async (purchaseOrderId, userId) => {
           {
             productId: item.productId,
             modelId: item.modelId,
-            sku: item.sku,
+            sku: normalizeSku(item.sku),
             type: "in",
             quantity: item.quantity,
             stockBefore,
