@@ -437,7 +437,15 @@ export const updateSession = async (req, res, next) => {
     try {
       const { buildSyntaxGuide } = await import('../services/livestream.service.js');
       const updatedSession = await LiveSession.findById(sessionId).lean();
-      const guide = await buildSyntaxGuide(updatedSession, null);
+
+      // Fetch the currently pinned product so the syntax guide reflects it
+      const pinnedProductDoc = updatedSession.pinnedProduct
+        ? await Product.findById(updatedSession.pinnedProduct)
+            .select('name thumbnail tiers variants price shopId')
+            .lean()
+        : null;
+
+      const guide = await buildSyntaxGuide(updatedSession, pinnedProductDoc);
       if (guide) {
         io.to(`livestream_${sessionId}`).emit('livestream_syntax_guide', guide);
       } else {
