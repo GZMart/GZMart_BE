@@ -11,6 +11,7 @@ import {
   getLotBreakdown,
   getDemandForecast,
   getProductPerformance,
+  getProductDemandDetails,
 } from "../controllers/inventory.controller.js";
 
 // Import middlewares
@@ -30,6 +31,7 @@ router.get('/summary/:productId', protect, requireRoles('admin', 'seller'), getP
 router.get('/stats', protect, requireRoles('admin', 'seller'), getInventoryStats);
 router.get('/lots/:sku', protect, requireRoles('admin', 'seller'), getLotBreakdown);
 router.get('/demand-forecast', protect, requireRoles('seller'), getDemandForecast);
+router.get('/demand-forecast/:productId/details', protect, requireRoles('seller'), getProductDemandDetails);
 router.get('/product-performance/:productId', protect, requireRoles('seller'), getProductPerformance);
 
 export default router;
