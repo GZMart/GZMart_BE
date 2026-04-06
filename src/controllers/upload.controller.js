@@ -2,30 +2,14 @@ import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
 /**
- * @desc    Upload single image
+ * @desc    Upload single file (image/video)
  * @route   POST /api/upload/single
- * @access  Public (for testing)
+ * @access  Public
  */
 export const uploadSingle = asyncHandler(async (req, res, next) => {
-  console.log("🔵 [Upload Controller] Received upload request:", {
-    hasFile: !!req.file,
-    fieldname: req.file?.fieldname,
-    originalname: req.file?.originalname,
-    mimetype: req.file?.mimetype,
-    size: req.file?.size,
-    timestamp: new Date().toISOString(),
-  });
-
   if (!req.file) {
-    console.error("❌ [Upload Controller] No file in request");
     return next(new ErrorResponse("Please upload a file", 400));
   }
-
-  console.log("✅ [Upload Controller] File uploaded successfully:", {
-    filename: req.file.filename,
-    url: req.file.path,
-    cloudinaryUrl: req.file.path,
-  });
 
   res.status(200).json({
     success: true,
@@ -35,15 +19,15 @@ export const uploadSingle = asyncHandler(async (req, res, next) => {
       originalname: req.file.originalname,
       mimetype: req.file.mimetype,
       size: req.file.size,
-      url: req.file.path, // Cloudinary URL
+      url: req.file.path, // Đây chính là Cloudinary URL
     },
   });
 });
 
 /**
- * @desc    Upload multiple images
+ * @desc    Upload multiple files
  * @route   POST /api/upload/multiple
- * @access  Public (for testing)
+ * @access  Public
  */
 export const uploadMultiple = asyncHandler(async (req, res, next) => {
   if (!req.files || req.files.length === 0) {
@@ -55,7 +39,7 @@ export const uploadMultiple = asyncHandler(async (req, res, next) => {
     originalname: file.originalname,
     mimetype: file.mimetype,
     size: file.size,
-    url: file.path, // Cloudinary URL
+    url: file.path,
   }));
 
   res.status(200).json({
@@ -67,9 +51,9 @@ export const uploadMultiple = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * @desc    Upload product images (thumbnail + gallery)
+ * @desc    Upload product images/videos (thumbnail + gallery)
  * @route   POST /api/upload/product
- * @access  Public (for testing)
+ * @access  Public
  */
 export const uploadProduct = asyncHandler(async (req, res, next) => {
   if (!req.files || Object.keys(req.files).length === 0) {
@@ -98,7 +82,7 @@ export const uploadProduct = asyncHandler(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    message: "Product images uploaded successfully",
+    message: "Product media uploaded successfully",
     data: result,
   });
 });

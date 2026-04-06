@@ -372,6 +372,285 @@ class SearchService {
       inStock,
     });
   }
+
+  /**
+   * AI Image Search — with multi-strategy fallback for bilingual (VI/EN) product data
+   */
+  async searchByImage(imageBuffer, mimeType) {
+    const { imageSearchService } = await import("./imageSearch.service.js");
+    
+    let analyzedData = null;
+    let aiAnalysisFailed = false;
+
+    // 1. Try to analyze image with AI (Gemini SDK → CF proxy fallback)
+    try {
+      analyzedData = await imageSearchService.analyzeProductImage(imageBuffer, mimeType);
+    } catch (err) {
+      console.warn("[SearchByImage] AI analysis failed:", err.message);
+      aiAnalysisFailed = true;
+    }
+
+    // 2. Build search keywords
+    let matchedProducts = [];
+
+    if (analyzedData) {
+      const { category, brand, colors, material, features, vi_keywords } = analyzedData;
+
+      // EN → VI keyword dictionary for common product types
+      const EN_TO_VI = {
+        // Footwear
+        shoes: "giày", sneakers: "giày", boots: "giày bốt", sandals: "dép", slippers: "dép",
+        heels: "giày cao gót", loafers: "giày lười", oxford: "giày oxford",
+        derby: "giày da", pumps: "giày cao gót",
+        // Clothing
+        shirt: "áo", tshirt: "áo phông", dress: "váy", skirt: "váy",
+        pants: "quần", jeans: "quần jean", shorts: "quần short",
+        jacket: "áo khoác", coat: "áo khoác", hoodie: "áo hoodie",
+        blouse: "áo blouse", sweater: "áo len", cardigan: "áo cardigan",
+        // Accessories
+        bag: "túi", handbag: "túi xách", backpack: "balo", wallet: "ví",
+        belt: "thắt lưng", hat: "mũ", cap: "mũ", scarf: "khăn",
+        watch: "đồng hồ", sunglasses: "kính mát", necklace: "dây chuyền",
+        ring: "nhẫn", earrings: "bông tai", bracelet: "vòng tay",
+        // Electronics
+        phone: "điện thoại", laptop: "laptop", tablet: "máy tính bảng",
+        headphones: "tai nghe", speaker: "loa",
+        // Colors
+        black: "đen", white: "trắng", red: "đỏ", blue: "xanh", green: "xanh lá",
+        yellow: "vàng", pink: "hồng", purple: "tím", brown: "nâu", grey: "xám",
+        gray: "xám", orange: "cam", navy: "xanh navy", beige: "be",
+        // Materials
+        leather: "da", cotton: "cotton", denim: "jean", silk: "lụa",
+        wool: "len", polyester: "polyester", canvas: "vải",
+        // Common adj
+        sport: "thể thao", casual: "thường ngày", fashion: "thời trang",
+        formal: "công sở", men: "nam", women: "nữ", kids: "trẻ em",
+        lace: "ren", high: "cao", low: "thấp", chunky: "đế chunky",
+      };
+
+      // Build EN + mapped VI keyword set
+      const allEnKeywords = [
+        category, brand, ...(colors || []), material, features,
+        ...(features ? features.split(/[\s,\-]+/) : []),
+        ...(category ? category.split(/[\s,\-]+/) : []),
+      ].filter(Boolean).map(k => k.toLowerCase().trim());
+
+      let viKeywords = allEnKeywords
+        .map(k => EN_TO_VI[k])
+        .filter(Boolean);
+
+      // Add natively generated vi_keywords from Gemini
+      if (Array.isArray(vi_keywords)) {
+        viKeywords = [...viKeywords, ...vi_keywords.map(k => k.toLowerCase().trim())];
+      }
+      
+      // Deduplicate
+      viKeywords = [...new Set(viKeywords)];
+
+
+      const englishSearchStr = allEnKeywords.join(" ");
+
+      console.log("[SearchByImage] English keywords:", englishSearchStr);
+      console.log("[SearchByImage] Vietnamese mapped keywords:", viKeywords);
+
+      // Strategy 0: Semantic Vector Search (Best for visual similarity across languages)
+      let vectorEmbedding = null;
+      try {
+        const { default: embeddingService } = await import("./embedding.service.js");
+        const vectorQuery = `${category || ""} ${brand || ""} ${englishSearchStr} ${viKeywords.join(" ")}`.trim();
+        vectorEmbedding = await embeddingService.getEmbedding(vectorQuery);
+      } catch (e) {
+        console.warn("[SearchByImage] Vector embedding generation failed:", e.message);
+      }
+
+      // Strategy 1: MongoDB text index (works if product name has English terms)
+      const textSearchFilter = {
+        $text: { $search: englishSearchStr },
+        isAvailable: true,
+      };
+
+      // Strategy 2: Regex search on name/description with English terms
+      const engRegexParts = allEnKeywords
+        .filter(k => k.length > 2)
+        .slice(0, 6);
+      const engRegex = engRegexParts.length > 0
+        ? new RegExp(engRegexParts.join("|"), "i")
+        : null;
+
+      // Strategy 3: Regex search with Vietnamese keywords
+      const viRegexParts = viKeywords.filter(k => k.length > 1).slice(0, 6);
+      const viRegex = viRegexParts.length > 0
+        ? new RegExp(viRegexParts.join("|"), "i")
+        : null;
+
+      // Strategy 4: Tags search
+      const allTagsKeywords = [...allEnKeywords, ...viKeywords].slice(0, 10);
+
+      const searchStrategies = [
+        // S0: Vector Search (Semantic similarity)
+        ...(vectorEmbedding ? [{
+          name: "Semantic Vector Search",
+          find: async () => {
+            const results = await Product.aggregate([
+              {
+                $vectorSearch: {
+                  index: "product_vector_index",
+                  path: "embedding",
+                  queryVector: vectorEmbedding,
+                  numCandidates: 16 * 5,
+                  limit: 16,
+                  filter: { status: "active" },
+                },
+              },
+              {
+                $project: {
+                  name: 1, slug: 1, categoryId: 1, sellerId: 1,
+                  description: 1, attributes: 1, originalPrice: 1,
+                  rating: 1, reviewCount: 1, sold: 1, brand: 1,
+                  tags: 1, "models.price": 1, "models.sku": 1,
+                  "models.stock": 1, images: 1, isAvailable: 1,
+                  score: { $meta: "vectorSearchScore" },
+                },
+              },
+            ]);
+            // Populate categoryId for consistency with other find() returns
+            return Product.populate(results, { path: "categoryId", select: "name slug" });
+          }
+        }] : []),
+
+        // S1: Text index search with English
+        ...(englishSearchStr ? [{
+          name: "Text index (EN)",
+          find: () => Product.find(textSearchFilter, { score: { $meta: "textScore" } })
+            .populate("categoryId", "name slug")
+            .sort({ score: { $meta: "textScore" } })
+            .limit(16)
+            .lean(),
+        }] : []),
+
+        // S2: Regex search on name+description (English)
+        ...(engRegex ? [{
+          name: "Name regex (EN)",
+          find: () => Product.find({
+            $or: [{ name: { $regex: engRegex } }, { description: { $regex: engRegex } }],
+            isAvailable: true,
+          })
+            .populate("categoryId", "name slug")
+            .sort({ sold: -1 })
+            .limit(16)
+            .lean(),
+        }] : []),
+
+        // S3: Regex search on name+description (Vietnamese)
+        ...(viRegex ? [{
+          name: "Name regex (VI)",
+          find: () => Product.find({
+            $or: [{ name: { $regex: viRegex } }, { description: { $regex: viRegex } }],
+            isAvailable: true,
+          })
+            .populate("categoryId", "name slug")
+            .sort({ sold: -1 })
+            .limit(16)
+            .lean(),
+        }] : []),
+
+        // S4: Tags array search
+        ...(allTagsKeywords.length > 0 ? [{
+          name: "Tags match",
+          find: () => Product.find({
+            tags: { $in: allTagsKeywords.map(k => new RegExp(k, "i")) },
+            isAvailable: true,
+          })
+            .populate("categoryId", "name slug")
+            .sort({ sold: -1 })
+            .limit(16)
+            .lean(),
+        }] : []),
+      ];
+
+      for (const strategy of searchStrategies) {
+        try {
+          const products = await strategy.find();
+          if (products.length > 0) {
+            console.log(`[SearchByImage] ✅ ${strategy.name} → ${products.length} products`);
+            matchedProducts = products;
+            break;
+          } else {
+            console.log(`[SearchByImage] ❌ ${strategy.name} → 0 results`);
+          }
+        } catch (e) {
+          console.error(`[SearchByImage] Strategy "${strategy.name}" error:`, e.message);
+        }
+      }
+    }
+
+    // Fallback: return popular products when AI fails or no results found
+    if (matchedProducts.length === 0) {
+      if (!aiAnalysisFailed) {
+        console.log("[SearchByImage] No matches found despite AI analysis — showing popular products");
+      } else {
+        console.log("[SearchByImage] AI unavailable — showing popular products");
+      }
+      matchedProducts = await Product.find({ isAvailable: true })
+        .populate("categoryId", "name slug")
+        .sort({ sold: -1 })
+        .limit(16)
+        .lean();
+    }
+
+    // Enrich with prices and deals
+    if (matchedProducts.length > 0) {
+      const now = new Date();
+      const productIds = matchedProducts.map((p) => p._id);
+
+      const allDeals = await Deal.find({
+        productId: { $in: productIds },
+        status: "active",
+        startDate: { $lte: now },
+        endDate: { $gte: now },
+      }).select("productId discountPercent title endDate soldCount quantityLimit").lean();
+
+      const dealsByProduct = {};
+      allDeals.forEach(deal => { dealsByProduct[deal.productId.toString()] = deal; });
+
+      matchedProducts = matchedProducts.map((product) => {
+        // Map _id to id for Frontend components (like ProductCard)
+        if (product._id) {
+          product.id = product._id.toString();
+        }
+
+        // Map first image to 'image' if not present
+        if (!product.image && product.images && product.images.length > 0) {
+          product.image = product.images[0];
+        }
+
+        const models = product.models || [];
+        if (models.length > 0) {
+          const prices = models.map((m) => m.price);
+          product.minPrice = Math.min(...prices);
+          product.maxPrice = Math.max(...prices);
+          product.price = product.minPrice; // FE ProductCard expects .price
+          product.totalStock = models.reduce((sum, m) => sum + m.stock, 0);
+        } else if (!product.price) {
+          product.price = product.originalPrice || 0;
+        }
+
+        const activeDeal = dealsByProduct[product._id.toString()];
+        if (activeDeal) product.activeDeal = activeDeal;
+        return product;
+      });
+    }
+
+    return {
+      analyzedInfo: analyzedData,
+      products: matchedProducts,
+      ...(aiAnalysisFailed && {
+        aiAnalysisFailed: true,
+        aiError: "AI image analysis is currently unavailable. Showing popular products instead.",
+      }),
+    };
+  }
 }
 
 export default new SearchService();
+

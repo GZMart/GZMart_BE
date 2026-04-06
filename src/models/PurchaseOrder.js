@@ -1,5 +1,16 @@
 import mongoose from "mongoose";
 
+/** Strip Vietnamese diacritics + uppercase. Used as a Mongoose setter for SKU fields. */
+function normalizeSkuValue(v) {
+  if (!v || typeof v !== "string") return v;
+  return v
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/Đ/g, "D");
+}
+
 /**
  * Purchase Order Model
  * Represents orders placed to suppliers for importing goods
@@ -21,6 +32,7 @@ const purchaseOrderItemSchema = new mongoose.Schema(
       required: [true, "SKU is required"],
       trim: true,
       uppercase: true,
+      set: normalizeSkuValue,
     },
     productName: {
       type: String,
@@ -87,11 +99,20 @@ const purchaseOrderSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: {
-        values: ["Draft", "Pending", "Completed", "Cancelled"],
+        values: [
+          "Draft",
+          "PENDING_APPROVAL",
+          "ORDERED",
+          "ARRIVED_VN",
+          "COMPLETED",
+          "Pending",
+          "Completed",
+          "Cancelled",
+        ],
         message:
-          "Status must be one of: Draft, Pending, Completed, or Cancelled",
+          "Status must be one of: Draft, PENDING_APPROVAL, ORDERED, ARRIVED_VN, COMPLETED, Pending, Completed, Cancelled",
       },
-      default: "Pending",
+      default: "PENDING_APPROVAL",
     },
     items: {
       type: [purchaseOrderItemSchema],
@@ -132,6 +153,12 @@ const purchaseOrderSchema = new mongoose.Schema(
         type: Boolean,
         default: true,
       }, // áp dụng cước theo chargeable weight
+    },
+    // Tổng cân nặng sau khi đóng gói (kg) — dùng để tính cước vận chuyển
+    totalWeightKg: {
+      type: Number,
+      default: 0,
+      min: [0, "Total weight cannot be negative"],
     },
     // Chi phí cố định của đơn hàng
     fixedCosts: {
@@ -197,6 +224,11 @@ const purchaseOrderSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    completedAt: {
+      type: Date,
+      default: null,
+      description: "Ngày PO được đánh dấu COMPLETED — dùng cho dashboard cost analysis",
+    },
   },
   {
     timestamps: true,
@@ -210,7 +242,9 @@ purchaseOrderSchema.index({ status: 1, createdAt: -1 });
 purchaseOrderSchema.index({ expectedDeliveryDate: 1 });
 purchaseOrderSchema.index({ createdBy: 1, createdAt: -1 });
 
-// Auto-calculate totalAmount before save
+// Auto-calculate totalAmount and finalAmount before save
+// Stage 1 (PENDING_APPROVAL, ORDERED): totalAmount + buyingFee only
+// Stage 2 (COMPLETED): full landed cost with shipping, fixed costs, tax, other
 purchaseOrderSchema.pre("save", async function () {
   const rate = this.importConfig?.exchangeRate || 3500;
 
@@ -225,37 +259,33 @@ purchaseOrderSchema.pre("save", async function () {
     }, 0);
   }
 
-  // Compute shippingCost from importConfig when useVolumetricShipping is on
-  let shippingCost = 0;
-  if (this.importConfig?.useVolumetricShipping && this.importConfig.shippingRatePerKg > 0) {
-    const totalChargeableKg = (this.items || []).reduce((sum, item) => {
-      const volKg   = (item.dimLength * item.dimWidth * item.dimHeight) / 6000;
-      const chargeKg = Math.max(item.weightKg || 0, volKg || 0);
-      item.chargeableWeightKg = chargeKg * item.quantity;
-      return sum + item.chargeableWeightKg;
-    }, 0);
-    shippingCost = totalChargeableKg * this.importConfig.shippingRatePerKg;
-  }
-  this.shippingCost = shippingCost;
+  const buyingFeeVnd = (this.totalAmount || 0) * (this.importConfig?.buyingServiceFeeRate || 0);
 
-  // Fixed costs converted to VNĐ
+  const isStage2 = ["COMPLETED", "Completed"].includes(this.status);
+
+  if (isStage2 && this.totalWeightKg > 0 && this.importConfig?.shippingRatePerKg > 0) {
+    this.shippingCost = this.totalWeightKg * this.importConfig.shippingRatePerKg;
+  } else {
+    this.shippingCost = this.shippingCost ?? 0;
+  }
+
   const cnDomesticVnd = (this.fixedCosts?.cnDomesticShippingCny || 0) * rate;
   const packagingVnd  = this.fixedCosts?.packagingCostVnd  || 0;
   const vnDomesticVnd = this.fixedCosts?.vnDomesticShippingVnd || 0;
 
-  // Phí mua hộ
-  const buyingFeeVnd = (this.totalAmount || 0) * (this.importConfig?.buyingServiceFeeRate || 0);
-
-  // Calculate final amount including all costs
-  this.finalAmount =
-    (this.totalAmount  || 0) +
-    (this.shippingCost || 0) +
-    (this.taxAmount    || 0) +
-    (this.otherCost    || 0) +
-    cnDomesticVnd +
-    packagingVnd  +
-    vnDomesticVnd +
-    buyingFeeVnd;
+  if (isStage2) {
+    this.finalAmount =
+      (this.totalAmount  || 0) +
+      (this.shippingCost || 0) +
+      (this.taxAmount    || 0) +
+      (this.otherCost    || 0) +
+      cnDomesticVnd +
+      packagingVnd  +
+      vnDomesticVnd +
+      buyingFeeVnd;
+  } else {
+    this.finalAmount = (this.totalAmount || 0) + buyingFeeVnd;
+  }
 });
 
 // Static method to generate unique PO code

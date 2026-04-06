@@ -5,6 +5,21 @@ import Order from "../models/Order.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
 class ReviewService {
+  formatVariantLabel(tierSelections) {
+    if (!tierSelections) return null;
+    const entries =
+      tierSelections instanceof Map
+        ? Array.from(tierSelections.entries())
+        : Object.entries(tierSelections || {});
+
+    const label = entries
+      .filter(([, value]) => value)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join(", ");
+
+    return label || null;
+  }
+
   /**
    * Create a new review
    */
@@ -17,57 +32,68 @@ class ReviewService {
       throw new ErrorResponse("Product not found", 404);
     }
 
-    // Check if user has already reviewed this product
+    // Check if user has already reviewed this product FOR THIS SPECIFIC ORDER
     const existingReview = await Review.findOne({
       productId,
       userId,
+      orderId: orderId || null,
     });
 
     if (existingReview) {
-      throw new ErrorResponse("You have already reviewed this product", 400);
+      throw new ErrorResponse(
+        "You have already reviewed this product for this order",
+        400,
+      );
     }
 
-    // If orderId provided, verify user purchased this product
+    // Verify purchase if orderId is provided
     let verifiedPurchase = false;
     if (orderId) {
-      const order = await Order.findOne({
-        _id: orderId,
-        userId,
-      }).populate({
-        path: "items",
-        select: "productId",
-      });
+      console.log("=== DEBUG: Fetching order ===");
+      try {
+        const order = await Order.findOne({
+          _id: orderId,
+          userId,
+        }).populate("items");
 
-      if (!order) {
-        throw new ErrorResponse("Order not found or does not belong to you", 404);
+        if (order && order.items && order.items.length > 0) {
+          const hasProduct = order.items.some((item) => {
+            return (
+              item.productId &&
+              item.productId.toString() === productId.toString()
+            );
+          });
+
+          if (hasProduct) {
+            verifiedPurchase = true;
+            console.log("Verified purchase: true");
+          }
+        }
+      } catch (error) {
+        console.log("Error verifying purchase:", error.message);
       }
-
-      // Check if any item in the order has the requested productId
-      const hasProduct = order.items.some(
-        (item) => item.productId.toString() === productId.toString(),
-      );
-
-      if (!hasProduct) {
-        throw new ErrorResponse(
-          "You did not purchase this product in this order",
-          403,
-        );
-      }
-      verifiedPurchase = true;
     }
 
-    // Create review
-    const review = await Review.create({
-      productId,
-      userId,
-      orderId: orderId || null,
-      rating: reviewData.rating,
-      title: reviewData.title || null,
-      content: reviewData.content,
-      images: reviewData.images || [],
-      verifiedPurchase,
-      status: "approved", // Default to approved
-    });
+    let review;
+    try {
+      // Create new review
+      review = await Review.create({
+        productId,
+        userId,
+        orderId: orderId || null,
+        rating: reviewData.rating,
+        title: reviewData.title || null,
+        content: reviewData.content,
+        variant: reviewData.variant || null,
+        images: reviewData.images || [],
+        verifiedPurchase,
+        status: "approved",
+      });
+    } catch (error) {
+      console.error("Error creating review:", error);
+      // Ném lỗi rõ ràng nếu có lỗi từ DB (như thiếu trường bắt buộc, v.v.)
+      throw new ErrorResponse(error.message || "Failed to create review", 400);
+    }
 
     console.log("Review created:", review._id);
 
@@ -89,9 +115,126 @@ class ReviewService {
   }
 
   /**
+   * Get user's reviews for a specific order
+   */
+  async getOrderReviews(userId, orderId) {
+    const order = await Order.findOne({ _id: orderId, userId }).select("_id");
+    if (!order) {
+      throw new ErrorResponse("Order not found or does not belong to you", 404);
+    }
+
+    const reviews = await Review.find({ userId, orderId })
+      .populate({
+        path: "productId",
+        select: "name slug images",
+      })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return reviews;
+  }
+
+  /**
+   * Create or update reviews for all products in an order
+   */
+  async createOrUpdateOrderReviews(userId, orderId, reviewData) {
+    const order = await Order.findOne({ _id: orderId, userId }).populate({
+      path: "items",
+      select: "productId tierSelections",
+    });
+
+    if (!order) {
+      throw new ErrorResponse("Order not found or does not belong to you", 404);
+    }
+
+    if (!order.items || order.items.length === 0) {
+      throw new ErrorResponse("Order has no items to review", 400);
+    }
+
+    const uniqueItemsByProduct = new Map();
+    for (const item of order.items) {
+      const pid = item?.productId?.toString?.() || item?.productId;
+      if (!pid) continue;
+      if (!uniqueItemsByProduct.has(pid)) {
+        uniqueItemsByProduct.set(pid, item);
+      }
+    }
+
+    const touchedProductIds = new Set();
+    const resultReviews = [];
+
+    for (const [, item] of uniqueItemsByProduct) {
+      const productId = item.productId;
+      const variantLabel = this.formatVariantLabel(item.tierSelections);
+
+      const product = await Product.findById(productId).select("_id");
+      if (!product) continue;
+
+      let review = await Review.findOne({ userId, orderId, productId });
+
+      if (review) {
+        // UPDATE (EDIT) existing review for THIS order
+        review.rating = reviewData.rating;
+        review.title = reviewData.title || null;
+        review.content = reviewData.content;
+        review.images = reviewData.images || [];
+        review.variant = variantLabel || reviewData.variant || null;
+        review.verifiedPurchase = true;
+        review.status = "approved";
+        await review.save();
+      } else {
+        // CREATE new review for THIS order
+        try {
+          review = await Review.create({
+            productId,
+            userId,
+            orderId,
+            rating: reviewData.rating,
+            title: reviewData.title || null,
+            content: reviewData.content,
+            variant: variantLabel || reviewData.variant || null,
+            images: reviewData.images || [],
+            verifiedPurchase: true,
+            status: "approved",
+          });
+        } catch (error) {
+          console.error(
+            `Failed to create review for product ${productId}:`,
+            error.message,
+          );
+          continue; // Skip if creation fails for this specific item
+        }
+      }
+
+      touchedProductIds.add(productId.toString());
+      resultReviews.push(review);
+    }
+
+    // Recompute product rating/reviewCount for all touched products
+    for (const pid of touchedProductIds) {
+      await this.updateProductRating(pid);
+    }
+
+    const populated = await Review.find({
+      _id: { $in: resultReviews.map((r) => r._id) },
+    })
+      .populate({
+        path: "userId",
+        select: "fullName avatar",
+      })
+      .populate({
+        path: "productId",
+        select: "name slug images",
+      })
+      .sort({ createdAt: -1 });
+
+    return populated;
+  }
+
+  /**
    * Get reviews for a product
    */
-  async getProductReviews(productId, filters = {}) {
+  async getProductReviews(productId, filters = {}, userId = null) {
     const { page = 1, limit = 10, rating = null, sortBy = "recent" } = filters;
 
     const query = {
@@ -134,12 +277,40 @@ class ReviewService {
       Review.countDocuments(query),
     ]);
 
+    const shapedReviews = reviews.map((review) => {
+      const result = { ...review };
+
+      if (userId) {
+        const uid = userId.toString();
+        const helpfulBy = Array.isArray(review.helpfulBy)
+          ? review.helpfulBy
+          : [];
+        const unhelpfulBy = Array.isArray(review.unhelpfulBy)
+          ? review.unhelpfulBy
+          : [];
+
+        if (helpfulBy.some((id) => id.toString() === uid)) {
+          result.userReaction = "helpful";
+        } else if (unhelpfulBy.some((id) => id.toString() === uid)) {
+          result.userReaction = "unhelpful";
+        } else {
+          result.userReaction = "none";
+        }
+      } else {
+        result.userReaction = "none";
+      }
+
+      delete result.helpfulBy;
+      delete result.unhelpfulBy;
+      return result;
+    });
+
     return {
-      data: reviews,
+      data: shapedReviews,
       pagination: {
         current: page,
         total: Math.ceil(total / limit),
-        count: reviews.length,
+        count: shapedReviews.length,
         total_count: total,
       },
     };
@@ -296,34 +467,76 @@ class ReviewService {
   /**
    * Mark review as helpful
    */
-  async markHelpful(reviewId) {
-    const review = await Review.findByIdAndUpdate(
-      reviewId,
-      { $inc: { helpful: 1 } },
-      { new: true },
-    );
+  async markHelpful(reviewId, userId) {
+    const review = await Review.findById(reviewId);
 
     if (!review) {
       throw new ErrorResponse("Review not found", 404);
     }
 
+    const userIdStr = userId.toString();
+    const helpfulByIndex = review.helpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+    const unhelpfulByIndex = review.unhelpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+
+    if (helpfulByIndex !== -1) {
+      // User already marked helpful, toggle off
+      review.helpfulBy.splice(helpfulByIndex, 1);
+      review.helpful = Math.max(0, review.helpful - 1);
+    } else {
+      // User marking helpful
+      review.helpfulBy.push(userId);
+      review.helpful = (review.helpful || 0) + 1;
+
+      // If user had marked unhelpful, remove it
+      if (unhelpfulByIndex !== -1) {
+        review.unhelpfulBy.splice(unhelpfulByIndex, 1);
+        review.unhelpful = Math.max(0, review.unhelpful - 1);
+      }
+    }
+
+    await review.save();
     return review;
   }
 
   /**
    * Mark review as unhelpful
    */
-  async markUnhelpful(reviewId) {
-    const review = await Review.findByIdAndUpdate(
-      reviewId,
-      { $inc: { unhelpful: 1 } },
-      { new: true },
-    );
+  async markUnhelpful(reviewId, userId) {
+    const review = await Review.findById(reviewId);
 
     if (!review) {
       throw new ErrorResponse("Review not found", 404);
     }
 
+    const userIdStr = userId.toString();
+    const helpfulByIndex = review.helpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+    const unhelpfulByIndex = review.unhelpfulBy
+      .map((id) => id.toString())
+      .indexOf(userIdStr);
+
+    if (unhelpfulByIndex !== -1) {
+      // User already marked unhelpful, toggle off
+      review.unhelpfulBy.splice(unhelpfulByIndex, 1);
+      review.unhelpful = Math.max(0, review.unhelpful - 1);
+    } else {
+      // User marking unhelpful
+      review.unhelpfulBy.push(userId);
+      review.unhelpful = (review.unhelpful || 0) + 1;
+
+      // If user had marked helpful, remove it
+      if (helpfulByIndex !== -1) {
+        review.helpfulBy.splice(helpfulByIndex, 1);
+        review.helpful = Math.max(0, review.helpful - 1);
+      }
+    }
+
+    await review.save();
     return review;
   }
 
@@ -331,9 +544,8 @@ class ReviewService {
    * Get review statistics for a product
    */
   async getProductReviewStats(productId) {
-    const product = await Product.findById(productId).select(
-      "rating reviewCount",
-    );
+    const product =
+      await Product.findById(productId).select("rating reviewCount");
 
     if (!product) {
       throw new ErrorResponse("Product not found", 404);

@@ -1,5 +1,16 @@
 import mongoose from "mongoose";
 
+/** Strip Vietnamese diacritics + uppercase. Used as a Mongoose setter for SKU fields. */
+function normalizeSkuValue(v) {
+  if (!v || typeof v !== "string") return v;
+  return v
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/Đ/g, "D");
+}
+
 const productAttributeSchema = new mongoose.Schema(
   {
     slug: {
@@ -62,6 +73,7 @@ const modelSchema = new mongoose.Schema(
       required: [true, "SKU is required"],
       trim: true,
       uppercase: true,
+      set: normalizeSkuValue,
       maxlength: [100, "SKU cannot exceed 100 characters"],
     },
     price: {
@@ -104,6 +116,14 @@ const modelSchema = new mongoose.Schema(
       min: [0, "Weight must be non-negative"],
       default: 0,
     },
+    weightUnit: {
+      type: String,
+      enum: ["gr", "kg"],
+      default: "gr",
+    },
+    dimLength: { type: Number, default: 0, min: 0 },
+    dimWidth: { type: Number, default: 0, min: 0 },
+    dimHeight: { type: Number, default: 0, min: 0 },
     isActive: {
       type: Boolean,
       default: true,
@@ -129,7 +149,12 @@ const productSchema = new mongoose.Schema(
     categoryId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Category",
-      required: [true, "Category is required"],
+      required: [
+        function () {
+          return this.status !== "draft";
+        },
+        "Category is required",
+      ],
       index: true,
     },
     description: {
@@ -163,9 +188,24 @@ const productSchema = new mongoose.Schema(
     },
     originalPrice: {
       type: Number,
-      required: true,
+      required: [
+        function () {
+          return this.status !== "draft";
+        },
+        "Original price is required for published products",
+      ],
       min: [0, "Original price must be non-negative"],
     },
+    preOrderDays: {
+      type: Number,
+      default: 0,
+      min: [0, "Pre-order days must be non-negative"],
+    },
+    weight: { type: Number, default: 0, min: 0 },
+    weightUnit: { type: String, enum: ["gr", "kg"], default: "gr" },
+    dimLength: { type: Number, default: 0, min: 0 },
+    dimWidth: { type: Number, default: 0, min: 0 },
+    dimHeight: { type: Number, default: 0, min: 0 },
     images: {
       type: [String],
       default: [],
@@ -241,6 +281,20 @@ const productSchema = new mongoose.Schema(
       description: String,
       keywords: [String],
     },
+    embedding: {
+      type: [Number],
+      default: [],
+      select: false,
+    },
+    embeddingText: {
+      type: String,
+      select: false,
+    },
+    // [Phase 3 - 5.2] Tracks when the embedding was last generated/refreshed
+    embeddingUpdatedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -267,6 +321,13 @@ productSchema.virtual("totalStock").get(function () {
   return this.models.reduce((sum, model) => sum + model.stock, 0);
 });
 
+productSchema.virtual("price").get(function () {
+  if (!this.models || this.models.length === 0) return null;
+  const prices = this.models.map((m) => m.price).filter((p) => typeof p === "number");
+  if (prices.length === 0) return null;
+  return Math.min(...prices);
+});
+
 productSchema.virtual("sku").get(function () {
   if (!this.models || this.models.length === 0) return null;
   return this.models[0].sku;
@@ -287,6 +348,36 @@ productSchema.pre("save", function (next) {
 
   if (this.isNew) {
     this.isNewArrival = true;
+  }
+});
+
+productSchema.post("save", async function () {
+  const modifiedPaths = this.modifiedPaths();
+  const relevantFields = ["name", "description", "attributes", "tags", "brand", "categoryId"];
+  const needsUpdate = relevantFields.some((f) => modifiedPaths.includes(f));
+
+  if (needsUpdate && this.status === "active") {
+    try {
+      const { default: embeddingService } = await import("../services/embedding.service.js");
+      const { default: Category } = await import("./Category.js");
+      const cat = await Category.findById(this.categoryId).select("name").lean();
+
+      const parts = [
+        this.name, cat?.name || "", this.brand || "",
+        this.description?.replace(/<[^>]*>/g, "").slice(0, 300) || "",
+        (this.attributes || []).map((a) => `${a.label} ${a.value}`).join(" "),
+        (this.tags || []).join(" "),
+      ];
+      const text = parts.filter(Boolean).join(" | ");
+      const embedding = await embeddingService.getEmbedding(text);
+
+      await this.constructor.updateOne(
+        { _id: this._id },
+        { $set: { embedding, embeddingText: text } }
+      );
+    } catch (err) {
+      console.error(`[Embedding] Failed for product ${this._id}:`, err.message);
+    }
   }
 });
 

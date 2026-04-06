@@ -157,12 +157,12 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
   };
 
   const orders = await Order.find(filterQuery)
-    .populate('userId', 'fullName email phone')
+    .populate("userId", "fullName email phone")
     .populate({
-      path: 'items',
+      path: "items",
       populate: {
-        path: 'productId',
-        select: 'name images originalPrice models tiers',
+        path: "productId",
+        select: "name images originalPrice models tiers",
       },
     })
     .sort(sortOptions[sortBy] || { createdAt: -1 })
@@ -172,11 +172,17 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
   const total = await Order.countDocuments(filterQuery);
 
   // Enrich items with selected model only
-  const enrichedOrders = orders.map(order => ({
+  const enrichedOrders = orders.map((order) => ({
     ...order.toObject(),
-    items: order.items.map(item => {
-      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
-      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+    items: order.items.map((item) => {
+      const selectedModel = item.productId.models?.find(
+        (m) => m._id.toString() === item.modelId.toString(),
+      );
+      const tierDetails = enrichTierDetails(
+        item,
+        selectedModel,
+        item.productId.tiers,
+      );
 
       return {
         ...item.toObject(),
@@ -203,14 +209,19 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
 /**
  * Get orders filtered by specific status
  */
-export const getOrdersByStatus = async (status, pagination = {}) => {
+export const getOrdersByStatus = async (status, pagination = {}, sellerId) => {
   const { page = 1, limit = 10 } = pagination;
   const skip = (page - 1) * limit;
 
+  if (!sellerId) {
+    throw new ErrorResponse("Seller ID is required", 400);
+  }
+
   const validStatuses = [
     "pending",
-    "processing",
-    "shipped",
+    "confirmed",
+    "packing",
+    "shipping",
     "delivered",
     "delivered_pending_confirmation",
     "completed",
@@ -218,6 +229,9 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
     "refunded",
     "refund_pending",
     "under_investigation",
+    // Backward-compatible statuses
+    "processing",
+    "shipped",
   ];
 
   if (!validStatuses.includes(status)) {
@@ -227,15 +241,47 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
     );
   }
 
-  const filter = { status };
+  const sellerProducts = await Product.find({ sellerId }).select("_id");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return {
+      total: 0,
+      page: Number(page),
+      limit: Number(limit),
+      pages: 0,
+      statusCounts: {},
+      data: [],
+    };
+  }
+
+  const orderItems = await OrderItem.find({
+    productId: { $in: sellerProductIds },
+  }).select("orderId");
+  const orderIds = [
+    ...new Set(orderItems.map((item) => item.orderId.toString())),
+  ].map((id) => new mongoose.Types.ObjectId(id));
+
+  if (orderIds.length === 0) {
+    return {
+      total: 0,
+      page: Number(page),
+      limit: Number(limit),
+      pages: 0,
+      statusCounts: {},
+      data: [],
+    };
+  }
+
+  const filter = { _id: { $in: orderIds }, status };
 
   const orders = await Order.find(filter)
-    .populate('userId', 'fullName email phone')
+    .populate("userId", "fullName email phone")
     .populate({
-      path: 'items',
+      path: "items",
       populate: {
-        path: 'productId',
-        select: 'name images originalPrice models tiers',
+        path: "productId",
+        select: "name images originalPrice models tiers",
       },
     })
     .sort({ createdAt: -1 })
@@ -245,15 +291,22 @@ export const getOrdersByStatus = async (status, pagination = {}) => {
   const total = await Order.countDocuments(filter);
 
   const statusCounts = await Order.aggregate([
+    { $match: { _id: { $in: orderIds } } },
     { $group: { _id: "$status", count: { $sum: 1 } } },
   ]);
 
   // Enrich items with selected model only
-  const enrichedOrders = orders.map(order => ({
+  const enrichedOrders = orders.map((order) => ({
     ...order.toObject(),
-    items: order.items.map(item => {
-      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
-      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+    items: order.items.map((item) => {
+      const selectedModel = item.productId.models?.find(
+        (m) => m._id.toString() === item.modelId.toString(),
+      );
+      const tierDetails = enrichTierDetails(
+        item,
+        selectedModel,
+        item.productId.tiers,
+      );
 
       return {
         ...item.toObject(),
@@ -307,15 +360,15 @@ export const getOrderStatusHistory = async (orderId) => {
  */
 export const getOrderDetail = async (orderId) => {
   const order = await Order.findById(orderId)
-    .populate('userId')
+    .populate("userId")
     .populate({
-      path: 'items',
+      path: "items",
       populate: {
-        path: 'productId',
-        select: 'name images originalPrice models tiers',
+        path: "productId",
+        select: "name images originalPrice models tiers",
       },
     })
-    .populate('shipperId', 'fullName phone');
+    .populate("shipperId", "fullName phone");
 
   if (!order) {
     throw new ErrorResponse("Order not found", 404);
@@ -324,9 +377,15 @@ export const getOrderDetail = async (orderId) => {
   // Enrich items with selected model only
   const enrichedOrder = {
     ...order.toObject(),
-    items: order.items.map(item => {
-      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
-      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+    items: order.items.map((item) => {
+      const selectedModel = item.productId.models?.find(
+        (m) => m._id.toString() === item.modelId.toString(),
+      );
+      const tierDetails = enrichTierDetails(
+        item,
+        selectedModel,
+        item.productId.tiers,
+      );
 
       return {
         ...item.toObject(),
@@ -359,11 +418,17 @@ export const updateOrderStatus = async (orderId, updateData, userData) => {
   }
 
   // Validate status transition
+  // Canonical workflow: pending -> confirmed -> packed -> shipped -> delivered -> completed
+  // Keep backward-compatible legacy states (processing, packing, shipping, shipped)
   const validTransitions = {
-    pending: ["processing", "cancelled"],
-    processing: ["shipped", "cancelled"],
+    pending: ["confirmed", "processing", "cancelled"],
+    processing: ["confirmed", "packing", "cancelled"],
+    confirmed: ["packed", "packing", "shipping", "cancelled"],
+    packing: ["packed", "shipping", "cancelled"],
+    packed: ["shipping", "cancelled"],
+    shipping: ["shipped", "delivered"],
     shipped: ["delivered", "refund_pending"],
-    delivered: ["delivered_pending_confirmation"],
+    delivered: ["delivered_pending_confirmation", "completed"],
     delivered_pending_confirmation: ["completed", "refund_pending"],
     completed: [],
     cancelled: [],
@@ -400,8 +465,12 @@ export const updateOrderStatus = async (orderId, updateData, userData) => {
     notes: notes || undefined,
   });
 
-  // Auto-create GHN shipping order when status changes to 'processing'
-  if (newStatus === "processing" && !order.ghnOrderCode) {
+  // Auto-create GHN shipping order when status changes to 'processing' or 'confirmed'
+  // (some flows use 'processing' historically; new canonical flow may use 'confirmed')
+  if (
+    (newStatus === "processing" || newStatus === "confirmed") &&
+    !order.ghnOrderCode
+  ) {
     console.log("[Order Service] Creating GHN shipping order...");
 
     try {
@@ -419,18 +488,19 @@ export const updateOrderStatus = async (orderId, updateData, userData) => {
         to_ward_code: "21211", // Default: Phường 14 (should get from address data)
       };
 
-      // Prepare items for GHN
-      const ghnItems = order.items.map((item) => ({
-        name: item.name || "Product",
-        quantity: item.quantity,
-        price: item.price,
+      // Build GHN items payload from order items
+      const ghnItems = (order.items || []).map((it) => ({
+        name: it.productId?.name || it.sku || `Item-${it._id}`,
+        quantity: Number(it.quantity) || 1,
+        price: Math.round(it.price || 0),
       }));
 
-      // Calculate package weight based on items (estimate)
-      const totalWeight = order.items.reduce(
-        (sum, item) => sum + item.quantity * 200,
-        0,
-      ); // 200g per item
+      // Compute total weight (fallback to 500g if unknown)
+      const totalWeight = (order.items || []).reduce((sum, it) => {
+        const itemWeight =
+          Number(it.weight) || Number(it.productId?.weight) || 0;
+        return sum + itemWeight * (Number(it.quantity) || 1);
+      }, 0);
 
       const ghnOrderData = {
         client_order_code: order.orderNumber,
@@ -464,12 +534,13 @@ export const updateOrderStatus = async (orderId, updateData, userData) => {
         order.ghnShippingFee = ghnResponse.data.total_fee || 0;
         order.ghnOrderInfo = ghnResponse.data;
         order.ghnStatus = "ready_to_pick";
-
-        // Add GHN log
-        order.ghnLogs.push({
-          status: "ready_to_pick",
-          description: "Đơn hàng đã được tạo trên GHN, chờ shipper đến lấy",
-          updatedAt: new Date(),
+        // Add a system status history entry about GHN creation
+        order.statusHistory.push({
+          status: newStatus,
+          changedBy: userId || null,
+          changedByRole: "system",
+          changedAt: new Date(),
+          reason: "Đơn hàng đã được tạo trên GHN, chờ shipper đến lấy",
         });
 
         // Update estimated delivery if available
@@ -513,22 +584,28 @@ export const updateOrderStatus = async (orderId, updateData, userData) => {
   await order.save();
 
   const updatedOrder = await Order.findById(orderId)
-    .populate('userId', 'fullName email phone')
+    .populate("userId", "fullName email phone")
     .populate({
-      path: 'items',
+      path: "items",
       populate: {
-        path: 'productId',
-        select: 'name images originalPrice models tiers',
+        path: "productId",
+        select: "name images originalPrice models tiers",
       },
     })
-    .populate('statusHistory.changedBy', 'fullName email role');
+    .populate("statusHistory.changedBy", "fullName email role");
 
   // Enrich items with selected model only
   const enrichedOrder = {
     ...updatedOrder.toObject(),
-    items: updatedOrder.items.map(item => {
-      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
-      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+    items: updatedOrder.items.map((item) => {
+      const selectedModel = item.productId.models?.find(
+        (m) => m._id.toString() === item.modelId.toString(),
+      );
+      const tierDetails = enrichTierDetails(
+        item,
+        selectedModel,
+        item.productId.tiers,
+      );
 
       return {
         ...item.toObject(),
@@ -556,8 +633,17 @@ export const cancelOrder = async (orderId, cancellationReason) => {
     throw new ErrorResponse("Order not found", 404);
   }
 
-  // Can only cancel pending or processing orders
-  if (!["pending", "processing", "shipping"].includes(order.status)) {
+  // Can only cancel orders that haven't reached delivery; include backward-compatible and canonical statuses
+  if (
+    ![
+      "pending",
+      "processing",
+      "confirmed",
+      "packing",
+      "packed",
+      "shipping",
+    ].includes(order.status)
+  ) {
     throw new ErrorResponse(
       `Cannot cancel order with status '${order.status}'`,
       400,
@@ -581,21 +667,27 @@ export const cancelOrder = async (orderId, cancellationReason) => {
   await order.save();
 
   const updatedOrder = await Order.findById(orderId)
-    .populate('userId', 'fullName email phone')
+    .populate("userId", "fullName email phone")
     .populate({
-      path: 'items',
+      path: "items",
       populate: {
-        path: 'productId',
-        select: 'name images originalPrice models tiers',
+        path: "productId",
+        select: "name images originalPrice models tiers",
       },
     });
 
   // Enrich items with selected model only
   const enrichedOrder = {
     ...updatedOrder.toObject(),
-    items: updatedOrder.items.map(item => {
-      const selectedModel = item.productId.models?.find(m => m._id.toString() === item.modelId.toString());
-      const tierDetails = enrichTierDetails(item, selectedModel, item.productId.tiers);
+    items: updatedOrder.items.map((item) => {
+      const selectedModel = item.productId.models?.find(
+        (m) => m._id.toString() === item.modelId.toString(),
+      );
+      const tierDetails = enrichTierDetails(
+        item,
+        selectedModel,
+        item.productId.tiers,
+      );
 
       return {
         ...item.toObject(),
@@ -742,14 +834,24 @@ function generateDeliveryNoteHTML(order) {
  * Maps tierIndex to tier names and values
  */
 function enrichTierDetails(item, selectedModel, tiers) {
-  if (!selectedModel || !tiers || tiers.length === 0 || !selectedModel.tierIndex) {
+  if (
+    !selectedModel ||
+    !tiers ||
+    tiers.length === 0 ||
+    !selectedModel.tierIndex
+  ) {
     return item.tierSelections || {};
   }
 
   const tierDetails = {};
   selectedModel.tierIndex.forEach((index, tierPosition) => {
-    if (tiers[tierPosition] && tiers[tierPosition].options && tiers[tierPosition].options[index]) {
-      tierDetails[tiers[tierPosition].name] = tiers[tierPosition].options[index];
+    if (
+      tiers[tierPosition] &&
+      tiers[tierPosition].options &&
+      tiers[tierPosition].options[index]
+    ) {
+      tierDetails[tiers[tierPosition].name] =
+        tiers[tierPosition].options[index];
     }
   });
 

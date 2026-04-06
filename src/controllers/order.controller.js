@@ -6,9 +6,10 @@ import Product from "../models/Product.js";
 import InventoryItem from "../models/InventoryItem.js";
 import InventoryTransaction from "../models/InventoryTransaction.js";
 // import FlashSaleProduct from "../models/FlashSaleProduct.js";
-import Voucher from "../models/Voucher.js";
 import Deal from "../models/Deal.js";
 import User from "../models/User.js";
+import Coin from "../models/Coin.js";
+import WalletTransaction from "../models/WalletTransaction.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import * as flashSaleService from "../services/flashsale.service.js";
@@ -51,7 +52,9 @@ export const getCheckoutInfo = asyncHandler(async (req, res, next) => {
 // Helper: Calculate Shipping Fee
 const calculateShippingFee = (subtotal, city = "") => {
   // Free shipping for orders > 500k
-  if (subtotal >= 500000) return 0;
+  if (subtotal >= 500000) {
+return 0;
+}
 
   // Example logic: HCM = 20k, others = 35k
   // In reality, this would call a shipping provider API
@@ -61,9 +64,125 @@ const calculateShippingFee = (subtotal, city = "") => {
   return 35000;
 };
 
+const normalizeFee = (value, fallback = 0) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.round(parsed);
+};
+
 // Helper: Generate Order Number
-const generateOrderNumber = () => {
-  return "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
+const generateOrderNumber = () => `ORD-${  Date.now()  }-${  Math.floor(Math.random() * 1000)}`;
+
+// Deduct GZCoin using packets with nearest expiration first.
+const deductCoinsForOrder = async ({
+  user,
+  requestedAmount,
+  orderId,
+  orderNumber,
+  session,
+}) => {
+  const amountToDeduct = Math.max(0, Math.floor(Number(requestedAmount || 0)));
+  if (amountToDeduct <= 0) {
+    return {
+      deductedAmount: 0,
+      usageDetails: [],
+      balanceBefore: user.reward_point || 0,
+      balanceAfter: user.reward_point || 0,
+    };
+  }
+
+  const now = new Date();
+
+  const expiringPackets = await Coin.find({
+    userId: user._id,
+    status: "active",
+    remainingAmount: { $gt: 0 },
+    expiresAt: { $ne: null, $gt: now },
+  })
+    .sort({ expiresAt: 1, createdAt: 1 })
+    .session(session);
+
+  const neverExpirePackets = await Coin.find({
+    userId: user._id,
+    status: "active",
+    remainingAmount: { $gt: 0 },
+    expiresAt: null,
+  })
+    .sort({ createdAt: 1 })
+    .session(session);
+
+  const packets = [...expiringPackets, ...neverExpirePackets];
+
+  let remaining = amountToDeduct;
+  const usageDetails = [];
+
+  for (const packet of packets) {
+    if (remaining <= 0) {
+break;
+}
+
+    const useAmount = Math.min(packet.remainingAmount, remaining);
+    packet.remainingAmount -= useAmount;
+    if (packet.remainingAmount === 0) {
+      packet.status = "depleted";
+    }
+    await packet.save({ session });
+
+    usageDetails.push({
+      packetId: packet._id,
+      source: packet.source,
+      amountUsed: useAmount,
+      expiresAt: packet.expiresAt,
+      remainingInPacket: packet.remainingAmount,
+    });
+
+    remaining -= useAmount;
+  }
+
+  const deductedAmount = amountToDeduct - remaining;
+
+  if (deductedAmount <= 0) {
+    return {
+      deductedAmount: 0,
+      usageDetails: [],
+      balanceBefore: user.reward_point || 0,
+      balanceAfter: user.reward_point || 0,
+    };
+  }
+
+  const balanceBefore = user.reward_point || 0;
+  const balanceAfter = Math.max(0, balanceBefore - deductedAmount);
+
+  await WalletTransaction.create(
+    [
+      {
+        userId: user._id,
+        type: "purchase",
+        amount: -deductedAmount,
+        balanceBefore,
+        balanceAfter,
+        description: `Use GZCoin for order ${orderNumber}`,
+        reference: { orderId },
+        status: "completed",
+        metadata: {
+          packetsUsed: usageDetails,
+        },
+      },
+    ],
+    { session },
+  );
+
+  user.reward_point = balanceAfter;
+  await user.save({ session });
+
+  return {
+    deductedAmount,
+    usageDetails,
+    balanceBefore,
+    balanceAfter,
+  };
 };
 
 // Helper to check stock via InventoryItem (source of truth)
@@ -77,7 +196,7 @@ const checkStock = async (productId, sku, qty, modelStock = 0) => {
 // @route   POST /api/orders/preview
 // @access  Private
 export const previewOrder = asyncHandler(async (req, res, next) => {
-  const { city, voucherIds, cartItemIds } = req.body;
+  const { city, voucherIds, cartItemIds, shippingCost, giftBoxFee } = req.body;
 
   // 1. Get Cart
   const cart = await Cart.findOne({ userId: req.user._id });
@@ -100,30 +219,53 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
   // 2. Calculate Subtotal (re-check promotion prices)
   let subtotal = 0;
   for (const item of cartItems) {
-    if (!item.productId) continue;
+    if (!item.productId) {
+continue;
+}
     const product = item.productId;
 
     // Find model for this variant
-    const colorTierIndex = product.tiers?.findIndex(
-      (t) => t.name.toLowerCase() === "color" || t.name.toLowerCase() === "màu sắc",
-    ) ?? -1;
-    const sizeTierIndex = product.tiers?.findIndex(
-      (t) => t.name.toLowerCase() === "size" || t.name.toLowerCase() === "kích thước",
-    ) ?? -1;
+    const colorTierIndex =
+      product.tiers?.findIndex(
+        (t) =>
+          t.name.toLowerCase() === "color" ||
+          t.name.toLowerCase() === "màu sắc",
+      ) ?? -1;
+    const sizeTierIndex =
+      product.tiers?.findIndex(
+        (t) =>
+          t.name.toLowerCase() === "size" ||
+          t.name.toLowerCase() === "kích thước",
+      ) ?? -1;
     const model = product.models?.find((m) => {
-      const colorMatch = colorTierIndex === -1 || product.tiers[colorTierIndex].options[m.tierIndex[colorTierIndex]] === item.color;
-      const sizeMatch = sizeTierIndex === -1 || product.tiers[sizeTierIndex].options[m.tierIndex[sizeTierIndex]] === item.size;
+      const colorMatch =
+        colorTierIndex === -1 ||
+        product.tiers[colorTierIndex].options[m.tierIndex[colorTierIndex]] ===
+          item.color;
+      const sizeMatch =
+        sizeTierIndex === -1 ||
+        product.tiers[sizeTierIndex].options[m.tierIndex[sizeTierIndex]] ===
+          item.size;
       return colorMatch && sizeMatch;
     });
 
     let unitPrice = item.price;
     if (model) {
-      const modelIdx = product.models.findIndex((m) => m._id.toString() === model._id.toString());
-      const flashSaleInfo = await flashSaleService.getFlashSalePrice(product._id, model.price);
+      const modelIdx = product.models.findIndex(
+        (m) => m._id.toString() === model._id.toString(),
+      );
+      const flashSaleInfo = await flashSaleService.getFlashSalePrice(
+        product._id,
+        model.price,
+      );
       if (flashSaleInfo.isFlashSale) {
         unitPrice = flashSaleInfo.price;
       } else {
-        const spInfo = await getShopProgramPriceForVariant(product._id, modelIdx, model.price);
+        const spInfo = await getShopProgramPriceForVariant(
+          product._id,
+          modelIdx,
+          model.price,
+        );
         if (spInfo.isShopProgram) {
           unitPrice = spInfo.price;
         }
@@ -145,21 +287,35 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
   const discount = totalDiscount;
 
   // 4. Calculate Fees
-  const shippingCost = calculateShippingFee(subtotal, city);
+  const computedShippingCost = calculateShippingFee(subtotal, city);
+  const appliedShippingCost = normalizeFee(shippingCost, computedShippingCost);
+  const appliedGiftBoxFee = normalizeFee(giftBoxFee, 0);
   const tax = 0;
-  const total = subtotal + shippingCost + tax - discount;
+  const total =
+    subtotal + appliedShippingCost + tax - discount + appliedGiftBoxFee;
+
+  // Estimate coin usage for preview (user's reward_point)
+  const user = await User.findById(req.user._id);
+  const balanceBefore = user?.reward_point || 0;
+  const payableBeforeCoin = Math.max(0, total);
+  const coinEstimate = Math.min(balanceBefore, payableBeforeCoin);
 
   res.status(200).json({
     success: true,
     data: {
       subtotal,
-      shippingCost,
+      shippingCost: appliedShippingCost,
+      giftBoxFee: appliedGiftBoxFee,
       tax,
       discount,
       total,
       itemCount: cartItems.length,
       appliedVouchers: validVouchers,
       voucherErrors,
+      // Coin preview fields
+      payableBeforeCoin,
+      coinEstimate,
+      balanceBefore,
     },
   });
 });
@@ -171,12 +327,30 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   const {
     shippingAddress,
     paymentMethod,
+    shippingMethod,
+    shippingCost,
+    giftBoxFee,
+    includeGiftBox,
     notes,
     city,
-    quantity,
+    _quantity,
     voucherIds,
     cartItemIds,
+    liveItems,
+    liveSessionVoucherId,
+    fromLiveSession,
   } = req.body;
+
+  // DEBUG: log raw request payload to diagnose 400
+  console.log("[createOrder] Request payload:", {
+    hasShippingAddress: !!shippingAddress,
+    paymentMethod,
+    hasLiveItems: Array.isArray(liveItems),
+    liveItemsCount: liveItems?.length,
+    liveItems,
+    cartItemIds,
+    voucherIds,
+  });
 
   if (!shippingAddress || !paymentMethod) {
     return next(
@@ -187,40 +361,137 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     );
   }
 
-  // 1. Get Cart
-  const cart = await Cart.findOne({ userId: req.user._id });
-  if (!cart) {
-    return next(new ErrorResponse("Cart is empty", 400));
-  }
+  // Track live order item IDs (persisted inside transaction)
+  const liveOrderItemIds = [];
 
-  // Build query to get cart items
-  const query = { cartId: cart._id };
-  // If cartItemIds provided, only get those specific items
-  if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
-    query._id = { $in: cartItemIds };
-  }
+  /** Sum of (unit price × qty) for live lines — same logic as OrderItem.effectivePrice */
+  let liveItemsMonetarySubtotal = 0;
 
-  const cartItems = await CartItem.find(query).populate("productId");
-  if (cartItems.length === 0) {
-    return next(new ErrorResponse("Cart is empty", 400));
-  }
+  // === Pre-transaction validation for live session items ===
+  if (liveItems && liveItems.length > 0) {
+    for (const liveItem of liveItems) {
+      const product = await Product.findById(liveItem.productId)
+        .select("name models sellerId images tiers")
+        .lean();
+      if (!product) {
+        return next(new ErrorResponse(`Product ${liveItem.productId} not found`, 400));
+      }
 
-  // SECURITY FIX (BUG 8): Validate that all cartItemIds belong to this user's cart
-  if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
-    const foundItemIds = cartItems.map((item) => item._id.toString());
-    const requestedItemIds = cartItemIds.map((id) => id.toString());
-    const invalidItems = requestedItemIds.filter(
-      (id) => !foundItemIds.includes(id),
-    );
+      // Find the model matching color + size by examining tierIndex
+      let targetModel = null;
+      if (product.models && product.models.length > 0) {
+        if (product.tiers && product.tiers.length > 0) {
+          // Map color/size strings to tierIndex positions
+          const colorIdx = product.tiers.findIndex((t) =>
+            /color|màu|mau/.test(t.name.toLowerCase()),
+          );
+          const sizeIdx = product.tiers.findIndex((t) =>
+            /size|kích|kich/.test(t.name.toLowerCase()),
+          );
 
-    if (invalidItems.length > 0) {
-      return next(
-        new ErrorResponse(
-          "Some cart items do not belong to your cart or do not exist",
-          403,
-        ),
-      );
+          targetModel = product.models.find((m) => {
+            if (!m.tierIndex || m.tierIndex.length === 0) {
+return false;
+}
+            const colorMatch =
+              colorIdx === -1 ||
+              m.tierIndex[colorIdx] ===
+                product.tiers[colorIdx].options?.findIndex(
+                  (o) =>
+                    String(o).toLowerCase() ===
+                    String(liveItem.color || "Default").toLowerCase(),
+                );
+            const sizeMatch =
+              sizeIdx === -1 ||
+              m.tierIndex[sizeIdx] ===
+                product.tiers[sizeIdx].options?.findIndex(
+                  (o) =>
+                    String(o).toLowerCase() ===
+                    String(liveItem.size || "Default").toLowerCase(),
+                );
+            return colorMatch && sizeMatch;
+          });
+        }
+      }
+
+      // If no tier-based model found, use first active model
+      if (!targetModel) {
+        targetModel =
+          product.models?.find((m) => m.isActive !== false) ||
+          product.models?.[0];
+      }
+
+      if (!targetModel) {
+        return next(new ErrorResponse(`Variant not found for product ${product.name}`, 400));
+      }
+      if (targetModel.stock < liveItem.quantity) {
+        return next(new ErrorResponse(
+          `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
+          400,
+        ));
+      }
+
+      const clientPrice = Number(liveItem.price);
+      const lineUnit =
+        Number.isFinite(clientPrice) && clientPrice > 0
+          ? clientPrice
+          : Number(targetModel.price) || 0;
+      const qty = Math.max(1, Number(liveItem.quantity) || 1);
+      liveItemsMonetarySubtotal += lineUnit * qty;
     }
+  }
+
+  // 1. Get Cart — skip if order contains only live-session items
+  let cartItems = [];
+  let cart = null;
+  const hasLiveItems = Array.isArray(liveItems) && liveItems.length > 0;
+
+  if (!hasLiveItems) {
+    // ── Normal cart order (no live-session items) ──────────────────
+    cart = await Cart.findOne({ userId: req.user._id });
+    if (!cart) {
+      return next(new ErrorResponse("Cart is empty", 400));
+    }
+
+    const query = { cartId: cart._id };
+    if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+      query._id = { $in: cartItemIds };
+    }
+
+    cartItems = await CartItem.find(query).populate("productId");
+    if (cartItems.length === 0) {
+      console.error("[createOrder] cartItems query returned 0 results.", {
+        userId: req.user._id,
+        cartId: cart?._id,
+        cartItemIds,
+        query,
+      });
+      return next(new ErrorResponse("Cart is empty", 400));
+    }
+
+    // SECURITY FIX (BUG 8): Validate that all cartItemIds belong to this user's cart
+    if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+      const foundItemIds = cartItems.map((item) => item._id.toString());
+      const requestedItemIds = cartItemIds.map((id) => id.toString());
+      const invalidItems = requestedItemIds.filter(
+        (id) => !foundItemIds.includes(id),
+      );
+
+      if (invalidItems.length > 0) {
+        return next(
+          new ErrorResponse(
+            "Some cart items do not belong to your cart or do not exist",
+            403,
+          ),
+        );
+      }
+    }
+  } else {
+    // ── Live-session-only order: cart may be empty — this is fine ──
+    console.log("[createOrder] Live-session-only order — skipping cart validation.", {
+      liveItems: liveItems.length,
+      cartItemIds,
+    });
   }
 
   // DUPLICATE ORDER PREVENTION (BUG 9): Check for recent duplicate orders
@@ -251,7 +522,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   const validItems = [];
 
   for (const item of cartItems) {
-    if (!item.productId) continue; // Skip deleted products
+    if (!item.productId) {
+continue;
+} // Skip deleted products
 
     // Find model to get SKU
     const product = item.productId;
@@ -311,7 +584,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     );
     let finalPrice = model.price;
     let isShopProgram = false;
-    const modelIdx = product.models.findIndex((m) => m._id.toString() === model._id.toString());
+    const modelIdx = product.models.findIndex(
+      (m) => m._id.toString() === model._id.toString(),
+    );
 
     if (flashSaleInfo.isFlashSale) {
       finalPrice = flashSaleInfo.price;
@@ -330,11 +605,15 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     subtotal += finalPrice * item.quantity;
     validItems.push({
       cartItem: item,
-      model: model,
-      product: product,
-      flashSaleInfo: flashSaleInfo,
+      model,
+      product,
+      flashSaleInfo,
+      finalPrice,
+      isShopProgram,
     });
   }
+
+  subtotal += liveItemsMonetarySubtotal;
 
   // 3. Validate Vouchers & Calculate Discount
   const {
@@ -355,9 +634,17 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   const discount = totalDiscount;
 
   // 4. Calculate Totals
-  const shippingCost = calculateShippingFee(subtotal, city || shippingAddress);
+  const computedShippingCost = calculateShippingFee(
+    subtotal,
+    city || shippingAddress,
+  );
+  const appliedShippingCost = normalizeFee(shippingCost, computedShippingCost);
+  const appliedGiftBoxFee = normalizeFee(giftBoxFee, 0);
   const tax = 0;
-  const totalPrice = subtotal + shippingCost + tax - discount;
+  const payableBeforeCoin = Math.max(
+    0,
+    subtotal + appliedShippingCost + tax - discount + appliedGiftBoxFee,
+  );
 
   // 5. Create Order with Transaction Support
   const appliedCodes = validVouchers.map((v) => v.code).join(", ");
@@ -367,16 +654,30 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   session.startTransaction();
 
   try {
+    const userInTx = await User.findById(req.user._id).session(session);
+    if (!userInTx) {
+      throw new ErrorResponse("User not found", 404);
+    }
+
+    // Respect client preference whether to use GZCoin. Default: use coins.
+    const useCoin = req.body.useCoin === false ? false : true;
+    const coinPlanAmount = useCoin
+      ? Math.min(Math.max(0, userInTx.reward_point || 0), payableBeforeCoin)
+      : 0;
+
     const order = await Order.create(
       [
         {
           userId: req.user._id,
           orderNumber: generateOrderNumber(),
           status: "pending",
-          totalPrice,
+          totalPrice: payableBeforeCoin,
+          payableBeforeCoin,
           subtotal,
           shippingAddress,
-          shippingCost,
+          shippingMethod: shippingMethod || undefined,
+          shippingCost: appliedShippingCost,
+          giftBoxFee: includeGiftBox ? appliedGiftBoxFee : 0,
           paymentMethod,
           notes,
           discount,
@@ -385,15 +686,40 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           isActive: true,
           items: [],
           resourcesDeducted: false, // Will be set to true after deduction
+          liveSessionVoucherId: liveSessionVoucherId || null,
+          fromLiveSession: fromLiveSession || null,
         },
       ],
       { session },
     );
     const createdOrder = order[0];
 
+    // Deduct GZCoin first (expiring soon packets are consumed first)
+    const coinDeduction = await deductCoinsForOrder({
+      user: userInTx,
+      requestedAmount: coinPlanAmount,
+      orderId: createdOrder._id,
+      orderNumber: createdOrder.orderNumber,
+      session,
+    });
+
+    createdOrder.coinUsedAmount = coinDeduction.deductedAmount;
+    createdOrder.coinUsageDetails = coinDeduction.usageDetails;
+    createdOrder.totalPrice = Math.max(
+      0,
+      payableBeforeCoin - coinDeduction.deductedAmount,
+    );
+
     // 5. Create Order Items
     const orderItemIds = [];
-    for (const { cartItem, model, product, flashSaleInfo } of validItems) {
+    for (const {
+      cartItem,
+      model,
+      product,
+      flashSaleInfo,
+      finalPrice,
+      isShopProgram,
+    } of validItems) {
       // Create Order Item
       const orderItem = await OrderItem.create(
         [
@@ -411,7 +737,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
             subtotal: finalPrice * cartItem.quantity,
             originalPrice: model.price,
             isFlashSale: flashSaleInfo.isFlashSale,
-            isShopProgram: isShopProgram,
+            isShopProgram,
           },
         ],
         { session },
@@ -420,16 +746,124 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       orderItemIds.push(orderItem[0]._id);
     }
 
-    // Add order items to order document
-    createdOrder.items = orderItemIds;
+    // Create OrderItem documents for live session items
+    for (const liveItem of liveItems || []) {
+      // Re-fetch product and model within transaction for consistency
+      const product = await Product.findById(liveItem.productId)
+        .select("name models sellerId images tiers")
+        .lean()
+        .session(session);
+
+      if (!product) {
+        throw new ErrorResponse(`Product ${liveItem.productId} not found`, 400);
+      }
+
+      let targetModel = null;
+      if (product.models && product.models.length > 0) {
+        if (product.tiers && product.tiers.length > 0) {
+          const colorIdx = product.tiers.findIndex((t) =>
+            /color|màu|mau/.test(t.name.toLowerCase()),
+          );
+          const sizeIdx = product.tiers.findIndex((t) =>
+            /size|kích|kich/.test(t.name.toLowerCase()),
+          );
+
+          targetModel = product.models.find((m) => {
+            if (!m.tierIndex || m.tierIndex.length === 0) {
+return false;
+}
+            const colorMatch =
+              colorIdx === -1 ||
+              m.tierIndex[colorIdx] ===
+                product.tiers[colorIdx].options?.findIndex(
+                  (o) =>
+                    String(o).toLowerCase() ===
+                    String(liveItem.color || "Default").toLowerCase(),
+                );
+            const sizeMatch =
+              sizeIdx === -1 ||
+              m.tierIndex[sizeIdx] ===
+                product.tiers[sizeIdx].options?.findIndex(
+                  (o) =>
+                    String(o).toLowerCase() ===
+                    String(liveItem.size || "Default").toLowerCase(),
+                );
+            return colorMatch && sizeMatch;
+          });
+        }
+      }
+
+      if (!targetModel) {
+        targetModel =
+          product.models?.find((m) => m.isActive !== false) ||
+          product.models?.[0];
+      }
+
+      if (!targetModel) {
+        throw new ErrorResponse(`Variant not found for product ${product.name}`, 400);
+      }
+      if (targetModel.stock < liveItem.quantity) {
+        throw new ErrorResponse(
+          `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
+          400,
+        );
+      }
+
+      const effectivePrice = liveItem.price ?? targetModel.price ?? 0;
+
+      // Create OrderItem document
+      const orderItem = await OrderItem.create(
+        [
+          {
+            orderId: createdOrder._id,
+            productId: liveItem.productId,
+            modelId: targetModel._id,
+            sku: targetModel.sku || null,
+            tierSelections: new Map(
+              (product.tiers || []).map((tier, idx) => [
+                tier.name,
+                idx ===
+                  product.tiers.findIndex((t) =>
+                    /color|màu|mau/.test(t.name.toLowerCase()),
+                  )
+                  ? String(liveItem.color || 'Default')
+                  : idx ===
+                    product.tiers.findIndex((t) =>
+                      /size|kích|kich/.test(t.name.toLowerCase()),
+                    )
+                    ? String(liveItem.size || 'Default')
+                    : 'Default',
+              ]),
+            ),
+            quantity: liveItem.quantity,
+            subtotal: effectivePrice * liveItem.quantity,
+            originalPrice: targetModel.price || effectivePrice,
+            price: effectivePrice,
+            color: liveItem.color || 'Default',
+            size: liveItem.size || 'Default',
+            image: liveItem.image || product.images?.[0] || null,
+            name: product.name,
+            isFlashSale: false,
+            isShopProgram: false,
+          },
+        ],
+        { session },
+      );
+
+      liveOrderItemIds.push(orderItem[0]._id);
+    }
+
+    // Add order items to order document (include both cart and live items)
+    createdOrder.items = [...orderItemIds, ...liveOrderItemIds];
     await createdOrder.save({ session });
 
     // 6. Deduct Resources ONLY for COD (Cash on Delivery)
     // For PayOS, resources will be deducted after payment confirmation
     const isCOD =
       paymentMethod === "cod" || paymentMethod === "cash_on_delivery";
+    const isFullyPaidByCoin = createdOrder.totalPrice <= 0;
 
-    if (isCOD) {
+    if (isCOD || isFullyPaidByCoin) {
       // Deduct inventory, vouchers, and flash sales immediately for COD
       await deductOrderResources(
         createdOrder,
@@ -438,10 +872,19 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         req.user._id,
       );
       createdOrder.resourcesDeducted = true;
-      createdOrder.paymentStatus = "pending"; // COD will be marked as paid when buyer confirms receipt
+
+      if (isFullyPaidByCoin) {
+        createdOrder.paymentStatus = "paid";
+        createdOrder.paymentDate = new Date();
+        // Keep order pending until seller explicitly processes it.
+        createdOrder.status = "pending";
+      } else {
+        createdOrder.paymentStatus = "pending"; // COD will be marked as paid when buyer confirms receipt
+      }
+
       await createdOrder.save({ session });
 
-      // Clear cart for COD using utility function with transaction support
+      // Clear cart for COD / fully paid-by-coin using utility function with transaction support
       await clearUserCart(req.user._id, session);
     }
 
@@ -468,7 +911,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         "Đặt hàng thành công",
         `Đơn hàng ${createdOrder.orderNumber} của bạn đã được tiếp nhận và đang chờ xác nhận.`,
         "ORDER",
-        { orderId: createdOrder._id.toString() }
+        { orderId: createdOrder._id.toString() },
       );
     } catch (notifErr) {
       console.error("Failed to send buyer notification:", notifErr);
@@ -480,6 +923,12 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     res.status(201).json({
       success: true,
       data: createdOrder,
+      payment: {
+        payableBeforeCoin,
+        coinUsed: createdOrder.coinUsedAmount || 0,
+        amountDue: createdOrder.totalPrice,
+        fullyPaidByCoin: createdOrder.totalPrice <= 0,
+      },
     });
   } catch (error) {
     // Rollback transaction on error
@@ -498,7 +947,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 // @desc    Get my orders
 // @route   GET /api/orders
 // @access  Private
-export const getMyOrders = asyncHandler(async (req, res, next) => {
+export const getMyOrders = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const skip = (page - 1) * limit;
@@ -639,18 +1088,21 @@ export const generateInvoice = asyncHandler(async (req, res, next) => {
            </thead>
            <tbody>
               ${itemsHTML}
-              <tr class="total-row">
-                 <td colspan="3" style="text-align: right;">Subtotal:</td>
-                 <td style="text-align: right;">$${order.subtotal.toLocaleString()}</td>
-              </tr>
-              <tr>
-                 <td colspan="3" style="text-align: right;">Shipping:</td>
-                 <td style="text-align: right;">$${order.shippingCost.toLocaleString()}</td>
-              </tr>
-              <tr>
-                 <td colspan="3" style="text-align: right; font-size: 1.2em; font-weight: bold;">Total:</td>
-                 <td style="text-align: right; font-size: 1.2em; font-weight: bold;">$${order.totalPrice.toLocaleString()}</td>
-              </tr>
+                <tr class="total-row">
+                  <td colspan="3" style="text-align: right;">Subtotal:</td>
+                  <td style="text-align: right;">$${order.subtotal.toLocaleString()}</td>
+                </tr>
+                <tr>
+                  <td colspan="3" style="text-align: right;">Shipping:</td>
+                  <td style="text-align: right;">$${order.shippingCost.toLocaleString()}</td>
+                </tr>
+                ${order.giftBoxFee ? `<tr><td colspan="3" style="text-align: right;">Gift Box Fee:</td><td style="text-align: right;">$${(order.giftBoxFee || 0).toLocaleString()}</td></tr>` : ""}
+                ${order.discountAmount ? `<tr><td colspan="3" style="text-align: right;">Discount:</td><td style="text-align: right;">-$${(order.discountAmount || 0).toLocaleString()}</td></tr>` : ""}
+                ${order.coinUsedAmount ? `<tr><td colspan="3" style="text-align: right;">GZCoin Used:</td><td style="text-align: right;">-$${(order.coinUsedAmount || 0).toLocaleString()} <div style="font-size:0.85em;color:#777">(Deducted from your GZCoin balance)</div></td></tr>` : ""}
+                <tr>
+                  <td colspan="3" style="text-align: right; font-size: 1.2em; font-weight: bold;">Total:</td>
+                  <td style="text-align: right; font-size: 1.2em; font-weight: bold;">$${order.totalPrice.toLocaleString()}</td>
+                </tr>
            </tbody>
         </table>
       </div>
@@ -752,6 +1204,16 @@ export const cancelOrder = asyncHandler(async (req, res, next) => {
   order.cancelledAt = Date.now();
   order.cancellationReason = req.body.reason || "User cancelled";
   await order.save();
+
+  orderTrackingService.notifyBuyerStatusChange(
+    order._id.toString(),
+    "cancelled",
+    {
+      orderNumber: order.orderNumber,
+      buyerId: order.userId,
+      cancellationReason: order.cancellationReason,
+    },
+  );
 
   // Re-stock Inventory
   const items = await OrderItem.find({ orderId: order._id }).populate(
@@ -886,12 +1348,30 @@ export const confirmReceipt = asyncHandler(async (req, res, next) => {
   await order.save();
 
   // Notify via Socket
+  // Derive sellerId from order items if order.sellerId not present
+  let notifySellerId = null;
+  try {
+    const oi = await OrderItem.findOne({ orderId: order._id }).populate({
+      path: "productId",
+      select: "sellerId",
+      populate: { path: "sellerId", select: "_id" },
+    });
+    if (oi && oi.productId) {
+      notifySellerId =
+        oi.productId.sellerId?._id || oi.productId.sellerId || null;
+    }
+  } catch (e) {
+    console.error("Error deriving sellerId for notify on confirmReceipt:", e);
+  }
+
   orderTrackingService.notifyBuyerStatusChange(
     order._id.toString(),
     "completed",
     {
       orderNumber: order.orderNumber,
       completedAt: order.completedAt,
+      buyerId: order.userId,
+      sellerId: notifySellerId,
     },
   );
 
@@ -944,12 +1424,30 @@ export const markAsDelivered = asyncHandler(async (req, res, next) => {
   await order.save();
 
   // Notify via Socket
+  // Derive sellerId from order items if order.sellerId not present
+  let notifySellerId = null;
+  try {
+    const oi = await OrderItem.findOne({ orderId: order._id }).populate({
+      path: "productId",
+      select: "sellerId",
+      populate: { path: "sellerId", select: "_id" },
+    });
+    if (oi && oi.productId) {
+      notifySellerId =
+        oi.productId.sellerId?._id || oi.productId.sellerId || null;
+    }
+  } catch (e) {
+    console.error("Error deriving sellerId for notify on markAsDelivered:", e);
+  }
+
   orderTrackingService.notifyBuyerStatusChange(
     order._id.toString(),
     "delivered",
     {
       orderNumber: order.orderNumber,
       deliveredAt: order.deliveredAt,
+      buyerId: order.userId,
+      sellerId: notifySellerId,
     },
   );
 

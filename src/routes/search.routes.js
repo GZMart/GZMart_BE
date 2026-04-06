@@ -1,6 +1,7 @@
 import express from "express";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import * as searchController from "../controllers/search.controller.js";
+import { uploadMemory } from "../middlewares/uploadMemory.middleware.js";
 
 const router = express.Router();
 
@@ -68,5 +69,17 @@ router.get("/autocomplete", asyncHandler(searchController.autocomplete));
  *         description: Success
  */
 router.get("/filters", asyncHandler(searchController.getAvailableFilters));
+
+/**
+ * @swagger
+ * /api/search/image:
+ *   post:
+ *     tags: [Search]
+ *     summary: Search by Image
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.post("/image", uploadMemory.single("image"), asyncHandler(searchController.imageSearch));
 
 export default router;

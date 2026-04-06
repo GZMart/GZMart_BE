@@ -30,25 +30,21 @@ export const createReturnRequest = asyncHandler(async (req, res, next) => {
   const { orderId, type, reason, description, images, items } = req.body;
 
   // Validation
-  if (
-    !orderId ||
-    !type ||
-    !reason ||
-    !description ||
-    !items ||
-    items.length === 0
-  ) {
+  if (!orderId || !reason || !description || !items || items.length === 0) {
     return next(
       new ErrorResponse(
-        "Missing required fields: orderId, type, reason, description, items",
+        "Missing required fields: orderId, reason, description, items",
         400,
       ),
     );
   }
 
-  if (!["refund", "exchange"].includes(type)) {
+  if (type && !["undetermined", "refund", "exchange"].includes(type)) {
     return next(
-      new ErrorResponse("Invalid type. Must be 'refund' or 'exchange'", 400),
+      new ErrorResponse(
+        "Invalid type. Must be 'undetermined', 'refund' or 'exchange'",
+        400,
+      ),
     );
   }
 
@@ -62,7 +58,7 @@ export const createReturnRequest = asyncHandler(async (req, res, next) => {
   const returnRequest = await rmaService.createReturnRequest({
     orderId,
     userId: req.user._id,
-    type,
+    type: type || "undetermined",
     reason,
     description,
     images,
@@ -82,11 +78,12 @@ export const createReturnRequest = asyncHandler(async (req, res, next) => {
  * @access  Private (Buyer)
  */
 export const getMyReturnRequests = asyncHandler(async (req, res, next) => {
-  const { status, type, limit } = req.query;
+  const { status, type, orderId, limit } = req.query;
 
   const returnRequests = await rmaService.getUserReturnRequests(req.user._id, {
     status,
     type,
+    orderId,
     limit: parseInt(limit) || 50,
   });
 
@@ -211,6 +208,27 @@ export const updateReturnShipping = asyncHandler(async (req, res, next) => {
   });
 });
 
+/**
+ * @desc    Buyer confirms faulty-item handover after first-leg delivery
+ * @route   PUT /api/rma/requests/:id/confirm-handover
+ * @access  Private (Buyer)
+ */
+export const confirmBuyerHandover = asyncHandler(async (req, res, next) => {
+  const { notes } = req.body;
+
+  const returnRequest = await rmaService.confirmBuyerHandover(
+    req.params.id,
+    req.user._id,
+    notes,
+  );
+
+  res.status(200).json({
+    success: true,
+    message: "Handover confirmed. Return logistics has moved to the next step.",
+    data: returnRequest,
+  });
+});
+
 // ==================== SELLER ENDPOINTS ====================
 
 /**
@@ -243,7 +261,7 @@ export const getSellerReturnRequests = asyncHandler(async (req, res, next) => {
  * @access  Private (Seller)
  */
 export const respondToReturnRequest = asyncHandler(async (req, res, next) => {
-  const { decision, notes } = req.body;
+  const { decision, notes, resolution } = req.body;
 
   if (!decision || !["approve", "reject"].includes(decision)) {
     return next(
@@ -251,9 +269,22 @@ export const respondToReturnRequest = asyncHandler(async (req, res, next) => {
     );
   }
 
+  if (
+    decision === "approve" &&
+    (!resolution || !["refund", "exchange"].includes(resolution))
+  ) {
+    return next(
+      new ErrorResponse(
+        "When approving, resolution must be 'refund' or 'exchange'",
+        400,
+      ),
+    );
+  }
+
   const returnRequest = await rmaService.respondToReturnRequest(
     req.params.id,
     decision,
+    resolution,
     req.user._id,
     notes,
   );
@@ -266,6 +297,31 @@ export const respondToReturnRequest = asyncHandler(async (req, res, next) => {
 });
 
 /**
+ * @desc    Get latest return request by order for current buyer
+ * @route   GET /api/rma/requests/order/:orderId
+ * @access  Private (Buyer)
+ */
+export const getOrderReturnRequest = asyncHandler(async (req, res, next) => {
+  const { orderId } = req.params;
+
+  const returnRequest = await rmaService.getOrderReturnRequestForBuyer(
+    req.user._id,
+    orderId,
+  );
+
+  if (!returnRequest) {
+    return next(
+      new ErrorResponse("No return request found for this order", 404),
+    );
+  }
+
+  res.status(200).json({
+    success: true,
+    data: returnRequest,
+  });
+});
+
+/**
  * @desc    Confirm receiving returned items
  * @route   PUT /api/rma/seller/requests/:id/confirm-received
  * @access  Private (Seller/Admin)
@@ -273,17 +329,20 @@ export const respondToReturnRequest = asyncHandler(async (req, res, next) => {
 export const confirmItemsReceived = asyncHandler(async (req, res, next) => {
   const { notes } = req.body;
 
-  const returnRequest = await rmaService.confirmItemsReceived(
+  const result = await rmaService.confirmItemsReceived(
     req.params.id,
     req.user._id,
     notes,
   );
 
+  const isAutoCompleted = Boolean(result?.autoRefund || result?.autoExchange);
+
   res.status(200).json({
     success: true,
-    message:
-      "Items received confirmed. Status changed to processing. You can now process refund or exchange.",
-    data: returnRequest,
+    message: isAutoCompleted
+      ? "Items received confirmed. Request has been auto-completed."
+      : "Items received confirmed. Status changed to processing.",
+    data: result,
   });
 });
 
@@ -449,6 +508,7 @@ export default {
   checkEligibility,
   createReturnRequest,
   getMyReturnRequests,
+  getOrderReturnRequest,
   getReturnRequestById,
   cancelReturnRequest,
   getWalletInfo,

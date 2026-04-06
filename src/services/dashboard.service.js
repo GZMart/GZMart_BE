@@ -1,8 +1,12 @@
+import mongoose from "mongoose";
 import Order from "../models/Order.js";
 import OrderItem from "../models/OrderItem.js";
 import Product from "../models/Product.js";
+import PurchaseOrder from "../models/PurchaseOrder.js";
+import InventoryItem from "../models/InventoryItem.js";
 import User from "../models/User.js";
 import Category from "../models/Category.js";
+import ReturnRequest from "../models/ReturnRequest.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
 /**
@@ -38,12 +42,15 @@ export const getRevenueStats = async (sellerId) => {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const weekAgo = new Date(today);
   weekAgo.setDate(weekAgo.getDate() - 7);
-  const monthAgo = new Date(today);
-  monthAgo.setMonth(monthAgo.getMonth() - 1);
+  
+  // THIS MONTH: From 1st day of current month to today
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  
+  // LAST YEAR: From same date last year to today
   const yearAgo = new Date(today);
   yearAgo.setFullYear(yearAgo.getFullYear() - 1);
 
-  // Get seller's products
+  // Get seller's products only
   const sellerProducts = await Product.find({ sellerId }).select("_id");
   const sellerProductIds = sellerProducts.map((p) => p._id);
 
@@ -57,13 +64,13 @@ export const getRevenueStats = async (sellerId) => {
     };
   }
 
-  // Get orders with seller's products
+  // Get orders with all relevant products
   // Count revenue from completed/delivered orders (regardless of payment status)
   const orders = await Order.aggregate([
     {
       $match: {
         createdAt: { $gte: yearAgo },
-        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
+        status: { $in: ['completed', 'delivered'] }, // Finance logic: completed/delivered only
       },
     },
     {
@@ -97,7 +104,7 @@ export const getRevenueStats = async (sellerId) => {
         },
         thisMonth: {
           $sum: {
-            $cond: [{ $gte: ["$createdAt", monthAgo] }, "$items.subtotal", 0],
+            $cond: [{ $gte: ["$createdAt", monthStart] }, "$items.subtotal", 0],
           },
         },
         thisYear: {
@@ -116,10 +123,10 @@ export const getRevenueStats = async (sellerId) => {
 };
 
 /**
- * Get revenue over time (daily, weekly, monthly)
+ * Get revenue over time (daily, weekly, monthly, quarterly, yearly)
  */
 export const getRevenueOverTime = async (sellerId, period = "daily") => {
-  // period: 'daily', 'weekly', 'monthly'
+  // period: 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
   const now = new Date();
   let startDate;
   let dateFormat;
@@ -138,6 +145,16 @@ export const getRevenueOverTime = async (sellerId, period = "daily") => {
     startDate = new Date(now);
     startDate.setFullYear(startDate.getFullYear() - 1); // Last 12 months
     dateFormat = { $dateToString: { format: "%Y-%m", date: "$createdAt" } };
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1); // Last 12 months
+    dateFormat = {
+      $dateToString: { format: "%Y-Q", date: "$createdAt" },
+    };
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5); // Last 5 years
+    dateFormat = { $dateToString: { format: "%Y", date: "$createdAt" } };
   }
 
   const sellerProducts = await Product.find({ sellerId }).select("_id");
@@ -151,7 +168,7 @@ export const getRevenueOverTime = async (sellerId, period = "daily") => {
     {
       $match: {
         createdAt: { $gte: startDate },
-        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
+        status: { $in: ['completed', 'delivered'] },
       },
     },
     {
@@ -172,8 +189,14 @@ export const getRevenueOverTime = async (sellerId, period = "daily") => {
     },
     {
       $group: {
-        _id: dateFormat,
+        _id: { date: dateFormat, orderId: "$_id" },
         revenue: { $sum: "$items.subtotal" },
+      },
+    },
+    {
+      $group: {
+        _id: "$_id.date",
+        revenue: { $sum: "$revenue" },
         count: { $sum: 1 },
       },
     },
@@ -190,14 +213,14 @@ export const getRevenueOverTime = async (sellerId, period = "daily") => {
  */
 export const getBestSellingProducts = async (sellerId, limit = 5) => {
   const sellerProducts = await Product.find({ sellerId }).select(
-    "_id name originalPrice images",
+    "_id name originalPrice images models",
   );
 
-  if (sellerProducts.length === 0) {
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
     return [];
   }
-
-  const sellerProductIds = sellerProducts.map((p) => p._id);
 
   const bestSellers = await OrderItem.aggregate([
     {
@@ -236,6 +259,8 @@ export const getBestSellingProducts = async (sellerId, limit = 5) => {
         productId: '$_id',
         name: '$product.name',
         originalPrice: '$product.originalPrice',
+        minPrice: { $ifNull: [{ $min: '$product.models.price' }, '$product.originalPrice'] },
+        maxPrice: { $ifNull: [{ $max: '$product.models.price' }, '$product.originalPrice'] },
         totalSold: 1,
       },
     },
@@ -275,6 +300,7 @@ export const getLowStockProducts = async (
         price: { $first: "$models.price" },
         stock: { $sum: "$models.stock" },
         images: { $first: "$images" },
+        tiers: { $first: "$tiers" },
         models: { $push: "$models" },
       },
     },
@@ -305,6 +331,8 @@ export const getLowStockProducts = async (
           },
         },
         images: 1,
+        tiers: 1,
+        models: 1,
         lowestStockModel: {
           $arrayElemAt: [
             {
@@ -337,29 +365,21 @@ export const getOrderStats = async (sellerId) => {
     };
   }
 
-  // Get stats by order status
-  const orderStats = await Order.aggregate([
-    {
-      $lookup: {
-        from: "orderitems",
-        localField: "_id",
-        foreignField: "orderId",
-        as: "items",
-      },
-    },
-    {
-      $unwind: "$items",
-    },
+  // Count distinct orders with items from this seller's products
+  // Using OrderItem to find distinct orders, not counting items
+  const orderStats = await OrderItem.aggregate([
     {
       $match: {
-        "items.productId": { $in: sellerProductIds },
+        productId: { $in: sellerProductIds },
       },
     },
     {
       $group: {
-        _id: null,
-        total: { $sum: 1 },
+        _id: "$orderId", // Group by orderId to get distinct orders
       },
+    },
+    {
+      $count: "total", // Count the number of distinct orders
     },
   ]);
 
@@ -403,7 +423,12 @@ export const getCustomerStats = async (sellerId) => {
     },
     {
       $group: {
-        _id: '$userId',
+        _id: { userId: '$userId', orderId: '$_id' },
+      },
+    },
+    {
+      $group: {
+        _id: '$_id.userId',
         orderCount: { $sum: 1 },
       },
     },
@@ -430,7 +455,8 @@ export const getProductAnalytics = async (sellerId, limit = 10) => {
     return [];
   }
 
-  const analytics = await OrderItem.aggregate([
+  // Get product analytics with correct order count
+  const correctAnalytics = await OrderItem.aggregate([
     {
       $match: {
         productId: { $in: sellerProductIds },
@@ -438,11 +464,19 @@ export const getProductAnalytics = async (sellerId, limit = 10) => {
     },
     {
       $group: {
-        _id: "$productId",
+        _id: { productId: "$productId", orderId: "$orderId" },
+        quantity: { $first: "$quantity" },
+        subtotal: { $first: "$subtotal" },
+        price: { $first: "$price" },
+      },
+    },
+    {
+      $group: {
+        _id: "$_id.productId",
+        numberOfOrders: { $sum: 1 },
         quantitySold: { $sum: "$quantity" },
         revenue: { $sum: "$subtotal" },
         averagePrice: { $avg: "$price" },
-        numberOfOrders: { $sum: 1 },
       },
     },
     {
@@ -481,7 +515,7 @@ export const getProductAnalytics = async (sellerId, limit = 10) => {
     },
   ]);
 
-  return analytics;
+  return correctAnalytics;
 };
 
 /**
@@ -502,7 +536,7 @@ export const getSalesTrend = async (sellerId, days = 30) => {
     {
       $match: {
         createdAt: { $gte: startDate },
-        status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
+        status: { $in: ['completed', 'delivered'] },
       },
     },
     {
@@ -524,11 +558,19 @@ export const getSalesTrend = async (sellerId, days = 30) => {
     {
       $group: {
         _id: {
-          $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          orderId: "$_id",
         },
-        sales: { $sum: 1 },
-        revenue: { $sum: "$items.subtotal" },
-        quantity: { $sum: "$items.quantity" },
+        dateRevenue: { $sum: "$items.subtotal" },
+        dateQuantity: { $sum: "$items.quantity" },
+      },
+    },
+    {
+      $group: {
+        _id: "$_id.date",
+        sales: { $sum: 1 }, // Count distinct orders per day
+        revenue: { $sum: "$dateRevenue" },
+        quantity: { $sum: "$dateQuantity" },
       },
     },
     {
@@ -539,14 +581,45 @@ export const getSalesTrend = async (sellerId, days = 30) => {
   return trend;
 };
 
+/** Same rolling windows as getRevenueOverTime — keeps chart totals and order KPIs aligned */
+const ROLLING_COMPARISON_PERIODS = new Set([
+  "daily",
+  "weekly",
+  "monthly",
+  "quarterly",
+  "yearly",
+]);
+
 /**
  * Get comparison stats (current period vs previous period)
+ * @param {string} period - Calendar: 'month', 'week'. Rolling (matches revenue-trend): 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly'
  */
 export const getComparisonStats = async (sellerId, period = "month") => {
   const now = new Date();
-  let currentStart, currentEnd, previousStart, previousEnd;
+  let currentStart;
+  let currentEnd;
+  let previousStart;
+  let previousEnd;
+  /** Previous rolling window ends strictly before currentStart (non-overlapping, equal length) */
+  let previousEndExclusive = false;
 
-  if (period === "month") {
+  if (ROLLING_COMPARISON_PERIODS.has(period)) {
+    currentEnd = new Date(now);
+    currentStart = new Date(now);
+    if (period === "daily") {
+      currentStart.setDate(currentStart.getDate() - 30);
+    } else if (period === "weekly") {
+      currentStart.setDate(currentStart.getDate() - 90);
+    } else if (period === "monthly" || period === "quarterly") {
+      currentStart.setFullYear(currentStart.getFullYear() - 1);
+    } else if (period === "yearly") {
+      currentStart.setFullYear(currentStart.getFullYear() - 5);
+    }
+    const windowMs = currentEnd.getTime() - currentStart.getTime();
+    previousStart = new Date(currentStart.getTime() - windowMs);
+    previousEnd = currentStart;
+    previousEndExclusive = true;
+  } else if (period === "month") {
     currentStart = new Date(now.getFullYear(), now.getMonth(), 1);
     currentEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
     previousStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -562,6 +635,11 @@ export const getComparisonStats = async (sellerId, period = "month") => {
     previousStart.setDate(previousStart.getDate() - 7);
     previousEnd = new Date(currentStart);
     previousEnd.setDate(previousEnd.getDate() - 1);
+  } else {
+    currentStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    currentEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    previousStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    previousEnd = new Date(now.getFullYear(), now.getMonth(), 0);
   }
 
   const sellerProducts = await Product.find({ sellerId }).select("_id");
@@ -569,18 +647,21 @@ export const getComparisonStats = async (sellerId, period = "month") => {
 
   if (sellerProductIds.length === 0) {
     return {
-      currentPeriod: { orders: 0, revenue: 0, quantity: 0 },
-      previousPeriod: { orders: 0, revenue: 0, quantity: 0 },
-      growth: { orders: 0, revenue: 0, quantity: 0 },
+      currentPeriod: { orders: 0, revenue: 0, quantity: 0, profit: 0 },
+      previousPeriod: { orders: 0, revenue: 0, quantity: 0, profit: 0 },
+      growth: { orders: 0, revenue: 0, quantity: 0, profit: 0 },
     };
   }
 
-  const getStatsByDateRange = async (start, end) => {
+  const getStatsByDateRange = async (start, end, { endExclusive = false } = {}) => {
+    const createdAtFilter = endExclusive
+      ? { $gte: start, $lt: end }
+      : { $gte: start, $lte: end };
     const stats = await Order.aggregate([
       {
         $match: {
-          createdAt: { $gte: start, $lte: end },
-          status: { $in: ['completed', 'delivered', 'delivered_pending_confirmation'] }, // Count completed/delivered orders
+          createdAt: createdAtFilter,
+          status: { $in: ['completed', 'delivered'] },
         },
       },
       {
@@ -600,46 +681,134 @@ export const getComparisonStats = async (sellerId, period = "month") => {
         },
       },
       {
+        $lookup: {
+          from: "inventoryitems",
+          let: { pid: "$items.productId", mid: "$items.modelId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$productId", "$$pid"] },
+                    { $eq: ["$modelId", "$$mid"] },
+                  ],
+                },
+              },
+            },
+            { $project: { costPrice: 1, _id: 0 } },
+          ],
+          as: "invItem",
+        },
+      },
+      {
+        $lookup: {
+          from: "products",
+          localField: "items.productId",
+          foreignField: "_id",
+          as: "product",
+        },
+      },
+      {
+        $addFields: {
+          unitCost: {
+            $ifNull: [
+              { $arrayElemAt: ["$invItem.costPrice", 0] },
+              { $arrayElemAt: ["$product.originalPrice", 0] },
+            ],
+          },
+        },
+      },
+      {
         $group: {
-          _id: null,
-          orders: { $sum: 1 },
+          _id: "$_id",
           revenue: { $sum: "$items.subtotal" },
           quantity: { $sum: "$items.quantity" },
+          cost: { $sum: { $multiply: ["$unitCost", "$items.quantity"] } },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          orders: { $sum: 1 }, // Count distinct orders
+          revenue: { $sum: "$revenue" },
+          quantity: { $sum: "$quantity" },
+          cost: { $sum: "$cost" },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          orders: 1,
+          revenue: 1,
+          quantity: 1,
+          profit: { $subtract: ["$revenue", "$cost"] },
         },
       },
     ]);
 
-    return stats[0] || { orders: 0, revenue: 0, quantity: 0 };
+    const row = stats[0];
+    if (!row) {
+      return { orders: 0, revenue: 0, quantity: 0, profit: 0 };
+    }
+    const profit =
+      typeof row.profit === "number" && !Number.isNaN(row.profit)
+        ? row.profit
+        : 0;
+    return {
+      orders: row.orders ?? 0,
+      revenue: row.revenue ?? 0,
+      quantity: row.quantity ?? 0,
+      profit,
+    };
   };
 
   const currentStats = await getStatsByDateRange(currentStart, currentEnd);
-  const previousStats = await getStatsByDateRange(previousStart, previousEnd);
+  const previousStats = await getStatsByDateRange(previousStart, previousEnd, {
+    endExclusive: previousEndExclusive,
+  });
+
+  /**
+   * % change vs previous window. If the baseline was 0 and the current window has
+   * activity, return +100 instead of 0 (avoids implying “no change” when it’s new data).
+   */
+  const percentGrowthVsPrevious = (previous, current) => {
+    if (previous > 0) {
+      return Math.round(((current - previous) / previous) * 100);
+    }
+    if (previous <= 0 && current > 0) {
+      return 100;
+    }
+    return 0;
+  };
+
+  const profitGrowthVsPrevious = (previous, current) => {
+    if (previous !== 0) {
+      return Math.round(
+        ((current - previous) / Math.abs(previous)) * 100,
+      );
+    }
+    if (current > 0) return 100;
+    if (current < 0) return -100;
+    return 0;
+  };
 
   const growth = {
-    orders:
-      previousStats.orders > 0
-        ? Math.round(
-            ((currentStats.orders - previousStats.orders) /
-              previousStats.orders) *
-              100,
-          )
-        : 0,
-    revenue:
-      previousStats.revenue > 0
-        ? Math.round(
-            ((currentStats.revenue - previousStats.revenue) /
-              previousStats.revenue) *
-              100,
-          )
-        : 0,
-    quantity:
-      previousStats.quantity > 0
-        ? Math.round(
-            ((currentStats.quantity - previousStats.quantity) /
-              previousStats.quantity) *
-              100,
-          )
-        : 0,
+    orders: percentGrowthVsPrevious(
+      previousStats.orders,
+      currentStats.orders,
+    ),
+    revenue: percentGrowthVsPrevious(
+      previousStats.revenue,
+      currentStats.revenue,
+    ),
+    quantity: percentGrowthVsPrevious(
+      previousStats.quantity,
+      currentStats.quantity,
+    ),
+    profit: profitGrowthVsPrevious(
+      previousStats.profit,
+      currentStats.profit,
+    ),
   };
 
   return {
@@ -647,6 +816,595 @@ export const getComparisonStats = async (sellerId, period = "month") => {
     previousPeriod: previousStats,
     growth,
   };
+};
+
+/**
+ * Get profit and loss analysis
+ * Calculate revenue, cost, profit/loss by period
+ */
+/**
+ * Get P&L analysis (revenue, cost, profit over time) for a seller
+ * Revenue  = sum(OrderItem.subtotal) for completed/delivered orders
+ * Cost     = sum(OrderItem.quantity × InventoryItem.costPrice) from completed POs
+ * Profit   = Revenue - Cost
+ *
+ * Falls back to Product.originalPrice if no InventoryItem cost exists.
+ */
+export const getProfitLossAnalysis = async (sellerId, period = "daily") => {
+  const now = new Date();
+  let startDate;
+  let dateFormat;
+
+  if (period === "daily") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 30);
+    dateFormat = { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } };
+  } else if (period === "weekly") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 90);
+    dateFormat = { $dateToString: { format: "%Y-W%V", date: "$createdAt" } };
+  } else if (period === "monthly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+    dateFormat = { $dateToString: { format: "%Y-%m", date: "$createdAt" } };
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+    dateFormat = { $dateToString: { format: "%Y-Q", date: "$createdAt" } };
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5);
+    dateFormat = { $dateToString: { format: "%Y", date: "$createdAt" } };
+  }
+
+  const sellerProducts = await Product.find({ sellerId }).select("_id originalPrice");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return [];
+  }
+
+  const analysisData = await Order.aggregate([
+    {
+      $match: {
+        createdAt: { $gte: startDate },
+        status: { $in: ["completed", "delivered"] },
+      },
+    },
+    {
+      $lookup: {
+        from: "orderitems",
+        localField: "_id",
+        foreignField: "orderId",
+        as: "items",
+      },
+    },
+    {
+      $unwind: "$items",
+    },
+    {
+      $match: {
+        "items.productId": { $in: sellerProductIds },
+      },
+    },
+    {
+      $lookup: {
+        from: "inventoryitems",
+        let: { pid: "$items.productId", mid: "$items.modelId" },
+        pipeline: [
+          { $match: { $expr: { $and: [
+            { $eq: ["$productId", "$$pid"] },
+            { $eq: ["$modelId",  "$$mid"] },
+          ] } } },
+          { $project: { costPrice: 1, _id: 0 } },
+        ],
+        as: "invItem",
+      },
+    },
+    {
+      $lookup: {
+        from: "products",
+        localField: "items.productId",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+    {
+      $addFields: {
+        // Priority: InventoryItem.costPrice (from PO) → Product.originalPrice (fallback)
+        unitCost: {
+          $ifNull: [
+            { $arrayElemAt: ["$invItem.costPrice", 0] },
+            { $arrayElemAt: ["$product.originalPrice", 0] },
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: dateFormat,
+        totalRevenue: { $sum: "$items.subtotal" },
+        totalQuantity: { $sum: "$items.quantity" },
+        totalItems:    { $sum: 1 },
+        totalCost: {
+          $sum: { $multiply: ["$unitCost", "$items.quantity"] },
+        },
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        revenue: "$totalRevenue",
+        cost:    "$totalCost",
+        quantity: "$totalQuantity",
+        orders:  "$totalItems",
+        profit: {
+          $subtract: ["$totalRevenue", "$totalCost"],
+        },
+      },
+    },
+    {
+      $sort: { _id: 1 },
+    },
+  ]);
+
+  return analysisData;
+};
+
+/**
+ * Get expense and cost breakdown
+ */
+/**
+ * Get expense (COGS + Shipping) analysis for a seller
+ * COGS = landed cost from COMPLETED PurchaseOrders (totalAmount + all landed cost components)
+ * Shipping = domestic last-mile shipping from completed Orders (Order.shippingCost)
+ *
+ * @param {String} sellerId
+ * @param {String} period - daily | weekly | monthly | quarterly | yearly
+ */
+export const getExpenseAnalysis = async (sellerId, period = "monthly") => {
+  const now = new Date();
+  let startDate;
+
+  if (period === "daily") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 30);
+  } else if (period === "weekly") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 90);
+  } else if (period === "monthly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5);
+  }
+
+  // ── COGS: landed cost from COMPLETED PurchaseOrders ──────────────────────
+  // A COMPLETED PO has finalAmount = totalAmount + buyingFee + shipping + tax + other + fixed costs (all in VND)
+  // Use completedAt (populated on transition) OR receivedDate (fallback for pre-migration POs)
+  const poCosts = await PurchaseOrder.aggregate([
+    {
+      $match: {
+        createdBy: new mongoose.Types.ObjectId(sellerId),
+        status: { $in: ["COMPLETED", "Completed"] },
+        $or: [
+          { completedAt: { $gte: startDate } },
+          { completedAt: null, receivedDate: { $gte: startDate } },
+        ],
+      },
+    },
+    {
+      $lookup: {
+        from: "products",
+        let: { poItems: "$items" },
+        pipeline: [
+          { $match: { $expr: { $eq: ["$_id", "$$poItems.productId"] } } },
+          { $project: { _id: 1, cost: 1 } },
+        ],
+        as: "linkedProducts",
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        // finalAmount includes everything: totalAmount + shipping + tax + other + fixed costs
+        totalProductCost: { $sum: "$finalAmount" },
+        // break down for display
+        totalGoodsValue:    { $sum: "$totalAmount" },
+        totalBuyingFee:     { $sum: { $multiply: ["$totalAmount", { $ifNull: ["$importConfig.buyingServiceFeeRate", 0] }] } },
+        totalIntlShipping:  { $sum: { $ifNull: ["$shippingCost", 0] } },
+        totalTax:           { $sum: { $ifNull: ["$taxAmount", 0] } },
+        totalCnDomestic:    { $sum: { $multiply: [{ $ifNull: ["$fixedCosts.cnDomesticShippingCny", 0] }, { $ifNull: ["$importConfig.exchangeRate", 3500] }] } },
+        totalPackaging:     { $sum: { $ifNull: ["$fixedCosts.packagingCostVnd", 0] } },
+        totalVnDomestic:    { $sum: { $ifNull: ["$fixedCosts.vnDomesticShippingVnd", 0] } },
+        totalOtherCost:     { $sum: { $ifNull: ["$otherCost", 0] } },
+        poCount:            { $sum: 1 },
+      },
+    },
+  ]);
+
+  const poCostData = poCosts[0] || {};
+  const productCost = poCostData.totalProductCost || 0;
+
+  // ── Last-mile domestic shipping: Order.shippingCost of completed orders ──
+  const sellerProducts = await Product.find({ sellerId }).select("_id");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  let shippingCost = 0;
+  if (sellerProductIds.length > 0) {
+    const shippingData = await Order.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate },
+          status: { $in: ["completed", "delivered"] },
+        },
+      },
+      { $lookup: { from: "orderitems", localField: "_id", foreignField: "orderId", as: "items" } },
+      { $match: { "items.productId": { $in: sellerProductIds } } },
+      { $group: { _id: null, totalShipping: { $sum: { $ifNull: ["$shippingCost", 0] } } } },
+    ]);
+    shippingCost = shippingData[0]?.totalShipping || 0;
+  }
+
+  const goodsValue    = Math.round(poCostData.totalGoodsValue    || 0);
+  const buyingFee     = Math.round(poCostData.totalBuyingFee     || 0);
+  const intlShipping = Math.round(poCostData.totalIntlShipping || 0);
+  const tax           = Math.round(poCostData.totalTax           || 0);
+  const cnDomestic    = Math.round(poCostData.totalCnDomestic    || 0);
+  const packaging     = Math.round(poCostData.totalPackaging     || 0);
+  const vnDomestic   = Math.round(poCostData.totalVnDomestic   || 0);
+  const otherCost     = Math.round(poCostData.totalOtherCost    || 0);
+
+  // Each cost component becomes a distinct slice — zero-value entries are dropped
+  const breakdownByType = [
+    { type: "Goods Value (PO)",          amount: goodsValue    },
+    { type: "Buying Service Fee",         amount: buyingFee     },
+    { type: "Intl Freight (CN→VN)",      amount: intlShipping  },
+    { type: "Import Tax",                 amount: tax          },
+    { type: "CN Domestic Shipping",       amount: cnDomestic   },
+    { type: "Packaging / Insurance",      amount: packaging    },
+    { type: "VN Last-Mile (PO→Warehouse)", amount: vnDomestic },
+    { type: "Other Costs",               amount: otherCost    },
+    { type: "Last-Mile Delivery (Order)", amount: shippingCost },
+  ].filter((x) => x.amount > 0);
+
+  const totalProductCost = goodsValue + buyingFee + intlShipping + tax + cnDomestic + packaging + vnDomestic + otherCost;
+
+  return {
+    totalProductCost,
+    totalShippingCost: shippingCost,
+    totalExpense: totalProductCost + shippingCost,
+    breakdownByType,
+    poDetail: {
+      totalGoodsValue:    goodsValue,
+      totalBuyingFee:     buyingFee,
+      totalIntlShipping:  intlShipping,
+      totalTax:           tax,
+      totalCnDomestic:    cnDomestic,
+      totalPackaging:     packaging,
+      totalVnDomestic:   vnDomestic,
+      totalOtherCost:     otherCost,
+      poCount:            poCostData.poCount || 0,
+    },
+  };
+};
+
+/**
+ * Get product analytics grouped by category
+ * Shows revenue, quantity sold, profit, margin for each category
+ * Uses InventoryItem.costPrice (from PO landed cost) for profit calculation
+ *
+ * @param {String} sellerId
+ * @param {String} period - daily | weekly | monthly | quarterly | yearly
+ * @param {Number} limit - max number of categories to return
+ */
+export const getProductAnalyticsByCategory = async (sellerId, period = "monthly", limit = 8) => {
+  const now = new Date();
+  let startDate;
+
+  if (period === "daily") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 30);
+  } else if (period === "weekly") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 90);
+  } else if (period === "monthly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5);
+  }
+
+  const sellerProducts = await Product.find({ sellerId }).select("_id name categoryId originalPrice images");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return {
+      categories: [],
+      totalRevenue: 0,
+      totalQuantity: 0,
+      totalProfit: 0,
+      period,
+    };
+  }
+
+  // Aggregate sales data by category using OrderItem + Order
+  const categorySales = await OrderItem.aggregate([
+    {
+      $lookup: {
+        from: "orders",
+        localField: "orderId",
+        foreignField: "_id",
+        as: "order",
+      },
+    },
+    {
+      $unwind: "$order",
+    },
+    {
+      $lookup: {
+        from: "products",
+        localField: "productId",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+    {
+      $unwind: "$product",
+    },
+    {
+      $match: {
+        productId: { $in: sellerProductIds },
+        "order.createdAt": { $gte: startDate },
+        "order.status": { $in: ["completed", "delivered"] },
+      },
+    },
+    {
+      $group: {
+        _id: "$product.categoryId",
+        categoryName: { $first: "$product.categoryId" },
+        totalQuantity: { $sum: "$quantity" },
+        totalRevenue: { $sum: "$subtotal" },
+        totalCost: {
+          $sum: { $multiply: ["$product.originalPrice", "$quantity"] },
+        },
+        orderCount: { $sum: 1 },
+      },
+    },
+    {
+      $lookup: {
+        from: "categories",
+        localField: "_id",
+        foreignField: "_id",
+        as: "category",
+      },
+    },
+    {
+      $unwind: {
+        path: "$category",
+        preserveNullAndEmptyArrays: true,
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        categoryName: { $ifNull: ["$category.name", "Không phân loại"] },
+        totalQuantity: 1,
+        totalRevenue: 1,
+        totalCost: 1,
+        orderCount: 1,
+        profit: {
+          $subtract: ["$totalRevenue", "$totalCost"],
+        },
+        profitMargin: {
+          $cond: {
+            if: { $gt: ["$totalRevenue", 0] },
+            then: {
+              $multiply: [
+                {
+                  $divide: [
+                    { $subtract: ["$totalRevenue", "$totalCost"] },
+                    "$totalRevenue",
+                  ],
+                },
+                100,
+              ],
+            },
+            else: 0,
+          },
+        },
+      },
+    },
+    {
+      $sort: { totalRevenue: -1 },
+    },
+    {
+      $limit: limit,
+    },
+  ]);
+
+  const totalRevenue = categorySales.reduce((sum, c) => sum + (c.totalRevenue || 0), 0);
+  const totalQuantity = categorySales.reduce((sum, c) => sum + (c.totalQuantity || 0), 0);
+  const totalProfit = categorySales.reduce((sum, c) => sum + (c.profit || 0), 0);
+
+  // Add percentage of total revenue for each category
+  const categories = categorySales.map((c) => ({
+    ...c,
+    totalRevenue: Math.round(c.totalRevenue || 0),
+    totalCost: Math.round(c.totalCost || 0),
+    profit: Math.round(c.profit || 0),
+    profitMargin: typeof c.profitMargin === 'number' ? Math.round(c.profitMargin * 10) / 10 : 0,
+    revenuePercent:
+      totalRevenue > 0 ? Math.round(((c.totalRevenue || 0) / totalRevenue) * 1000) / 10 : 0,
+  }));
+
+  return {
+    categories,
+    totalRevenue: Math.round(totalRevenue),
+    totalQuantity,
+    totalProfit: Math.round(totalProfit),
+    period,
+  };
+};
+
+/**
+ * Get top selling products with profit analysis
+ * Uses InventoryItem.costPrice (from PO landed cost) instead of Product.cost
+ *
+ * @param {String} sellerId
+ * @param {Number} limit - max number of products to return
+ * @param {String} period - daily | weekly | monthly | quarterly | yearly
+ */
+export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, period = "monthly") => {
+  const now = new Date();
+  let startDate;
+
+  if (period === "daily") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 30);
+  } else if (period === "weekly") {
+    startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 90);
+  } else if (period === "monthly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "quarterly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  } else if (period === "yearly") {
+    startDate = new Date(now);
+    startDate.setFullYear(startDate.getFullYear() - 5);
+  }
+
+  const sellerProducts = await Product.find({ sellerId }).select("_id name originalPrice images");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return [];
+  }
+
+  const topProducts = await OrderItem.aggregate([
+    {
+      $lookup: {
+        from: "orders",
+        localField: "orderId",
+        foreignField: "_id",
+        as: "order",
+      },
+    },
+    {
+      $unwind: "$order",
+    },
+    {
+      $match: {
+        productId: { $in: sellerProductIds },
+        "order.createdAt": { $gte: startDate },
+        "order.status": { $in: ["completed", "delivered"] },
+      },
+    },
+    {
+      $group: {
+        _id: { productId: "$productId", orderId: "$orderId" },
+        quantity: { $first: "$quantity" },
+        subtotal: { $first: "$subtotal" },
+        price: { $first: "$price" },
+        modelId: { $first: "$modelId" },
+      },
+    },
+    {
+      $group: {
+        _id: "$_id.productId",
+        totalQuantity: { $sum: "$quantity" },
+        totalRevenue: { $sum: "$subtotal" },
+        averagePrice: { $avg: "$price" },
+        totalOrders: { $sum: 1 },
+        modelId: { $first: "$modelId" },
+      },
+    },
+    {
+      $lookup: {
+        from: "inventoryitems",
+        let: { pid: "$_id", mid: "$modelId" },
+        pipeline: [
+          { $match: { $expr: { $and: [
+            { $eq: ["$productId", "$$pid"] },
+            { $eq: ["$modelId", "$$mid"] },
+          ] } } },
+          { $project: { costPrice: 1, _id: 0 } },
+        ],
+        as: "invItem",
+      },
+    },
+    {
+      $lookup: {
+        from: "products",
+        localField: "_id",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+    {
+      $unwind: "$product",
+    },
+    {
+      $addFields: {
+        unitCost: {
+          $ifNull: [
+            { $arrayElemAt: ["$invItem.costPrice", 0] },
+            "$product.originalPrice",
+          ],
+        },
+      },
+    },
+    {
+      $sort: { totalQuantity: -1 },
+    },
+    {
+      $limit: limit,
+    },
+    {
+      $project: {
+        _id: 1,
+        name: "$product.name",
+        totalQuantity: 1,
+        totalRevenue: 1,
+        averagePrice: 1,
+        totalOrders: 1,
+        unitCost: 1,
+        cost: { $multiply: ["$unitCost", "$totalQuantity"] },
+        profit: {
+          $subtract: ["$totalRevenue", { $multiply: ["$unitCost", "$totalQuantity"] }],
+        },
+        profitMargin: {
+          $cond: [
+            { $gt: ["$totalRevenue", 0] },
+            {
+              $multiply: [
+                {
+                  $divide: [
+                    { $subtract: ["$totalRevenue", { $multiply: ["$unitCost", "$totalQuantity"] }] },
+                    "$totalRevenue",
+                  ],
+                },
+                100,
+              ],
+            },
+            0,
+          ],
+        },
+      },
+    },
+  ]);
+
+  return topProducts;
 };
 
 // ============= ADMIN DASHBOARD SERVICES =============
@@ -1094,4 +1852,185 @@ export const getQuickStats = async () => {
     newUsersToday,
     customerSatisfaction: `${satisfaction}%`,
   };
+};
+
+/**
+ * Get seller order counts grouped by status
+ * Used by Seller Dashboard "Immediate To-Do" section
+ * Returns: pending, confirmed, packing, shipping, toShip, cancellationCount, rmaCount
+ */
+export const getSellerOrderCounts = async (sellerId) => {
+  const sellerProducts = await Product.find({ sellerId }).select("_id");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return {
+      pending: 0,
+      confirmed: 0,
+      packing: 0,
+      shipping: 0,
+      toShip: 0,
+      cancellationCount: 0,
+      rmaCount: 0,
+    };
+  }
+
+  const orderItems = await OrderItem.find({ productId: { $in: sellerProductIds } }).select("orderId");
+  const orderIds = [
+    ...new Set(orderItems.map((item) => item.orderId.toString())),
+  ].map((id) => new mongoose.Types.ObjectId(id));
+
+  if (orderIds.length === 0) {
+    return {
+      pending: 0,
+      confirmed: 0,
+      packing: 0,
+      shipping: 0,
+      toShip: 0,
+      cancellationCount: 0,
+      rmaCount: 0,
+    };
+  }
+
+  const orderCounts = await Order.aggregate([
+    { $match: { _id: { $in: orderIds } } },
+    { $group: { _id: "$status", count: { $sum: 1 } } },
+  ]);
+
+  const counts = {};
+  for (const item of orderCounts) {
+    counts[item._id] = item.count;
+  }
+
+  const toShip =
+    (counts.confirmed || 0) +
+    (counts.packing || 0) +
+    (counts.shipping || 0) +
+    (counts.processing || 0);
+  const cancellationCount = counts.cancelled || 0;
+
+  const rmaCounts = await ReturnRequest.aggregate([
+    { $match: { isActive: true } },
+    {
+      $lookup: {
+        from: "orderitems",
+        localField: "items.orderItemId",
+        foreignField: "_id",
+        as: "orderItems",
+      },
+    },
+    {
+      $match: {
+        "orderItems.productId": { $in: sellerProductIds },
+        status: { $in: ["pending", "approved", "items_returned", "processing"] },
+      },
+    },
+    { $count: "count" },
+  ]);
+
+  return {
+    pending: counts.pending || 0,
+    confirmed: counts.confirmed || 0,
+    packing: counts.packing || 0,
+    shipping: counts.shipping || 0,
+    toShip,
+    cancellationCount,
+    rmaCount: rmaCounts[0]?.count || 0,
+  };
+};
+
+/**
+ * Get recent orders for a specific seller
+ * Filters orders by products belonging to the seller
+ * Returns order summary with customer name and status
+ */
+export const getSellerRecentOrders = async (sellerId, limit = 20) => {
+  const sellerProducts = await Product.find({ sellerId }).select("_id");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return [];
+  }
+
+  const orderItems = await OrderItem.find({
+    productId: { $in: sellerProductIds },
+  }).select("orderId quantity subtotal productId modelId");
+
+  const orderIds = [
+    ...new Set(orderItems.map((item) => item.orderId.toString())),
+  ].map((id) => new mongoose.Types.ObjectId(id));
+
+  if (orderIds.length === 0) {
+    return [];
+  }
+
+  const STATUS_LABELS = {
+    pending: "Chờ xác nhận",
+    confirmed: "Đã xác nhận",
+    packing: "Đang đóng gói",
+    shipping: "Đang vận chuyển",
+    shipped: "Đã giao ĐVVC",
+    delivered: "Đã giao",
+    delivered_pending_confirmation: "Chờ xác nhận giao",
+    completed: "Hoàn thành",
+    processing: "Đang xử lý",
+    cancelled: "Đã hủy",
+    refunded: "Đã hoàn tiền",
+    refund_pending: "Chờ hoàn tiền",
+    under_investigation: "Đang xem xét",
+  };
+
+  const STATUS_COLORS = {
+    pending: "default",
+    confirmed: "processing",
+    packing: "warning",
+    shipping: "warning",
+    shipped: "warning",
+    delivered: "success",
+    delivered_pending_confirmation: "success",
+    completed: "success",
+    processing: "processing",
+    cancelled: "error",
+    refunded: "error",
+    refund_pending: "warning",
+    under_investigation: "warning",
+  };
+
+  const orders = await Order.find({ _id: { $in: orderIds } })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .populate("userId", "name email phone")
+    .lean();
+
+  const itemMap = {};
+  orderItems.forEach((item) => {
+    const oid = item.orderId.toString();
+    if (!itemMap[oid]) itemMap[oid] = [];
+    itemMap[oid].push(item);
+  });
+
+  return orders.map((order) => {
+    const items = itemMap[order._id.toString()] || [];
+    const sellerSubtotal = items.reduce((sum, it) => sum + (it.subtotal || 0), 0);
+    return {
+      _id: order._id,
+      orderNumber: order.orderNumber || `#ORD-${order._id.toString().slice(-8)}`,
+      customer: order.userId?.name || "—",
+      email: order.userId?.email || "—",
+      phone: order.userId?.phone || "—",
+      totalPrice: sellerSubtotal,
+      status: order.status,
+      statusLabel: STATUS_LABELS[order.status] || order.status,
+      statusColor: STATUS_COLORS[order.status] || "default",
+      itemsCount: items.length,
+      createdAt: order.createdAt,
+      createdAtStr: new Date(order.createdAt).toLocaleDateString("vi-VN", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    };
+  });
 };

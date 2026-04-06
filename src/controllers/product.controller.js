@@ -58,16 +58,27 @@ export const createProduct = asyncHandler(async (req, res, next) => {
     });
   }
 
-  // Map variant images to models based on tierIndex
+  // Map variant images to models based on tier-0 option index.
+  // The frontend sends variantImages[N] where N = tier-0 option index,
+  // so one image applies to ALL models sharing tierIndex[0] === N.
   if (models && models.length > 0 && Object.keys(variantImagesMap).length > 0) {
     models.forEach((model) => {
       if (model.tierIndex && Array.isArray(model.tierIndex)) {
-        const tierIndexKey = model.tierIndex.join("-"); // [0, 1] -> "0-1"
-        if (variantImagesMap[tierIndexKey]) {
-          model.image = variantImagesMap[tierIndexKey];
+        const t0Idx = String(model.tierIndex[0]);
+        if (variantImagesMap[t0Idx]) {
+          model.image = variantImagesMap[t0Idx];
         }
       }
     });
+
+    // Also persist images in tiers[0].images for the tier schema
+    const tiers = req.body.tiers;
+    if (tiers && Array.isArray(tiers) && tiers.length > 0) {
+      if (!tiers[0].images) tiers[0].images = [];
+      Object.entries(variantImagesMap).forEach(([idx, url]) => {
+        tiers[0].images[parseInt(idx)] = url;
+      });
+    }
   }
 
   // Merge uploaded images and sizeChart with any existing data from body
@@ -148,6 +159,7 @@ export const getProductsAdvanced = asyncHandler(async (req, res, next) => {
     page,
     limit,
     categoryId,
+    category, // slug-based filter from storefront
     brand,
     color,
   } = req.query;
@@ -159,6 +171,7 @@ export const getProductsAdvanced = asyncHandler(async (req, res, next) => {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
     categoryId,
+    categorySlug: category, // resolve slug → _id in service
     brands: brand ? (Array.isArray(brand) ? brand : [brand]) : [],
     colors: color ? (Array.isArray(color) ? color : [color]) : [],
     sizes: size ? (Array.isArray(size) ? size : [size]) : [],
@@ -229,6 +242,7 @@ export const updateProduct = asyncHandler(async (req, res, next) => {
   if (req.body.attributes)
     req.body.attributes = parseJsonField(req.body.attributes);
   if (req.body.images) req.body.images = parseJsonField(req.body.images);
+  if (req.body.existingImages) req.body.existingImages = parseJsonField(req.body.existingImages);
 
   // Extract uploaded files from req.files (upload.any() returns array)
   const uploadedImages = [];
@@ -254,26 +268,38 @@ export const updateProduct = asyncHandler(async (req, res, next) => {
     });
   }
 
-  // Map variant images to models based on tierIndex
+  // Map variant images to models based on tier-0 option index.
   const models = req.body.models;
   if (models && models.length > 0 && Object.keys(variantImagesMap).length > 0) {
     models.forEach((model) => {
       if (model.tierIndex && Array.isArray(model.tierIndex)) {
-        const tierIndexKey = model.tierIndex.join("-"); // [0, 1] -> "0-1"
-        if (variantImagesMap[tierIndexKey]) {
-          model.image = variantImagesMap[tierIndexKey];
+        const t0Idx = String(model.tierIndex[0]);
+        if (variantImagesMap[t0Idx]) {
+          model.image = variantImagesMap[t0Idx];
         }
       }
     });
+
+    // Also persist images in tiers[0].images for the tier schema
+    const tiers = req.body.tiers;
+    if (tiers && Array.isArray(tiers) && tiers.length > 0) {
+      if (!tiers[0].images) tiers[0].images = [];
+      Object.entries(variantImagesMap).forEach(([idx, url]) => {
+        tiers[0].images[parseInt(idx)] = url;
+      });
+    }
   }
 
   // Merge uploaded images with existing images
   const updateData = { ...req.body };
 
   if (uploadedImages.length > 0) {
-    // If new images uploaded, merge with existing or replace
-    const existingImages = req.body.images || [];
+    // New files uploaded: merge with existing/remaining images
+    const existingImages = req.body.existingImages ?? req.body.images ?? [];
     updateData.images = [...existingImages, ...uploadedImages];
+  } else if (req.body.existingImages !== undefined) {
+    // No new files but existingImages explicitly sent (edit mode with tracked removals)
+    updateData.images = req.body.existingImages;
   }
 
   if (uploadedSizeChart) {
@@ -334,6 +360,23 @@ export const getFeaturedProducts = asyncHandler(async (req, res, next) => {
 export const getTrendingProducts = asyncHandler(async (req, res, next) => {
   const { limit = 10 } = req.query;
   const products = await productService.getTrendingProducts(parseInt(limit));
+
+  res.status(200).json({
+    success: true,
+    data: products,
+  });
+});
+
+/**
+ * @desc    Get today's recommendations
+ * @route   GET /api/products/today-recommendations
+ * @access  Public
+ */
+export const getTodayRecommendations = asyncHandler(async (req, res, next) => {
+  const { limit = 10 } = req.query;
+  const products = await productService.getTodayRecommendations(
+    parseInt(limit),
+  );
 
   res.status(200).json({
     success: true,
@@ -437,6 +480,7 @@ export const getMyProducts = asyncHandler(async (req, res, next) => {
   const result = await productService.getProductsBySeller(sellerId, {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
+    includeHidden: true,
   });
 
   res.status(200).json({
@@ -456,14 +500,15 @@ export const getMyProducts = asyncHandler(async (req, res, next) => {
  */
 export const getProductsBySeller = asyncHandler(async (req, res, next) => {
   const { sellerId } = req.params;
-  const { page, limit } = req.query;
+  const { page, limit, categoryId } = req.query;
 
   const result = await productService.getProductsBySeller(sellerId, {
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
+    categoryId: categoryId || undefined,
   });
 
-  res.status(200).json({
+  const payload = {
     success: true,
     count: result.products.length,
     pagination: {
@@ -473,9 +518,11 @@ export const getProductsBySeller = asyncHandler(async (req, res, next) => {
     },
     data: {
       seller: result.seller,
-      products: result.products
+      products: result.products,
+      liveModules: result.liveModules || [],
     },
-  });
+  };
+  res.status(200).json(payload);
 });
 
 /**

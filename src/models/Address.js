@@ -55,6 +55,10 @@ const addressSchema = new mongoose.Schema(
       type: String,
       trim: true, // specific address details
     },
+    formattedAddress: {
+      type: String,
+      trim: true,
+    },
     location: {
       lat: {
         type: Number,

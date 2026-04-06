@@ -26,7 +26,22 @@ if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY) {
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req, file) => {
-    // Shop banner needs higher resolution
+    // 1. Phân loại Video và Ảnh
+    const isVideo = file.mimetype.startsWith("video/");
+
+    // 2. Xử lý cho Video (Không dùng transformation để tránh lỗi)
+    if (isVideo) {
+      return {
+        folder: "gzmart/videos",
+        resource_type: "video",
+        allowed_formats: ["mp4", "mov", "avi", "webm"],
+        use_filename: true,
+        unique_filename: true,
+        overwrite: true,
+      };
+    }
+
+    // 3. Xử lý cho Ảnh (Tùy theo fieldname)
     if (file.fieldname === "profileImage") {
       return {
         folder: "gzmart/banners",
@@ -34,20 +49,35 @@ const storage = new CloudinaryStorage({
         transformation: [
           { width: 1920, height: 600, crop: "limit", quality: "auto:best" },
         ],
-        resource_type: "auto",
+        resource_type: "image",
         use_filename: true,
         unique_filename: true,
         overwrite: true,
         secure: true,
       };
     }
-    // Default: avatar and other uploads
+
+    if (file.fieldname === "image") {
+      return {
+        folder: "gzmart/shop-banners",
+        allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
+        transformation: [
+          { width: 1920, height: 800, crop: "limit", quality: "auto:best" },
+        ],
+        resource_type: "image",
+        use_filename: true,
+        unique_filename: true,
+        overwrite: true,
+        secure: true,
+      };
+    }
+
+    // Default: avatar and other image uploads
     return {
-      folder: "gzmart/avatars",
-      allowed_formats: ["jpg", "jpeg", "png", "gif"],
+      folder: "gzmart/images",
+      allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
       transformation: [{ width: 500, height: 500, crop: "limit" }],
-      format: "jpg",
-      resource_type: "auto",
+      resource_type: "image",
       use_filename: true,
       unique_filename: true,
       overwrite: true,
@@ -67,8 +97,7 @@ const deliveryProofStorage = new CloudinaryStorage({
     folder: "gzmart/delivery-proofs",
     allowed_formats: ["jpg", "jpeg", "png", "gif"],
     transformation: [{ width: 1200, height: 1200, crop: "limit" }],
-    format: "jpg",
-    resource_type: "auto",
+    resource_type: "image",
     use_filename: true,
     unique_filename: true,
     overwrite: false,
@@ -82,29 +111,23 @@ const deliveryProofStorage = new CloudinaryStorage({
 
 // Middleware to log upload results
 const handleUpload = (req, res, next) => {
-  // Handle single file upload (req.file)
   if (req.file) {
-    // Ensure URL is HTTPS
     if (req.file.path && !req.file.path.startsWith("https://")) {
       req.file.path = req.file.path.replace("http://", "https://");
     }
-
     logger.info("File upload result:", {
       originalname: req.file.originalname,
       path: req.file.path,
     });
   }
 
-  // Handle multiple file uploads (req.files)
   if (req.files) {
     Object.keys(req.files).forEach((fieldName) => {
       const files = req.files[fieldName];
       files.forEach((file) => {
-        // Ensure URL is HTTPS
         if (file.path && !file.path.startsWith("https://")) {
           file.path = file.path.replace("http://", "https://");
         }
-
         logger.info("File upload result:", {
           fieldName,
           originalname: file.originalname,

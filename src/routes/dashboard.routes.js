@@ -10,6 +10,11 @@ import {
   getProductAnalytics,
   getSalesTrend,
   getComparisonStats,
+  getGrowthComparison,
+  getProfitLossAnalysis,
+  getExpenseAnalysis,
+  getTopSellingProductsWithProfit,
+  getProductAnalyticsByCategory,
   getOverviewStats,
   getTopProducts,
   getRecentOrders,
@@ -18,6 +23,8 @@ import {
   getUserGrowth,
   getQuickStats,
   getAllDashboardData,
+  getSellerOrderCounts,
+  getSellerRecentOrders,
 } from "../controllers/dashboard.controller.js";
 import { protect, authorize } from "../middlewares/auth.middleware.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
@@ -131,6 +138,61 @@ router.get("/sales-trend", asyncHandler(getSalesTrend));
  * @query   period: 'month' | 'week' (default: 'month')
  */
 router.get("/comparison", asyncHandler(getComparisonStats));
+
+/**
+ * @route   GET /api/dashboard/growth-comparison
+ * @desc    Get growth comparison with optional custom date range
+ * @access  Private (Seller, Admin)
+ * @query   period: 'week' | 'month' | 'year' (default: 'week')
+ * @query   startDate: ISO date string (required for custom range)
+ * @query   endDate: ISO date string (required for custom range)
+ * @returns Object with revenueGrowth, profitGrowth, ordersGrowth, current/previous values
+ */
+router.get("/growth-comparison", asyncHandler(getGrowthComparison));
+
+// ============= PROFIT & LOSS ANALYSIS =============
+
+/**
+ * @route   GET /api/dashboard/profit-loss
+ * @desc    Get profit and loss analysis by period
+ * @access  Private (Seller, Admin)
+ * @query   period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'daily')
+ * @returns Array of { _id, revenue, cost, quantity, orders, profit } grouped by period
+ */
+router.get("/profit-loss", asyncHandler(getProfitLossAnalysis));
+
+/**
+ * @route   GET /api/dashboard/expense
+ * @desc    Get expense analysis (product cost vs shipping cost)
+ * @access  Private (Seller, Admin)
+ * @query   period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'monthly')
+ * @returns Object with { totalProductCost, totalShippingCost, totalExpense, breakdownByType }
+ */
+router.get("/expense", asyncHandler(getExpenseAnalysis));
+
+/**
+ * @route   GET /api/dashboard/top-products-profit
+ * @desc    Get top selling products ranked by quantity with profit analysis
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 10), period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'monthly')
+ * @returns Array of { _id, name, totalQuantity, totalRevenue, cost, profit, profitMargin }
+ */
+router.get(
+  "/top-products-profit",
+  asyncHandler(getTopSellingProductsWithProfit),
+);
+
+/**
+ * @route   GET /api/dashboard/product-by-category
+ * @desc    Get product analytics grouped by category (revenue, quantity, profit, margin)
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 8), period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'monthly')
+ * @returns { categories: [], totalRevenue, totalQuantity, totalProfit, period }
+ */
+router.get(
+  "/product-by-category",
+  asyncHandler(getProductAnalyticsByCategory),
+);
 
 // ============= ADMIN DASHBOARD ENDPOINTS =============
 
@@ -293,5 +355,20 @@ router.get("/quick-stats", authorize("admin"), asyncHandler(getQuickStats));
  *         description: Success with all dashboard data
  */
 router.get("/admin/all", authorize("admin"), asyncHandler(getAllDashboardData));
+
+/**
+ * @route   GET /api/dashboard/seller-order-counts
+ * @desc    Get seller order counts by status (pending, confirmed, packing, shipping, toShip, cancellation, RMA)
+ * @access  Private (Seller, Admin)
+ */
+router.get("/seller-order-counts", asyncHandler(getSellerOrderCounts));
+
+/**
+ * @route   GET /api/dashboard/seller-recent-orders
+ * @desc    Get recent orders filtered by seller products
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 20)
+ */
+router.get("/seller-recent-orders", asyncHandler(getSellerRecentOrders));
 
 export default router;

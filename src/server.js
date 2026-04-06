@@ -18,7 +18,7 @@ import homeRoutes from "./routes/home.routes.js";
 import brandRoutes from "./routes/brand.routes.js";
 import dealRoutes from "./routes/deal.routes.js";
 import searchRoutes from "./routes/search.routes.js";
-import favouriteRoutes from "./routes/favourite.routes.js";
+import wishlistRoutes from "./routes/wishlist.routes.js";
 import userRoutes from "./routes/user.routes.js";
 import logger from "./utils/logger.js";
 import { setupUploadDirectories } from "./utils/setupUploads.js";
@@ -31,6 +31,7 @@ import dashboardRoutes from "./routes/dashboard.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
 import voucherRoutes from "./routes/voucher.routes.js";
 import shopProgramRoutes from "./routes/shopProgram.routes.js";
+import shopDecorationRoutes from "./routes/shopDecoration.routes.js";
 import comboPromotionRoutes from "./routes/comboPromotion.routes.js";
 import addOnDealRoutes from "./routes/addOnDeal.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
@@ -42,6 +43,7 @@ import aiRoutes from "./routes/ai.routes.js";
 import reviewRoutes from "./routes/review.routes.js";
 import promotionPublicRoutes from "./routes/promotionPublic.routes.js";
 import followRoutes from "./routes/follow.routes.js";
+import livestreamRoutes from "./routes/livestream.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
@@ -54,6 +56,10 @@ import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
 import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
 import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
 import { startCoinJobs } from "./jobs/coinExpirationJob.js";
+import { startLivestreamCleanupJob } from "./jobs/livestreamCleanup.job.js";
+import { setSocketIO } from "./utils/socketIO.js";
+import { runBatchEmbedding } from "./jobs/batchEmbedding.job.js";
+import { initProductSoldReconcileJob } from "./jobs/productSoldReconcile.job.js";
 // Load environment variables
 dotenv.config();
 
@@ -101,6 +107,8 @@ app.use((req, res, next) => {
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
+    "https://www.vic-sport.site",
+    "https://gzmart.vercel.app",
     // Azure App Service domains
     process.env.WEBSITE_HOSTNAME
       ? `https://${process.env.WEBSITE_HOSTNAME}`
@@ -196,7 +204,7 @@ app.use("/api/home", homeRoutes);
 app.use("/api/brands", brandRoutes);
 app.use("/api/deals", dealRoutes);
 app.use("/api/search", searchRoutes);
-app.use("/api/favourites", favouriteRoutes);
+app.use("/api/wishlists", wishlistRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/orders", orderRoutes);
@@ -207,6 +215,7 @@ app.use("/api/upload", uploadRoutes);
 app.use("/api/vouchers/system", systemVoucherRoutes);
 app.use("/api/vouchers", voucherRoutes);
 app.use("/api/seller/shop-programs", shopProgramRoutes);
+app.use("/api/seller/shop-decoration", shopDecorationRoutes);
 app.use("/api/seller/combos", comboPromotionRoutes);
 app.use("/api/seller/addons", addOnDealRoutes);
 app.use("/api/payments", paymentRoutes);
@@ -214,12 +223,15 @@ app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
 app.use("/api/exchange-rate", exchangeRateRoutes);
 app.use("/api/ghn", ghnRoutes);
-app.use("/api/rma", rmaRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/follows", followRoutes);
+app.use("/api/livestream", livestreamRoutes);
 app.use("/api/coins", coinRoutes);
 app.use("/api/seller-applications", sellerApplicationRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/rma", rmaRoutes);
+app.use("/api/chat", chatRoutes); // Register chat routes
+app.use("/api/ai", aiRoutes); // Register AI routes
 
 // Error handler
 app.use(errorHandler);
@@ -266,20 +278,12 @@ const io = new SocketIOServer(server, {
   allowEIO3: true,
 });
 
-import { setSocketIO } from "./utils/socketIO.js";
-
-// Setup socket handlers
-// setupSocketHandlers(io);
-
 // Make io instance globally accessible for controllers
 setSocketIO(io);
 
 import setupSocketHandlers from "./socket.js";
 // Setup socket handlers
 setupSocketHandlers(io);
-
-app.use("/api/chat", chatRoutes); // Register chat routes
-app.use("/api/ai", aiRoutes); // Register AI routes
 
 server.listen(PORT, HOST, () => {
   logger.info(`Server is running on port ${PORT}`);
@@ -288,7 +292,11 @@ server.listen(PORT, HOST, () => {
   startOrderCleanupJob();
   startRmaAutoApprovalJob();
   startExchangeRateJob();
-  startCoinJobs(); // Start coin expiration jobs
+  startCoinJobs();
+  initProductSoldReconcileJob();
+  startLivestreamCleanupJob();
+  // [Phase 3 - 5.2] Batch embedding cron — registered at import time
+  runBatchEmbedding();
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s

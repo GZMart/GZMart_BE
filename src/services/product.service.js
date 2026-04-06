@@ -1,7 +1,9 @@
+import mongoose from "mongoose";
 import Product from "../models/Product.js";
 import InventoryItem from "../models/InventoryItem.js";
 import Category from "../models/Category.js";
 import User from "../models/User.js";
+import ShopDecoration from "../models/ShopDecoration.js";
 import Deal from "../models/Deal.js";
 import ShopProgram from "../models/ShopProgram.js";
 import ShopProgramProduct from "../models/ShopProgramProduct.js";
@@ -9,6 +11,11 @@ import ComboPromotion from "../models/ComboPromotion.js";
 import AddOnDeal from "../models/AddOnDeal.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { generateSKU } from "../utils/skuGenerator.js";
+import { normalizeSku, skuMatch } from "../utils/skuUtils.js";
+
+// Public storefront visibility: include in-stock and out-of-stock products,
+// but keep draft/inactive hidden.
+const PUBLIC_VISIBLE_STATUSES = ["active", "out_of_stock"];
 
 /**
  * Fetch the currently active flash sale for a product, shaped for the FE.
@@ -80,18 +87,46 @@ export const createProduct = async (productData, sellerId) => {
     description,
     attributes,
     tiers,
-    models,
+    models: rawModels,
     images,
     tags,
     brand,
+    preOrderDays,
+    weight,
+    weightUnit,
+    dimLength,
+    dimWidth,
+    dimHeight,
+    stock: topLevelStock,
   } = productData;
 
-  const category = await Category.findById(categoryId);
-  if (!category) {
-    throw new ErrorResponse("Category not found", 404);
-  }
-  if (category.status !== "active") {
-    throw new ErrorResponse("Cannot add product to inactive category", 400);
+  const toSafeNonNegativeNumber = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
+
+  // Accept stock from multiple payload shapes to avoid accidental out_of_stock
+  // when clients send quantity/top-level stock instead of model.stock.
+  const models = (rawModels || []).map((model) => ({
+    ...model,
+    price: toSafeNonNegativeNumber(model.price, 0),
+    costPrice: toSafeNonNegativeNumber(model.costPrice, 0),
+    stock: toSafeNonNegativeNumber(
+      model.stock ?? model.quantity ?? topLevelStock,
+      0,
+    ),
+  }));
+
+  if (categoryId) {
+    const category = await Category.findById(categoryId);
+    if (!category) {
+      throw new ErrorResponse("Category not found", 404);
+    }
+    if (category.status !== "active") {
+      throw new ErrorResponse("Cannot add product to inactive category", 400);
+    }
+  } else if (productData.status !== "draft") {
+    throw new ErrorResponse("Category is required for published products", 400);
   }
 
   if (tiers && tiers.length > 0) {
@@ -145,7 +180,7 @@ export const createProduct = async (productData, sellerId) => {
   const normalizedSKUs = [];
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
-    let sku = model.sku ? String(model.sku).toUpperCase().trim() : null;
+    let sku = model.sku ? normalizeSku(model.sku) : null;
 
     if (!sku) {
       let attempts = 0;
@@ -163,7 +198,7 @@ export const createProduct = async (productData, sellerId) => {
       model.sku = sku;
     }
 
-    model.sku = String(sku).toUpperCase();
+    model.sku = sku;
     normalizedSKUs.push(model.sku);
   }
 
@@ -187,7 +222,7 @@ export const createProduct = async (productData, sellerId) => {
   const prices = models.map((m) => m.price);
   const originalPrice = Math.min(...prices);
 
-  if (originalPrice <= 0) {
+  if (originalPrice <= 0 && productData.status !== "draft") {
     throw new ErrorResponse("Product must have price > 0", 400);
   }
 
@@ -199,8 +234,16 @@ export const createProduct = async (productData, sellerId) => {
     counter++;
   }
 
-  const totalStock = models.reduce((sum, model) => sum + model.stock, 0);
-  const status = totalStock > 0 ? "active" : "out_of_stock";
+  const totalStock = models.reduce(
+    (sum, model) => sum + (Number(model.stock) || 0),
+    0,
+  );
+  const status =
+    productData.status === "draft"
+      ? "draft"
+      : totalStock > 0
+        ? "active"
+        : "out_of_stock";
 
   const product = new Product({
     name,
@@ -216,6 +259,12 @@ export const createProduct = async (productData, sellerId) => {
     brand,
     status,
     sellerId,
+    preOrderDays: preOrderDays ?? 0,
+    weight: weight ?? 0,
+    weightUnit: weightUnit || "gr",
+    dimLength: dimLength ?? 0,
+    dimWidth: dimWidth ?? 0,
+    dimHeight: dimHeight ?? 0,
   });
 
   await product.save();
@@ -228,9 +277,9 @@ export const createProduct = async (productData, sellerId) => {
     if (!existing) {
       await InventoryItem.create({
         productId: product._id,
-        modelId:   model._id,
-        sku:       model.sku,
-        quantity:  model.stock   || 0,
+        modelId: model._id,
+        sku: model.sku,
+        quantity: model.stock || 0,
         costPrice: model.costPrice || 0,
         lastRestockDate: model.stock > 0 ? new Date() : null,
       });
@@ -272,7 +321,10 @@ export const getProductById = async (productId) => {
         import("../models/ShopStatistic.js").then((m) =>
           m.default.findOne({ sellerId }),
         ),
-        Product.countDocuments({ sellerId, status: "active" }),
+        Product.countDocuments({
+          sellerId,
+          status: { $in: PUBLIC_VISIBLE_STATUSES },
+        }),
         import("../models/Follow.js").then((m) =>
           m.default.countDocuments({ followingId: sellerId }),
         ),
@@ -341,7 +393,10 @@ export const getProductBySlug = async (slug) => {
         import("../models/ShopStatistic.js").then((m) =>
           m.default.findOne({ sellerId }),
         ),
-        Product.countDocuments({ sellerId, status: "active" }),
+        Product.countDocuments({
+          sellerId,
+          status: { $in: PUBLIC_VISIBLE_STATUSES },
+        }),
         import("../models/Follow.js").then((m) =>
           m.default.countDocuments({ followingId: sellerId }),
         ),
@@ -448,6 +503,7 @@ export const getProductsAdvanced = async (options) => {
     page = 1,
     limit = 20,
     categoryId,
+    categorySlug, // Slug-based lookup (alternative to categoryId)
     brands, // Array
     minPrice,
     maxPrice,
@@ -461,9 +517,18 @@ export const getProductsAdvanced = async (options) => {
     sortOrder = "desc",
   } = options;
 
-  const query = { status: "active" };
+  const query = { status: { $in: ["active", "out_of_stock"] } };
 
-  if (categoryId) query.categoryId = categoryId;
+  // Resolve categorySlug to categoryId if slug provided instead of ID
+  let resolvedCategoryId = categoryId;
+  if (!resolvedCategoryId && categorySlug) {
+    const cat = await Category.findOne({ slug: categorySlug })
+      .select("_id")
+      .lean();
+    resolvedCategoryId = cat?._id;
+  }
+
+  if (resolvedCategoryId) query.categoryId = resolvedCategoryId;
 
   if (brands && brands.length > 0) {
     query.brand = { $in: brands };
@@ -480,10 +545,8 @@ export const getProductsAdvanced = async (options) => {
     if (maxPrice) query["models.price"].$lte = Number(maxPrice);
   }
 
-  // Stock Filter: use Product.status as a proxy for InventoryItem availability.
-  // products are auto-set to 'out_of_stock' when inventory hits 0.
   if (inStock) {
-    query.status = "active"; // 'active' implies stock > 0 per our sync logic
+    query.status = "active";
   }
 
   // Attribute/Tier Filter (Colors/Sizes)
@@ -620,22 +683,30 @@ export const updateProduct = async (productId, updateData, sellerId) => {
     throw new ErrorResponse("Not authorized to update this product", 403);
   }
 
+  // Collect SKUs of new variants that need InventoryItem (must be done before save
+  // so we know which models are new vs existing).
+  const newVariantSkus = new Set();
   if (updateData.models) {
     const prices = updateData.models.map((m) => m.price);
     updateData.originalPrice = Math.min(...prices);
 
     // Preserve existing SKUs or generate new ones if missing
     const existingModels = product.models || [];
+    const existingSkusForMatch = new Set(
+      (await InventoryItem.find({ productId: product._id })).map((inv) => normalizeSku(inv.sku)),
+    );
     updateData.models = updateData.models.map((model, idx) => {
-      if (!model.sku) {
+      if (model.sku) {
+        model.sku = normalizeSku(model.sku);
+      } else {
         const existingModel = existingModels.find(
           (em) =>
             JSON.stringify(em.tierIndex) === JSON.stringify(model.tierIndex),
         );
         if (existingModel?.sku) {
-          model.sku = existingModel.sku;
+          model.sku = normalizeSku(existingModel.sku);
         } else if (existingModels[idx]?.sku) {
-          model.sku = existingModels[idx].sku;
+          model.sku = normalizeSku(existingModels[idx].sku);
         } else {
           model.sku = generateSKU(
             product.name,
@@ -648,9 +719,15 @@ export const updateProduct = async (productId, updateData, sellerId) => {
       // STOCK GUARD: preserve existing stock from DB — stock is owned by InventoryItem.
       // Never allow the product edit form to overwrite stock directly.
       const existingModel = existingModels.find(
-        (em) => em.sku === model.sku || em._id?.toString() === model._id?.toString(),
+        (em) =>
+          skuMatch(em.sku, model.sku) || em._id?.toString() === model._id?.toString(),
       );
-      model.stock = existingModel ? existingModel.stock : (model.stock || 0);
+      model.stock = existingModel ? existingModel.stock : model.stock || 0;
+
+      // Mark new variants (no InventoryItem yet) so we create one after save.
+      if (model.sku && !existingSkusForMatch.has(normalizeSku(model.sku))) {
+        newVariantSkus.add(model.sku);
+      }
 
       return model;
     });
@@ -661,9 +738,30 @@ export const updateProduct = async (productId, updateData, sellerId) => {
 
   Object.assign(product, updateData);
 
+  await product.save();
+
+  // Auto-create InventoryItem for new variants AFTER save (model._id is now available).
+  if (newVariantSkus.size > 0) {
+    for (const model of product.models) {
+      if (newVariantSkus.has(model.sku)) {
+        await InventoryItem.create({
+          productId: product._id,
+          modelId: model._id,
+          sku: model.sku,
+          quantity: model.stock || 0,
+          costPrice: model.costPrice || 0,
+          lastRestockDate: model.stock > 0 ? new Date() : null,
+        });
+      }
+    }
+  }
+
   // Derive status from InventoryItem totals (authoritative) rather than model.stock cache.
   const inventoryItems = await InventoryItem.find({ productId: product._id });
-  const totalInventoryStock = inventoryItems.reduce((sum, inv) => sum + inv.quantity, 0);
+  const totalInventoryStock = inventoryItems.reduce(
+    (sum, inv) => sum + inv.quantity,
+    0,
+  );
   if (totalInventoryStock === 0 && product.status === "active") {
     product.status = "out_of_stock";
   } else if (totalInventoryStock > 0 && product.status === "out_of_stock") {
@@ -714,15 +812,54 @@ export const getFeaturedProducts = async (limit = 10) => {
  * Get trending products (GZM-13 Feature)
  */
 export const getTrendingProducts = async (limit = 10) => {
-  // Trending based on sales or explicit flag
-  return await Product.find({
+  // Backward compatibility:
+  // Frontend still uses /trending, but section title is now TODAY'S RECOMMENDATIONS.
+  return await getTodayRecommendations(limit);
+};
+
+/**
+ * Get today's recommendations
+ * - Prioritize active, in-stock products with healthy social proof.
+ * - Rotate results daily so recommendations feel fresh each day.
+ */
+export const getTodayRecommendations = async (limit = 10) => {
+  const parsedLimit = Number.parseInt(limit, 10);
+  const safeLimit = Number.isFinite(parsedLimit)
+    ? Math.min(Math.max(parsedLimit, 1), 30)
+    : 10;
+
+  const candidates = await Product.find({
     status: "active",
-    $or: [{ isTrending: true }, { sold: { $gt: 10 } }],
+    $or: [
+      { stock: { $gt: 0 } },
+      { "models.stock": { $gt: 0 } },
+      { sold: { $gt: 0 } },
+    ],
   })
     .populate("categoryId", "name slug")
-    .sort({ sold: -1 })
-    .limit(limit)
+    .sort({
+      isFeatured: -1,
+      isTrending: -1,
+      sold: -1,
+      rating: -1,
+      reviewCount: -1,
+      createdAt: -1,
+    })
+    .limit(120)
     .lean();
+
+  if (candidates.length <= safeLimit) {
+    return candidates;
+  }
+
+  const now = new Date();
+  const daySeed = Number(
+    `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}${String(now.getUTCDate()).padStart(2, "0")}`,
+  );
+  const start = daySeed % candidates.length;
+  const rotated = [...candidates.slice(start), ...candidates.slice(0, start)];
+
+  return rotated.slice(0, safeLimit);
 };
 
 /**
@@ -810,18 +947,30 @@ export const getAvailableFilters = async (categoryId = null) => {
  * Get products by seller ID
  */
 export const getProductsBySeller = async (sellerId, options = {}) => {
-  const { page = 1, limit = 20 } = options;
+  const { page = 1, limit = 20, categoryId } = options;
   const skip = (page - 1) * limit;
 
-  // Validate Seller exists
+  // Validate Seller exists (include shopDecoration for shop homepage blocks)
   const seller = await User.findById(sellerId).select(
-    "fullName avatar provinceName createdAt aboutMe role profileImage",
+    "fullName avatar provinceName createdAt aboutMe role profileImage shopDecoration",
   );
   if (!seller) {
     throw new ErrorResponse("Seller not found", 404);
   }
 
   const sellerObj = seller.toObject();
+
+  const productQuery = {
+    sellerId,
+  };
+
+  if (!options.includeHidden) {
+    productQuery.status = { $in: PUBLIC_VISIBLE_STATUSES };
+  }
+
+  if (categoryId) {
+    productQuery.categoryId = categoryId;
+  }
 
   const [
     products,
@@ -831,17 +980,17 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     followerCount,
     followingCount,
   ] = await Promise.all([
-    Product.find({ sellerId, status: "active" })
+    Product.find(productQuery)
       .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-    Product.countDocuments({ sellerId, status: "active" }),
+    Product.countDocuments(productQuery),
     import("../models/ShopStatistic.js").then((m) =>
       m.default.findOne({ sellerId }),
     ),
-    Product.countDocuments({ sellerId, status: "active" }),
+    Product.countDocuments(productQuery),
     import("../models/Follow.js").then((m) =>
       m.default.countDocuments({ followingId: sellerId }),
     ),
@@ -868,12 +1017,91 @@ export const getProductsBySeller = async (sellerId, options = {}) => {
     sellerObj.cancelDutyRate = 0;
   }
 
+  // Attach min/max price per product so the FE seller listing can show price ranges.
+  const enrichedProducts = products.map((p) => {
+    const prices = (p.models || [])
+      .map((m) => m.price)
+      .filter((x) => typeof x === "number");
+    return {
+      ...p,
+      minPrice: prices.length ? Math.min(...prices) : p.originalPrice || 0,
+      maxPrice: prices.length ? Math.max(...prices) : p.originalPrice || 0,
+    };
+  });
+  // ── Shop decoration: live modules + widget data ──────────────────────────
+  // Merge widget product data into liveModules so the FE can render everything
+  // from liveModules alone (no separate widgetData needed for products).
+  const deco = await ShopDecoration.findOne({ sellerId }).lean();
+  let liveModules = [];
+
+  if (deco) {
+    const activeVer = deco.activeVersion || "desktop";
+    const v = deco[activeVer] || {};
+    liveModules = v.published?.modules?.length
+      ? v.published.modules
+      : v.draft?.modules || [];
+
+    // Inject widget product data into matching module types
+    // Only inject into modules that are enabled AND have a product type
+    const { getShopWidgetData: fetchWidgetData } =
+      await import("./shopDecoration.service.js");
+    const widgetData = await fetchWidgetData(sellerId);
+
+    // Map WIDGET_KEYS → MODULE_TYPES
+    const productModuleMap = {
+      featuredProducts: "featured_products",
+      bestSelling: "best_selling",
+      newProducts: "new_products",
+      flashDeals: "flash_deals",
+      addonDeals: "addon_deals",
+      comboPromos: "combo_promos",
+    };
+
+    for (const mod of liveModules) {
+      // Only inject into enabled product modules
+      if (mod.isEnabled === false) continue;
+
+      const widgetKey = Object.keys(productModuleMap).find(
+        (k) => productModuleMap[k] === mod.type,
+      );
+      if (widgetKey && widgetData[widgetKey]?.length > 0) {
+        mod.props = {
+          ...(mod.props || {}),
+          products: widgetData[widgetKey],
+          _fromWidget: true,
+        };
+      }
+
+      // Inject featuredCategories
+      if (
+        mod.type === "featured_categories" &&
+        widgetData.featuredCategories?.length > 0
+      ) {
+        mod.props = {
+          ...(mod.props || {}),
+          categories: widgetData.featuredCategories,
+          _fromWidget: true,
+        };
+      }
+
+      // Inject categoryList
+      if (mod.type === "category_list" && widgetData.categoryList?.length > 0) {
+        mod.props = {
+          ...(mod.props || {}),
+          categories: widgetData.categoryList,
+          _fromWidget: true,
+        };
+      }
+    }
+  }
+
   return {
     seller: sellerObj,
-    products,
+    products: enrichedProducts,
     total,
     page,
     pages: Math.ceil(total / limit),
+    liveModules,
   };
 };
 
@@ -1025,7 +1253,7 @@ export const getActivePromotionsForProduct = async (productId) => {
   ) {
     // Find the first enabled variant with a real discount
     const enabledVariant = programProduct.variants.find(
-      (v) => v.enabled && v.salePrice < v.originalPrice
+      (v) => v.enabled && v.salePrice < v.originalPrice,
     );
 
     if (enabledVariant) {
@@ -1035,7 +1263,7 @@ export const getActivePromotionsForProduct = async (productId) => {
           : Math.round(
               ((enabledVariant.originalPrice - enabledVariant.salePrice) /
                 enabledVariant.originalPrice) *
-                100
+                100,
             );
 
       shopProgram = {
@@ -1057,7 +1285,7 @@ export const getActivePromotionsForProduct = async (productId) => {
               v.discountType === "percent"
                 ? v.discount
                 : Math.round(
-                    ((v.originalPrice - v.salePrice) / v.originalPrice) * 100
+                    ((v.originalPrice - v.salePrice) / v.originalPrice) * 100,
                   ),
           })),
       };
@@ -1068,11 +1296,11 @@ export const getActivePromotionsForProduct = async (productId) => {
   // Sync statuses
   await ComboPromotion.updateMany(
     { status: "upcoming", startDate: { $lte: now } },
-    { status: "active" }
+    { status: "active" },
   );
   await ComboPromotion.updateMany(
     { status: { $in: ["active", "upcoming"] }, endDate: { $lte: now } },
-    { status: "ended" }
+    { status: "ended" },
   );
 
   const comboPromotions = await ComboPromotion.find({
@@ -1086,11 +1314,11 @@ export const getActivePromotionsForProduct = async (productId) => {
   // Sync statuses
   await AddOnDeal.updateMany(
     { status: "upcoming", startDate: { $lte: now } },
-    { status: "active" }
+    { status: "active" },
   );
   await AddOnDeal.updateMany(
     { status: { $in: ["active", "upcoming"] }, endDate: { $lte: now } },
-    { status: "ended" }
+    { status: "ended" },
   );
 
   const addOnDeals = await AddOnDeal.find({
@@ -1110,8 +1338,7 @@ export const getActivePromotionsForProduct = async (productId) => {
     subProducts: deal.subProducts.map((sp) => {
       const productData = sp.productId;
       const originalPrice =
-        productData?.originalPrice ||
-        (productData?.models?.[0]?.price ?? 0);
+        productData?.originalPrice || (productData?.models?.[0]?.price ?? 0);
       return {
         product: productData
           ? {
@@ -1152,7 +1379,11 @@ export const getActivePromotionsForProduct = async (productId) => {
  * @param {number} originalPrice - Fallback price (model.price)
  * @returns {{ price: number, isShopProgram: boolean, originalPrice: number, programName?: string }}
  */
-export const getShopProgramPriceForVariant = async (productId, modelIndex, originalPrice) => {
+export const getShopProgramPriceForVariant = async (
+  productId,
+  modelIndex,
+  originalPrice,
+) => {
   try {
     const programProduct = await ShopProgramProduct.findOne({
       productId,
@@ -1169,7 +1400,10 @@ export const getShopProgramPriceForVariant = async (productId, modelIndex, origi
       // variantId format: "productId-modelIndex"
       const targetVariantId = `${productId.toString()}-${modelIndex}`;
       const variant = programProduct.variants.find(
-        (v) => v.enabled && v.variantId === targetVariantId && v.salePrice < v.originalPrice
+        (v) =>
+          v.enabled &&
+          v.variantId === targetVariantId &&
+          v.salePrice < v.originalPrice,
       );
 
       if (variant) {

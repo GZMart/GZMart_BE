@@ -17,13 +17,10 @@ const orderSchema = new mongoose.Schema(
       enum: [
         "pending",
         "confirmed",
-        "packing",
-        "shipping",
+        "packed",
+        "shipped",
         "delivered",
         "completed",
-        "processing",
-        "shipped",
-        "delivered_pending_confirmation",
         "cancelled",
         "refunded",
         "refund_pending",
@@ -50,6 +47,10 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    giftBoxFee: {
+      type: Number,
+      default: 0,
+    },
     tax: {
       type: Number,
       default: 0,
@@ -64,6 +65,33 @@ const orderSchema = new mongoose.Schema(
       min: [0, "Discount amount must be non-negative"],
       description:
         "Total discount value from flash sales and coupons in currency units",
+    },
+    coinUsedAmount: {
+      type: Number,
+      default: 0,
+      min: [0, "Coin used amount must be non-negative"],
+      description: "Amount covered by GZCoin before external payment",
+    },
+    payableBeforeCoin: {
+      type: Number,
+      default: 0,
+      min: [0, "Payable amount before coin must be non-negative"],
+      description: "Amount after voucher discount, before coin deduction",
+    },
+    coinUsageDetails: {
+      type: [
+        {
+          packetId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Coin",
+          },
+          source: String,
+          amountUsed: Number,
+          expiresAt: Date,
+          remainingInPacket: Number,
+        },
+      ],
+      default: [],
     },
     discountCode: {
       type: String,

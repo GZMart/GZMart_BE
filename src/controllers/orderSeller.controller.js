@@ -4,6 +4,7 @@ import * as orderTrackingService from "../services/orderTracking.service.js";
 import NotificationService from "../services/notification.service.js";
 import Order from "../models/Order.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
+import { getSocketIO } from "../utils/socketIO.js";
 
 /**
  * @desc    Create a new order
@@ -12,6 +13,15 @@ import { ErrorResponse } from "../utils/errorResponse.js";
  */
 export const createOrder = asyncHandler(async (req, res) => {
   const order = await orderSellerService.createOrder(req.body);
+
+  const io = getSocketIO();
+  if (io) {
+    io.emit("new_order", {
+      orderId: order._id,
+      status: order.status,
+      orderNumber: order.orderNumber,
+    });
+  }
 
   res.status(201).json({
     success: true,
@@ -53,10 +63,14 @@ export const getOrdersByStatus = asyncHandler(async (req, res) => {
   const { status } = req.params;
   const { page, limit } = req.query;
 
-  const result = await orderSellerService.getOrdersByStatus(status, {
-    page: Number(page) || 1,
-    limit: Number(limit) || 10,
-  });
+  const result = await orderSellerService.getOrdersByStatus(
+    status,
+    {
+      page: Number(page) || 1,
+      limit: Number(limit) || 10,
+    },
+    req.user._id,
+  );
 
   res.status(200).json({
     success: true,
@@ -109,6 +123,30 @@ export const updateOrderStatus = asyncHandler(async (req, res) => {
     },
   );
 
+  // Emit realtime event so buyer pages update immediately without reload.
+  orderTrackingService.notifyBuyerStatusChange(
+    order._id.toString(),
+    order.status,
+    {
+      orderNumber: order.orderNumber,
+      trackingNumber: order.trackingNumber,
+      estimatedDelivery: order.estimatedDelivery,
+      notes: req.body.notes,
+      buyerId: order.userId,
+      sellerId: req.user?._id,
+    },
+  );
+
+  const io = getSocketIO();
+  if (io) {
+    io.emit("order_updated", {
+      orderId: order._id,
+      status: order.status,
+      orderNumber: order.orderNumber,
+      updatedAt: new Date(),
+    });
+  }
+
   res.status(200).json({
     success: true,
     message: `Order status updated to '${req.body.newStatus}'`,
@@ -130,14 +168,16 @@ export const cancelOrder = asyncHandler(async (req, res) => {
   );
 
   try {
-     await NotificationService.createNotification(
-       order.userId,
-       "Đơn hàng đã bị hủy",
-       `Đơn hàng ${order.orderNumber} của bạn đã bị hủy. Lý do: ${cancellationReason}`,
-       "ORDER",
-       { orderId: order._id.toString() }
-     );
-  } catch(e) { console.error(e) }
+    await NotificationService.createNotification(
+      order.userId,
+      "Đơn hàng đã bị hủy",
+      `Đơn hàng ${order.orderNumber} của bạn đã bị hủy. Lý do: ${cancellationReason}`,
+      "ORDER",
+      { orderId: order._id.toString() },
+    );
+  } catch (e) {
+    console.error(e);
+  }
 
   res.status(200).json({
     success: true,
@@ -201,6 +241,8 @@ export const confirmOrder = asyncHandler(async (req, res, next) => {
     "confirmed",
     {
       orderNumber: order.orderNumber,
+      buyerId: order.userId,
+      sellerId: req.user?._id,
     },
   );
 
@@ -210,9 +252,11 @@ export const confirmOrder = asyncHandler(async (req, res, next) => {
       "Đơn hàng đã được xác nhận",
       `Đơn hàng ${order.orderNumber} của bạn đã được người bán xác nhận và đang chuẩn bị hàng.`,
       "ORDER",
-      { orderId: order._id.toString() }
+      { orderId: order._id.toString() },
     );
-  } catch(e) { console.error(e) }
+  } catch (e) {
+    console.error(e);
+  }
 
   res.status(200).json({
     success: true,
@@ -227,18 +271,20 @@ export const confirmOrder = asyncHandler(async (req, res, next) => {
  * @access  Private (Seller/Admin)
  */
 export const startShipping = asyncHandler(async (req, res, next) => {
-  const order = await Order.findById(req.params.orderId)
-    .populate("userId", "location address")
-    .populate("sellerId", "location address");
+  const order = await Order.findById(req.params.orderId).populate(
+    "userId",
+    "location address",
+  );
 
   if (!order) {
     return next(new ErrorResponse("Order not found", 404));
   }
 
-  if (order.status !== "packing") {
+  const shippableStatuses = ["packing", "packed", "processing", "confirmed"];
+  if (!shippableStatuses.includes(order.status)) {
     return next(
       new ErrorResponse(
-        `Cannot start shipping for order with status: ${order.status}. Order must be packed first.`,
+        `Cannot start shipping for order with status: ${order.status}. Order must be confirmed, processing, or packed first.`,
         400,
       ),
     );
@@ -250,16 +296,13 @@ export const startShipping = asyncHandler(async (req, res, next) => {
   if (req.body.coordinates) {
     // Use provided coordinates from request
     coordinates = req.body.coordinates;
-  } else if (order.sellerId?.location?.lat && order.userId?.location?.lat) {
-    // Use real GPS from seller and buyer profiles
+  } else if (req.user?.location?.lat && order.userId?.location?.lat) {
+    // Use real GPS from seller (req.user) and buyer profiles
     coordinates = {
       seller: {
-        lat: order.sellerId.location.lat,
-        lng: order.sellerId.location.lng,
-        address:
-          order.sellerId.location.address ||
-          order.sellerId.address ||
-          "Người bán",
+        lat: req.user.location.lat,
+        lng: req.user.location.lng,
+        address: req.user.location.address || req.user.address || "Người bán",
       },
       buyer: {
         lat: order.userId.location.lat,
@@ -276,9 +319,28 @@ export const startShipping = asyncHandler(async (req, res, next) => {
   }
 
   // Start the 60-second timer and get shipping info
+  // Update order status to 'shipped' (canonical) and record history
+  order.status = "shipped";
+  order.shippingStartedAt = new Date();
+  order.statusHistory.push({
+    status: "shipped",
+    changedBy: req.user._id,
+    changedByRole: req.user.role,
+    changedAt: new Date(),
+    notes: "Seller đã giao cho đơn vị vận chuyển",
+  });
+
+  await order.save();
+
+  // Start the 60-second delivery timer (arrival simulation)
   const shippingInfo = await orderTrackingService.startDeliveryTimer(
     order._id.toString(),
     coordinates,
+    {
+      orderNumber: order.orderNumber,
+      buyerId: order.userId?._id || order.userId,
+      sellerId: req.user?._id,
+    },
   );
 
   try {
@@ -287,23 +349,23 @@ export const startShipping = asyncHandler(async (req, res, next) => {
       "Đơn hàng đang giao",
       `Đơn hàng ${order.orderNumber} của bạn đã được giao cho đơn vị vận chuyển.`,
       "ORDER",
-      { orderId: order._id.toString() }
+      { orderId: order._id.toString() },
     );
-  } catch(e) { console.error(e) }
+  } catch (e) {
+    console.error(e);
+  }
 
   res.status(200).json({
     success: true,
-    message:
-      "Shipping started successfully. Order will auto-arrive in 60 seconds.",
+    message: `Shipping started successfully. Order will auto-arrive in ${shippingInfo.durationSeconds} seconds.`,
     data: {
       orderId: order._id,
-      status: "shipping",
+      status: "shipped",
       shippingStartedAt: shippingInfo.shippingStartedAt,
       estimatedArrival: shippingInfo.shippingEstimatedArrival,
+      durationSeconds: shippingInfo.durationSeconds,
       coordinates,
-      usingRealGPS: !!(
-        order.sellerId?.location?.lat && order.userId?.location?.lat
-      ),
+      usingRealGPS: !!(req.user?.location?.lat && order.userId?.location?.lat),
     },
   });
 });
@@ -350,6 +412,8 @@ export const completeOrder = asyncHandler(async (req, res, next) => {
     {
       orderNumber: order.orderNumber,
       completedAt: order.completedAt,
+      buyerId: order.userId,
+      sellerId: req.user?._id,
     },
   );
 
@@ -359,9 +423,11 @@ export const completeOrder = asyncHandler(async (req, res, next) => {
       "Giao hàng thành công",
       `Tuyệt vời! Đơn hàng ${order.orderNumber} đã được giao thành công. Mong bạn hài lòng với sản phẩm.`,
       "ORDER",
-      { orderId: order._id.toString() }
+      { orderId: order._id.toString() },
     );
-  } catch(e) { console.error(e) }
+  } catch (e) {
+    console.error(e);
+  }
 
   res.status(200).json({
     success: true,
@@ -391,10 +457,10 @@ export const packOrder = asyncHandler(async (req, res, next) => {
     );
   }
 
-  // Update to packing
-  order.status = "packing";
+  // Update to packed (canonical)
+  order.status = "packed";
   order.statusHistory.push({
-    status: "packing",
+    status: "packed",
     changedBy: req.user._id,
     changedByRole: req.user.role,
     changedAt: new Date(),
@@ -404,13 +470,11 @@ export const packOrder = asyncHandler(async (req, res, next) => {
   await order.save();
 
   // Notify buyer via Socket
-  orderTrackingService.notifyBuyerStatusChange(
-    order._id.toString(),
-    "packing",
-    {
-      orderNumber: order.orderNumber,
-    },
-  );
+  orderTrackingService.notifyBuyerStatusChange(order._id.toString(), "packed", {
+    orderNumber: order.orderNumber,
+    buyerId: order.userId,
+    sellerId: req.user?._id,
+  });
 
   res.status(200).json({
     success: true,

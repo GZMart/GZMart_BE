@@ -70,6 +70,19 @@ export const deductOrderResources = async (
       console.warn(
         `[OrderInventory] COD - No inventory item found for SKU: ${model.sku}`,
       );
+
+      // Fallback: still deduct from Product.models[].stock to prevent stock not changing
+      const modelInProduct = product.models.id(model._id);
+      if (modelInProduct) {
+        modelInProduct.stock = Math.max(
+          0,
+          Number(modelInProduct.stock || 0) - Number(cartItem.quantity || 0),
+        );
+        await product.save();
+        console.log(
+          `[OrderInventory] COD - Fallback deducted Product.models[].stock for SKU: ${model.sku} → ${modelInProduct.stock}`,
+        );
+      }
     }
 
     // Create transaction log
@@ -86,6 +99,27 @@ export const deductOrderResources = async (
       createdBy: userId,
       note: `Order ${order.orderNumber}`,
     });
+
+    // Increment Product.sold (UX: show sold count immediately) if not already deducted for this order
+    try {
+      if (!order || !order.resourcesDeducted) {
+        await Product.findByIdAndUpdate(product._id, {
+          $inc: { sold: cartItem.quantity },
+        });
+        console.log(
+          `[OrderInventory] Incremented Product.sold for product ${product._id} +${cartItem.quantity}`,
+        );
+      } else {
+        console.log(
+          `[OrderInventory] Skipped Product.sold increment for product ${product._id} (resourcesDeducted already true)`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[OrderInventory] Failed to increment Product.sold for ${product._id}:`,
+        err,
+      );
+    }
   }
 };
 
@@ -185,6 +219,26 @@ export const rollbackOrderResources = async (order) => {
         referenceId: order._id,
         note: `Rollback for cancelled order ${order.orderNumber}`,
       });
+
+      // Decrement Product.sold to reflect rollback
+      try {
+        const prod = await Product.findById(item.productId);
+        if (prod) {
+          prod.sold = Math.max(
+            0,
+            Number(prod.sold || 0) - Number(item.quantity || 0),
+          );
+          await prod.save();
+          console.log(
+            `[OrderInventory] Rollback - Decremented Product.sold for ${item.productId} -${item.quantity} → ${prod.sold}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[OrderInventory] Failed to decrement Product.sold for ${item.productId}:`,
+          err,
+        );
+      }
     }
   }
 
@@ -299,8 +353,51 @@ export const deductOrderResourcesFromOrder = async (order) => {
         createdBy: order.userId,
         note: `Order ${order.orderNumber} (Payment confirmed)`,
       });
+
+      // Increment Product.sold to reflect this confirmed sale
+      try {
+        await Product.findByIdAndUpdate(item.productId, {
+          $inc: { sold: item.quantity },
+        });
+        console.log(
+          `[OrderInventory] Incremented Product.sold for product ${item.productId} +${item.quantity}`,
+        );
+      } catch (err) {
+        console.error(
+          `[OrderInventory] Failed to increment Product.sold for ${item.productId}:`,
+          err,
+        );
+      }
     } else {
       console.warn(`[OrderInventory] No inventory found for SKU: ${item.sku}`);
+
+      // Fallback: still deduct Product.models[].stock when inventory record does not exist
+      const product = await Product.findById(item.productId);
+      if (product) {
+        const model = product.models.id(item.modelId);
+        if (model) {
+          const beforeStock = Number(model.stock || 0);
+          model.stock = Math.max(0, beforeStock - Number(item.quantity || 0));
+          await product.save();
+          console.log(
+            `[OrderInventory] Fallback deducted Product.models[].stock for SKU: ${item.sku} (${beforeStock} → ${model.stock})`,
+          );
+        }
+      }
+
+      await InventoryTransaction.create({
+        productId: item.productId,
+        modelId: item.modelId,
+        sku: item.sku,
+        type: "out",
+        quantity: -item.quantity,
+        stockBefore: currentStock,
+        stockAfter: Math.max(0, currentStock - item.quantity),
+        referenceType: "order",
+        referenceId: order._id,
+        createdBy: order.userId,
+        note: `Order ${order.orderNumber} (Payment confirmed, fallback)`,
+      });
     }
   }
 

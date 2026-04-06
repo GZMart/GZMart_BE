@@ -1,4 +1,5 @@
 import * as inventoryService from "../services/inventory.service.js";
+import * as demandForecastService from "../services/demandForecast.service.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 
@@ -199,3 +200,100 @@ export const bulkStockUpdate = asyncHandler(async (req, res, next) => {
     },
   });
 });
+
+/**
+ * @desc    Get lot-by-lot stock breakdown for a SKU (FIFO)
+ * @route   GET /api/inventory/lots/:sku
+ * @access  Private (Admin, Seller)
+ */
+export const getLotBreakdown = asyncHandler(async (req, res, next) => {
+  const { sku } = req.params;
+  const { warehouseId } = req.query;
+
+  if (!sku) {
+    throw new ErrorResponse("Please provide a SKU", 400);
+  }
+
+  const data = await inventoryService.getLotBreakdownBySku(sku, warehouseId || null);
+
+  res.status(200).json({
+    success: true,
+    data,
+  });
+});
+
+/**
+ * @desc    Get demand forecast and restock alerts for seller
+ * @route   GET /api/inventory/demand-forecast
+ * @access  Private (Seller only)
+ */
+export const getDemandForecast = asyncHandler(async (req, res, next) => {
+  const sellerId = req.user?._id;
+  const { days = 90, trendDays = 30 } = req.query;
+
+  if (!sellerId) {
+    throw new ErrorResponse("Authentication required", 401);
+  }
+
+  const data = await demandForecastService.getDemandForecast(
+    sellerId.toString(),
+    { days: parseInt(days) || 90, trendDays: parseInt(trendDays) || 30 },
+  );
+
+  res.status(200).json({
+    success: true,
+    data,
+  });
+});
+
+/**
+ * @desc    Get detailed demand analysis for a single product
+ * @route   GET /api/inventory/demand-forecast/:productId/details
+ * @access  Private (Seller only)
+ */
+export const getProductDemandDetails = asyncHandler(async (req, res, next) => {
+  const sellerId = req.user?._id;
+  const { productId } = req.params;
+  const { days = 30 } = req.query;
+
+  if (!sellerId) throw new ErrorResponse("Authentication required", 401);
+
+  const data = await demandForecastService.getProductDemandDetails(
+    sellerId.toString(),
+    productId,
+    { days: parseInt(days) || 30 },
+  );
+
+  res.status(200).json({ success: true, data });
+});
+
+/**
+ * @desc    Get detailed product performance with weekly breakdown
+ * @route   GET /api/inventory/product-performance/:productId
+ * @access  Private (Seller only)
+ */
+export const getProductPerformance = asyncHandler(async (req, res, next) => {
+  const sellerId = req.user?._id;
+  const { productId } = req.params;
+  const { weeks = 12 } = req.query;
+
+  if (!sellerId) {
+    throw new ErrorResponse("Authentication required", 401);
+  }
+
+  if (!productId) {
+    throw new ErrorResponse("Please provide productId", 400);
+  }
+
+  const data = await demandForecastService.getProductPerformance(
+    sellerId.toString(),
+    productId,
+    parseInt(weeks) || 12,
+  );
+
+  res.status(200).json({
+    success: true,
+    data,
+  });
+});
+

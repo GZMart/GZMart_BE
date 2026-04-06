@@ -22,7 +22,11 @@ const checkStockAvailability = async (
 
 // Helper to find specific model based on size and color
 const findProductModel = (product, color, size) => {
-  if (!product.tiers || product.tiers.length === 0) return null;
+  if (!product.models || product.models.length === 0) return null;
+
+  if (!product.tiers || product.tiers.length === 0) {
+    return product.models.find((m) => m.isActive) || product.models[0];
+  }
 
   // Identify tier indices
   const colorTierIndex = product.tiers.findIndex(
@@ -126,14 +130,11 @@ export const getCart = asyncHandler(async (req, res, next) => {
 // @route   POST /api/cart
 // @access  Private
 export const addToCart = asyncHandler(async (req, res, next) => {
-  const { productId, quantity, color, size } = req.body;
+  let { productId, quantity, color, size } = req.body;
 
-  if (!productId || !quantity || !color || !size) {
+  if (!productId || !quantity) {
     return next(
-      new ErrorResponse(
-        "Please provide productId, quantity, color, and size",
-        400,
-      ),
+      new ErrorResponse("Please provide productId and quantity", 400),
     );
   }
 
@@ -142,9 +143,27 @@ export const addToCart = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse("Product not found", 404));
   }
 
+  const hasTiers = Array.isArray(product.tiers) && product.tiers.length > 0;
+
+  if (hasTiers && (!color || !size)) {
+    return next(
+      new ErrorResponse(
+        "Please provide productId, quantity, color, and size",
+        400,
+      ),
+    );
+  }
+
+  if (!hasTiers) {
+    color = color || "Default";
+    size = size || "Default";
+  }
+
   // Find specific variant (model) and its index
   const model = findProductModel(product, color, size);
-  const modelIndex = product.models.findIndex((m) => m._id.toString() === model?._id.toString());
+  const modelIndex = product.models.findIndex(
+    (m) => m._id.toString() === model?._id.toString(),
+  );
   if (!model || modelIndex === -1) {
     return next(
       new ErrorResponse("Selected variant (color/size) not available", 400),

@@ -118,6 +118,14 @@ router
     purchaseOrderController.completePurchaseOrder,
   );
 
+// Receive Purchase Order & Calculate Landed Cost (Stage 2 – 2-Stage Taobao Model)
+router
+  .route("/:id/receive")
+  .post(
+    requireRoles("admin", "seller"),
+    purchaseOrderController.receiveOrderAndCalculateLandedCost,
+  );
+
 // Cancel purchase order – seller có thể cancel PO của mình
 router
   .route("/:id/cancel")
