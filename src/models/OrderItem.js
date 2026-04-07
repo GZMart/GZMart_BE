@@ -1,5 +1,16 @@
 import mongoose from 'mongoose';
 
+/** Strip Vietnamese diacritics + uppercase. Used as a Mongoose setter for SKU fields. */
+function normalizeSkuValue(v) {
+  if (!v || typeof v !== 'string') return v;
+  return v
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/Đ/g, 'D');
+}
+
 const orderItemSchema = new mongoose.Schema(
   {
     orderId: {
@@ -19,6 +30,7 @@ const orderItemSchema = new mongoose.Schema(
     sku: {
       type: String,
       required: [true, 'SKU is required'],
+      set: normalizeSkuValue,
     },
     quantity: {
       type: Number,

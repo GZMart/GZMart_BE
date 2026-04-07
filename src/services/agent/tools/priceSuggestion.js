@@ -8,25 +8,14 @@ import embeddingService from "../../embedding.service.js";
 import multiStrategyCache from "../../multiStrategyCache.service.js";
 import { registerTool } from "../tools.js";
 import { sanitizeProductName } from "../../../utils/promptSanitizer.js";
+import { normalizeSku, skuMatch } from "../../../utils/skuUtils.js";
 
 /**
- * Chuẩn hóa SKU để so khớp PO / kho (GIÀY041 vs GIAY041, khoảng trắng, v.v.).
+ * Legacy aliases — remove once all call sites are migrated.
+ * @deprecated Use normalizeSku / skuMatch from skuUtils.js instead.
  */
-function normalizeSkuKey(s) {
-  if (!s || typeof s !== "string") return "";
-  return s
-    .trim()
-    .toUpperCase()
-    .normalize("NFD")
-    .replace(/\p{M}/gu, "")
-    .replace(/Đ/g, "D");
-}
-
-/** Hai SKU có cùng khóa chuẩn hóa không */
-function skusMatch(a, b) {
-  if (!a || !b) return false;
-  return normalizeSkuKey(a) === normalizeSkuKey(b);
-}
+const normalizeSkuKey = normalizeSku;
+const skusMatch = skuMatch;
 
 /** Các biến thể để query Mongo ($in) — PO có thể lưu GIÀY… hoặc GIAY… */
 function buildSkuQueryVariants(sku) {
@@ -50,6 +39,55 @@ function priceStats(prices) {
   const max = Math.max(...prices);
   const avg = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
   return { min, avg, max };
+}
+
+/**
+ * Rủi ro theo mức giảm so với TB thị trường + sàn giá (landed / giá hiện tại).
+ * Luôn trả warningMessage mô tả rõ, không chỉ high/moderate/safe.
+ */
+function riskFromSuggestedVsMarket(suggested, refAvg, variantFloor, costData) {
+  const discountPct = refAvg > 0 ? ((refAvg - suggested) / refAvg) * 100 : 0;
+  let riskLevel = "safe";
+  let warning = null;
+  let warningMessage = null;
+
+  if (suggested === variantFloor && suggested > 0 && costData?.hasCostData) {
+    warning = "floor_price_landed";
+    warningMessage =
+      `Giá đề xuất không thể thấp hơn giá vốn landed (${variantFloor.toLocaleString("vi-VN")}₫).`;
+  } else if (suggested === variantFloor && suggested > 0) {
+    warning = "floor_price";
+    warningMessage =
+      `Giá đề xuất không thể thấp hơn giá hiện tại (${variantFloor.toLocaleString("vi-VN")}₫).`;
+  } else if (discountPct > 30) {
+    riskLevel = "high";
+    warning = "high_discount_risk";
+    warningMessage =
+      "Giá đề xuất thấp hơn 30% so với trung bình thị trường. Có nguy cơ lỗ vốn.";
+  } else if (discountPct > 15) {
+    riskLevel = "moderate";
+    warning = "moderate_discount";
+    warningMessage =
+      `Giá đề xuất thấp hơn ${Math.round(discountPct)}% so với trung bình thị trường.`;
+  } else if (refAvg > 0) {
+    if (discountPct > 0) {
+      warningMessage =
+        `Giá tham khảo thấp hơn TB thị trường khoảng ${Math.round(discountPct)}% — trong ngưỡng an toàn (≤15%).`;
+    } else {
+      warningMessage =
+        "Giá tham khảo bằng hoặc cao hơn TB thị trường — không có rủi ro giảm giá sâu.";
+    }
+  } else {
+    warningMessage =
+      "Không đủ dữ liệu TB thị trường để đánh giá mức giảm giá.";
+  }
+
+  return {
+    riskLevel,
+    warning,
+    warningMessage,
+    discountPct: Math.round(discountPct * 10) / 10,
+  };
 }
 
 /**
@@ -1807,21 +1845,12 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, productName, m
       let suggested = Number(cached.suggestedPrice);
       if (suggested > 0 && suggested < floorPrice) suggested = floorPrice;
 
-      const discountPct = refAvgForCalc > 0 ? ((refAvgForCalc - suggested) / refAvgForCalc) * 100 : 0;
-      const suggestedMarginPct = costData?.hasCostData && costData.landedCostPerUnit > 0
-        ? ((suggested - costData.landedCostPerUnit) / costData.landedCostPerUnit) * 100
-        : 0;
-      const currentMarginInfo = costData?.hasCostData
-        ? calculateMargin(0, costData.landedCostPerUnit)
-        : null;
-
       return validModelIds.map((modelId) => {
         const model = modelMap.get(modelId);
         const currentPrice = model?.price ?? targetProduct.originalPrice;
         const variantFloor = costData?.hasCostData ? costData.landedCostPerUnit : currentPrice;
         let variantSuggested = suggested;
         if (variantSuggested > 0 && variantSuggested < variantFloor) variantSuggested = variantFloor;
-        const variantDiscountPct = refAvgForCalc > 0 ? ((refAvgForCalc - variantSuggested) / refAvgForCalc) * 100 : 0;
         const variantMarginPct = costData?.hasCostData && costData.landedCostPerUnit > 0
           ? ((variantSuggested - costData.landedCostPerUnit) / costData.landedCostPerUnit) * 100
           : 0;
@@ -1829,17 +1858,25 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, productName, m
           ? calculateMargin(currentPrice, costData.landedCostPerUnit)
           : null;
 
+        const variantRounded = Math.round(variantSuggested);
+        const {
+          riskLevel: rowRiskLevel,
+          warning: rowWarning,
+          warningMessage: rowWarningMessage,
+          discountPct: rowDiscountPct,
+        } = riskFromSuggestedVsMarket(variantRounded, refAvgForCalc, variantFloor, costData);
+
         return {
           modelId,
           sku: model?.sku || null,
           tierIndex: model?.tierIndex || [],
           currentPrice,
-          suggestedPrice: Math.round(variantSuggested),
+          suggestedPrice: variantRounded,
           reasoning: cached.reasoning || "",
-          discountPct: Math.round(variantDiscountPct * 10) / 10,
-          riskLevel: cached.riskLevel || "safe",
-          warning: cached.warning || null,
-          warningMessage: cached.warningMessage || null,
+          discountPct: rowDiscountPct,
+          riskLevel: rowRiskLevel,
+          warning: rowWarning,
+          warningMessage: rowWarningMessage,
           fromCache: true,
           fromRedis: true,
           strategy: stratKey,
@@ -1891,18 +1928,38 @@ async function prepareBatchPriceSuggestion({ sellerId, productId, productName, m
   const batchCached = await getBatchCachedSuggestion(productIdStr, sellerId, batchCacheKey);
   if (batchCached?.batchPayload) {
     const p = batchCached.batchPayload;
+    const cd = costData ?? p.costData ?? null;
+    const refAvgRemap = p.marketData?.confidence === "high"
+      ? p.marketData?.clusterWeightedAvg
+      : (p.marketData?.weightedAvg || p.marketData?.avg || 0);
+    const resultsRemapped = (p.results || []).map((row) => {
+      const currentPrice = row.currentPrice;
+      const variantFloor = cd?.hasCostData ? cd.landedCostPerUnit : currentPrice;
+      let s = Number(row.suggestedPrice);
+      if (s > 0 && s < variantFloor) s = variantFloor;
+      const sr = Math.round(s);
+      const r = riskFromSuggestedVsMarket(sr, refAvgRemap, variantFloor, cd);
+      return {
+        ...row,
+        suggestedPrice: sr,
+        discountPct: r.discountPct,
+        riskLevel: r.riskLevel,
+        warning: r.warning,
+        warningMessage: r.warningMessage,
+      };
+    });
     return {
       success: true,
       fromCache: true,
       cachedAt: batchCached.updatedAt,
-      results: p.results,
+      results: resultsRemapped,
       product: p.product,
       marketData: p.marketData,
       competitors: p.competitors,
       // [Phase 3 - 5.1]
       strategy: p.strategy || strategy,
       // [Hướng 2] Ưu tiên costData vừa fetch từ PO — payload Mongo cũ có thể không có
-      costData: costData ?? p.costData ?? null,
+      costData: cd,
     };
   }
 
@@ -2061,21 +2118,12 @@ async function finalizeBatchPriceSuggestion(precompute) {
     const suggestedMarginPct = costData?.hasCostData && costData.landedCostPerUnit > 0
       ? ((suggested - costData.landedCostPerUnit) / costData.landedCostPerUnit) * 100
       : 0;
-    const discountPct = refAvg > 0 ? ((refAvg - suggested) / refAvg) * 100 : 0;
-    let riskLevel = "safe", warning = null, warningMessage = null;
-    if (suggested === floorPrice && suggested > 0 && costData?.hasCostData) {
-      riskLevel = "safe"; warning = "floor_price_landed";
-      warningMessage = `Giá đề xuất không thể thấp hơn giá vốn landed (${floorPrice.toLocaleString("vi-VN")}₫).`;
-    } else if (suggested < floorPrice) {
-      riskLevel = "safe"; warning = "floor_price";
-      warningMessage = `Giá đề xuất không thể thấp hơn giá hiện tại (${floorPrice.toLocaleString("vi-VN")}₫).`;
-    } else if (discountPct > 30) {
-      riskLevel = "high"; warning = "high_discount_risk";
-      warningMessage = "Giá đề xuất thấp hơn 30% so với trung bình thị trường. Có nguy cơ lỗ vốn.";
-    } else if (discountPct > 15) {
-      riskLevel = "moderate"; warning = "moderate_discount";
-      warningMessage = `Giá đề xuất thấp hơn ${Math.round(discountPct)}% so với trung bình.`;
-    }
+    const {
+      riskLevel,
+      warning,
+      warningMessage,
+      discountPct,
+    } = riskFromSuggestedVsMarket(suggested, refAvg, floorPrice, costData);
 
     allStrategies[strat] = {
       suggestedPrice: Math.round(suggested),
@@ -2083,7 +2131,7 @@ async function finalizeBatchPriceSuggestion(precompute) {
       warning,
       riskLevel,
       warningMessage,
-      discountPct: Math.round(discountPct * 10) / 10,
+      discountPct,
       suggestedMarginPct: Math.round(suggestedMarginPct * 10) / 10,
       marketData,
       competitors: competitorsObj,
@@ -2102,13 +2150,19 @@ async function finalizeBatchPriceSuggestion(precompute) {
     const variantFloor = costData?.hasCostData ? costData.landedCostPerUnit : currentPrice;
     if (suggested > 0 && suggested < variantFloor) suggested = variantFloor;
 
-    const variantDiscountPct = refAvg > 0 ? ((refAvg - suggested) / refAvg) * 100 : 0;
     const variantMarginPct = costData?.hasCostData && costData.landedCostPerUnit > 0
       ? ((suggested - costData.landedCostPerUnit) / costData.landedCostPerUnit) * 100
       : 0;
     const currentMarginInfo = costData?.hasCostData
       ? calculateMargin(currentPrice, costData.landedCostPerUnit)
       : null;
+
+    const {
+      riskLevel: rowRiskLevel,
+      warning: rowWarning,
+      warningMessage: rowWarningMessage,
+      discountPct: rowDiscountPct,
+    } = riskFromSuggestedVsMarket(suggested, refAvg, variantFloor, costData);
 
     return {
       modelId,
@@ -2117,10 +2171,10 @@ async function finalizeBatchPriceSuggestion(precompute) {
       currentPrice,
       suggestedPrice: Math.round(suggested),
       reasoning: stratResult.reasoning || "",
-      discountPct: Math.round(variantDiscountPct * 10) / 10,
-      riskLevel: stratResult.riskLevel || "safe",
-      warning: stratResult.warning || null,
-      warningMessage: stratResult.warningMessage || null,
+      discountPct: rowDiscountPct,
+      riskLevel: rowRiskLevel,
+      warning: rowWarning,
+      warningMessage: rowWarningMessage,
       fromCache: false,
       strategy,
       // [Hướng 2]
