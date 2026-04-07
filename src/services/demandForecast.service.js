@@ -5,24 +5,7 @@ import OrderItem from "../models/OrderItem.js";
 import InventoryItem from "../models/InventoryItem.js";
 import DemandForecastCache from "../models/DemandForecastCache.js";
 import DemandForecastRateLimit from "../models/DemandForecastRateLimit.js";
-import DemandForecastCache from "../models/DemandForecastCache.js";
-import DemandForecastRateLimit from "../models/DemandForecastRateLimit.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
-import { generateDemandInsight } from "./aiInsight.service.js";
-import fsExtra from "fs-extra";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DATA_DIR = path.resolve(__dirname, "../../data");
-const SHOPEE_MOCK_FILE = path.join(DATA_DIR, "shopee_mock_data.json");
-const TIKI_MOCK_FILE = path.join(DATA_DIR, "tiki_mock_data.json");
-
-// ── Cache TTL (minutes) ──────────────────────────────────────────────────────
-const CACHE_TTL_MINUTES = 30;
-
-// ── Cache helpers ────────────────────────────────────────────────────────────
 import { generateDemandInsight } from "./aiInsight.service.js";
 import fsExtra from "fs-extra";
 import path from "path";
@@ -335,14 +318,10 @@ export const getDemandForecast = async (sellerId, options = {}) => {
   // Get seller's active products (include category for display)
   const products = await Product.find({ sellerId: sellerOid, status: "active" })
     .select("_id name images models._id models.price models.stock models.sku category")
-    .select("_id name images models._id models.price models.stock models.sku category")
     .lean();
 
   if (!products.length) {
     return {
-      summary: { totalProducts: 0, trendingProducts: 0 },
-      trendingProducts: [],
-      dataPeriod: { days, trendDays, since: since.toISOString(), until: new Date().toISOString() },
       summary: { totalProducts: 0, trendingProducts: 0 },
       trendingProducts: [],
       dataPeriod: { days, trendDays, since: since.toISOString(), until: new Date().toISOString() },
@@ -362,7 +341,6 @@ export const getDemandForecast = async (sellerId, options = {}) => {
       },
     },
     { $unwind: "$order" },
-    { $unwind: "$order" },
     {
       $match: {
         productId: { $in: productIds },
@@ -374,12 +352,10 @@ export const getDemandForecast = async (sellerId, options = {}) => {
     {
       $addFields: {
         week: { $dateToString: { format: "%Y-W%V", date: "$order.createdAt" } },
-        week: { $dateToString: { format: "%Y-W%V", date: "$order.createdAt" } },
       },
     },
     {
       $group: {
-        _id: { productId: "$productId", week: "$week" },
         _id: { productId: "$productId", week: "$week" },
         quantity: { $sum: "$quantity" },
         revenue: { $sum: "$subtotal" },
@@ -457,7 +433,6 @@ export const getDemandForecast = async (sellerId, options = {}) => {
     const pid = row._id.productId.toString();
     if (!weeklySalesMap[pid]) weeklySalesMap[pid] = [];
     weeklySalesMap[pid].push({ week: row._id.week, quantity: row.quantity, revenue: row.revenue });
-    weeklySalesMap[pid].push({ week: row._id.week, quantity: row.quantity, revenue: row.revenue });
   });
 
   // Build per-product forecasts
@@ -476,20 +451,9 @@ export const getDemandForecast = async (sellerId, options = {}) => {
     const mid = Math.floor(sales.length / 2);
     const recentWeeks = sales.slice(mid);
     const previousWeeks = sales.slice(0, mid);
-    // For trend calculation, use recent half vs previous half of available weeks
-    const mid = Math.floor(sales.length / 2);
-    const recentWeeks = sales.slice(mid);
-    const previousWeeks = sales.slice(0, mid);
     const recentTotal = recentWeeks.reduce((sum, w) => sum + w.quantity, 0);
     const previousTotal = previousWeeks.reduce((sum, w) => sum + w.quantity, 0);
 
-    // Short-horizon (7 days) uses last 2 weeks vs prior 2 weeks for higher precision
-    const recent2 = sales.slice(-2);
-    const prior2 = sales.slice(-4, -2);
-    const recent2Total = recent2.reduce((sum, w) => sum + w.quantity, 0);
-    const prior2Total = prior2.reduce((sum, w) => sum + w.quantity, 0);
-
-    const trendPercent30d = previousTotal > 0
     // Short-horizon (7 days) uses last 2 weeks vs prior 2 weeks for higher precision
     const recent2 = sales.slice(-2);
     const prior2 = sales.slice(-4, -2);
@@ -512,24 +476,11 @@ export const getDemandForecast = async (sellerId, options = {}) => {
     const activeTrendPct = trendDays === 7 ? trendPercent7d : trendPercent30d;
     if (activeTrendPct > 10) trendCategory = "trending_up";
     else if (activeTrendPct < -10) trendCategory = "trending_down";
-    const trendPercent7d = prior2Total > 0
-      ? ((recent2Total - prior2Total) / prior2Total * 100)
-      : (recent2Total > 0 ? 100 : 0);
-
-    const weeksOfStock = avgWeeklyQty > 0 ? currentStock / avgWeeklyQty : Infinity;
-    const restockMultiplier = trendDays === 7 ? 1 : 4; // 1 week buffer for 7d, 4 weeks for 30d
-    const suggestedQty = Math.max(Math.ceil(avgWeeklyQty * restockMultiplier - currentStock), 0);
-
-    let trendCategory = "stable";
-    const activeTrendPct = trendDays === 7 ? trendPercent7d : trendPercent30d;
-    if (activeTrendPct > 10) trendCategory = "trending_up";
-    else if (activeTrendPct < -10) trendCategory = "trending_down";
 
     return {
       productId: pid,
       name: product.name,
       image: product.images?.[0] || null,
-      category: product.category || null,
       category: product.category || null,
       currentStock,
       totalSold,
@@ -540,16 +491,8 @@ export const getDemandForecast = async (sellerId, options = {}) => {
       trendPercent30d: Math.round(trendPercent30d * 10) / 10,
       trendPercent7d: Math.round(trendPercent7d * 10) / 10,
       activeTrendPct: Math.round(activeTrendPct * 10) / 10,
-      trendPercent30d: Math.round(trendPercent30d * 10) / 10,
-      trendPercent7d: Math.round(trendPercent7d * 10) / 10,
-      activeTrendPct: Math.round(activeTrendPct * 10) / 10,
       weeksOfStock: weeksOfStock === Infinity ? null : Math.round(weeksOfStock * 10) / 10,
       trendCategory,
-      suggestedQty,
-      restockPriority: weeksOfStock < 2 && avgWeeklyQty > 0 ? "urgent"
-        : weeksOfStock < 4 && avgWeeklyQty > 0 ? "moderate"
-        : trendCategory === "trending_up" ? "opportunity"
-        : "stable",
       suggestedQty,
       restockPriority: weeksOfStock < 2 && avgWeeklyQty > 0 ? "urgent"
         : weeksOfStock < 4 && avgWeeklyQty > 0 ? "moderate"
@@ -628,22 +571,13 @@ export const getDemandForecast = async (sellerId, options = {}) => {
     trendingDown: forecasts.filter((f) => f.trendCategory === "trending_down").length,
     urgentRestock: forecasts.filter((f) => f.restockPriority === "urgent").length,
     moderateRestock: forecasts.filter((f) => f.restockPriority === "moderate" || f.restockPriority === "opportunity").length,
-    trendingProducts: trendingProducts.length,
-    trendingUp: forecasts.filter((f) => f.trendCategory === "trending_up").length,
-    trendingDown: forecasts.filter((f) => f.trendCategory === "trending_down").length,
-    urgentRestock: forecasts.filter((f) => f.restockPriority === "urgent").length,
-    moderateRestock: forecasts.filter((f) => f.restockPriority === "moderate" || f.restockPriority === "opportunity").length,
   };
 
   const result = {
-  const result = {
     summary,
-    trendingProducts,
     trendingProducts,
     dataPeriod: {
       days,
-      trendDays,
-      forecastAccuracy: trendDays === 7 ? "high" : "standard",
       trendDays,
       forecastAccuracy: trendDays === 7 ? "high" : "standard",
       since: since.toISOString(),
@@ -655,15 +589,9 @@ export const getDemandForecast = async (sellerId, options = {}) => {
   saveForecastToCache(sellerOid, { days, trendDays, includeWebTrends }, result);
 
   return result;
-
-  // Persist to MongoDB cache (non-blocking)
-  saveForecastToCache(sellerOid, { days, trendDays, includeWebTrends }, result);
-
-  return result;
 };
 
 /**
- * Get detailed product performance with weekly breakdown.
  * Get detailed product performance with weekly breakdown.
  */
 export const getProductPerformance = async (sellerId, productId, weeks = 12) => {
@@ -690,7 +618,6 @@ export const getProductPerformance = async (sellerId, productId, weeks = 12) => 
     {
       $addFields: {
         week: { $dateToString: { format: "%Y-W%V", date: "$order.createdAt" } },
-        week: { $dateToString: { format: "%Y-W%V", date: "$order.createdAt" } },
       },
     },
     {
@@ -701,7 +628,6 @@ export const getProductPerformance = async (sellerId, productId, weeks = 12) => 
         orders: { $sum: 1 },
       },
     },
-    { $sort: { _id: 1 } },
     { $sort: { _id: 1 } },
   ]);
 
