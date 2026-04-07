@@ -50,6 +50,7 @@ import rmaRoutes from "./routes/rma.routes.js";
 import sellerApplicationRoutes from "./routes/sellerApplication.routes.js";
 import coinRoutes from "./routes/coin.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
+import disputeRoutes from "./routes/disputeResolution.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
 import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
@@ -232,6 +233,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/rma", rmaRoutes);
 app.use("/api/chat", chatRoutes); // Register chat routes
 app.use("/api/ai", aiRoutes); // Register AI routes
+app.use("/api/disputes", disputeRoutes);
 
 // Error handler
 app.use(errorHandler);
