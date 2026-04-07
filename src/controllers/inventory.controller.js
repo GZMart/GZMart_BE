@@ -229,7 +229,7 @@ export const getLotBreakdown = asyncHandler(async (req, res, next) => {
  */
 export const getDemandForecast = asyncHandler(async (req, res, next) => {
   const sellerId = req.user?._id;
-  const { days = 90, trendDays = 30 } = req.query;
+  const { days = 90, trendDays = 30, bypassCache = false } = req.query;
 
   if (!sellerId) {
     throw new ErrorResponse("Authentication required", 401);
@@ -237,7 +237,11 @@ export const getDemandForecast = asyncHandler(async (req, res, next) => {
 
   const data = await demandForecastService.getDemandForecast(
     sellerId.toString(),
-    { days: parseInt(days) || 90, trendDays: parseInt(trendDays) || 30 },
+    { 
+      days: parseInt(days) || 90, 
+      trendDays: parseInt(trendDays) || 30,
+      bypassCache: bypassCache === 'true' || bypassCache === true,
+    },
   );
 
   res.status(200).json({

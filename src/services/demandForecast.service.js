@@ -235,13 +235,14 @@ async function getWebTrendsForKeyword(keyword) {
 /**
  * Get demand forecast with web-based trending insights for a seller.
  * Results are cached in MongoDB for 30 minutes to avoid redundant web searches.
- * Rate-limit is enforced per seller (50 requests/day, 60s per-product cooldown).
+ * Rate-limit is enforced per seller (200 requests/day, 60s per-product cooldown).
  *
  * @param {string} sellerId
  * @param {Object} options
  * @param {number} options.days - Historical analysis window (default 90)
  * @param {number} options.trendDays - Forecast horizon for restock (7 or 30, default 30)
  * @param {boolean} options.includeWebTrends - Whether to search external platforms (default true)
+ * @param {boolean} options.bypassCache - Force fresh calculation, ignore MongoDB cache (default false)
  * @returns {{ summary, trendingProducts, dataPeriod, _cached?, _rateLimit? }}
  */
 export const getDemandForecast = async (sellerId, options = {}) => {
@@ -249,6 +250,7 @@ export const getDemandForecast = async (sellerId, options = {}) => {
     days = 90,
     trendDays = 30,
     includeWebTrends = true,
+    bypassCache = false,
   } = options;
 
   if (!sellerId) {
@@ -285,14 +287,33 @@ export const getDemandForecast = async (sellerId, options = {}) => {
   }
 
   // ── Cache check ────────────────────────────────────────────────────────
-  const cacheResult = await getCachedForecast(sellerOid, { days, trendDays, includeWebTrends });
-  if (cacheResult) {
-    return { ...cacheResult, _cached: true };
+  if (!bypassCache) {
+    const cacheResult = await getCachedForecast(sellerOid, { days, trendDays, includeWebTrends });
+    if (cacheResult) {
+      return { ...cacheResult, _cached: true };
+    }
+  } else {
+    // When bypassing cache, delete old cache entries to force fresh calculation
+    try {
+      const cacheKey = makeCacheKey({ days, trendDays, includeWebTrends });
+      await DemandForecastCache.deleteOne({
+        sellerId: sellerOid,
+        cacheKey,
+      });
+    } catch (err) {
+      console.warn("[demandForecast] Failed to clear cache:", err.message);
+    }
   }
 
   // ── No cache: compute forecast ─────────────────────────────────────────
   const since = new Date();
   since.setDate(since.getDate() - days);
+
+  // Calculate time boundaries for sales tracking (for display purposes)
+  const since7d = new Date();
+  since7d.setDate(since7d.getDate() - 7);
+  const since30d = new Date();
+  since30d.setDate(since30d.getDate() - 30);
 
   // Get seller's active products (include category for display)
   const products = await Product.find({ sellerId: sellerOid, status: "active" })
@@ -309,7 +330,7 @@ export const getDemandForecast = async (sellerId, options = {}) => {
 
   const productIds = products.map((p) => p._id);
 
-  // Aggregate weekly sales data
+  // Aggregate weekly sales data (full historical period)
   const salesData = await OrderItem.aggregate([
     {
       $lookup: {
@@ -343,19 +364,67 @@ export const getDemandForecast = async (sellerId, options = {}) => {
     { $sort: { "_id.week": 1 } },
   ]);
 
-  // Current inventory
-  const inventoryItems = await InventoryItem.find({
-    productId: { $in: productIds },
-  }).select("productId modelId quantity").lean();
+  // Get sales data for last 7 days (for display when user selects 7-day forecast)
+  const salesData7d = await OrderItem.aggregate([
+    {
+      $lookup: {
+        from: "orders",
+        localField: "orderId",
+        foreignField: "_id",
+        as: "order",
+      },
+    },
+    { $unwind: "$order" },
+    {
+      $match: {
+        productId: { $in: productIds },
+        "order.createdAt": { $gte: since7d },
+        "order.status": { $in: ["completed", "delivered", "delivered_pending_confirmation"] },
+        "order.paymentStatus": { $ne: "refunded" },
+      },
+    },
+    {
+      $group: {
+        _id: "$productId",
+        totalQty: { $sum: "$quantity" },
+      },
+    },
+  ]);
 
-  const invByProductModel = {};
-  inventoryItems.forEach((item) => {
-    const pid = item.productId.toString();
-    const mid = item.modelId.toString();
-    const key = `${pid}|${mid}`;
-    if (!invByProductModel[key]) invByProductModel[key] = 0;
-    invByProductModel[key] += item.quantity;
-  });
+  // Get sales data for last 30 days (for display when user selects 30-day forecast)
+  const salesData30d = await OrderItem.aggregate([
+    {
+      $lookup: {
+        from: "orders",
+        localField: "orderId",
+        foreignField: "_id",
+        as: "order",
+      },
+    },
+    { $unwind: "$order" },
+    {
+      $match: {
+        productId: { $in: productIds },
+        "order.createdAt": { $gte: since30d },
+        "order.status": { $in: ["completed", "delivered", "delivered_pending_confirmation"] },
+        "order.paymentStatus": { $ne: "refunded" },
+      },
+    },
+    {
+      $group: {
+        _id: "$productId",
+        totalQty: { $sum: "$quantity" },
+      },
+    },
+  ]);
+
+  // Build maps for quick lookup
+  const sales7dMap = Object.fromEntries(
+    salesData7d.map((s) => [s._id.toString(), s.totalQty])
+  );
+  const sales30dMap = Object.fromEntries(
+    salesData30d.map((s) => [s._id.toString(), s.totalQty])
+  );
 
   const productMap = Object.fromEntries(products.map((p) => [p._id.toString(), p]));
 
@@ -366,21 +435,13 @@ export const getDemandForecast = async (sellerId, options = {}) => {
     weeklySalesMap[pid].push({ week: row._id.week, quantity: row.quantity, revenue: row.revenue });
   });
 
-  const resolveSkuStock = (productIdStr, model) => {
-    const mid = model?._id?.toString();
-    if (!mid) return Number(model?.stock) || 0;
-    const key = `${productIdStr}|${mid}`;
-    return Object.prototype.hasOwnProperty.call(invByProductModel, key)
-      ? invByProductModel[key]
-      : (Number(model.stock) || 0);
-  };
-
   // Build per-product forecasts
   const forecasts = Object.keys(productMap).map((pid) => {
     const product = productMap[pid];
     const sales = weeklySalesMap[pid] || [];
     const models = product.models || [];
-    const currentStock = models.reduce((sum, m) => sum + resolveSkuStock(pid, m), 0);
+    // Sum stock directly from model.stock (same as getProductDemandDetails)
+    const currentStock = models.reduce((sum, m) => sum + (Number(m?.stock) || 0), 0);
     const totalSold = sales.reduce((sum, w) => sum + w.quantity, 0);
     const totalRevenue = sales.reduce((sum, w) => sum + w.revenue, 0);
     const weekCount = sales.length || 1;
@@ -424,6 +485,8 @@ export const getDemandForecast = async (sellerId, options = {}) => {
       currentStock,
       totalSold,
       totalRevenue,
+      totalSold7d: sales7dMap[pid] || 0,
+      totalSold30d: sales30dMap[pid] || 0,
       avgWeeklyQty: Math.round(avgWeeklyQty * 10) / 10,
       trendPercent30d: Math.round(trendPercent30d * 10) / 10,
       trendPercent7d: Math.round(trendPercent7d * 10) / 10,
@@ -468,6 +531,8 @@ export const getDemandForecast = async (sellerId, options = {}) => {
       const combinedScore = Math.round(
         (Math.abs(f.activeTrendPct) * 0.6) + (web.globalTrendScore * 0.4)
       );
+      // Display sold quantity based on forecast period: 7-day or 30-day
+      const displayQty = trendDays === 7 ? f.totalSold7d : f.totalSold30d;
       return {
         ...f,
         globalTrendScore: web.globalTrendScore,
@@ -475,13 +540,14 @@ export const getDemandForecast = async (sellerId, options = {}) => {
         hasWebData: web.hasData,
         combinedScore,
         displayTrendPct: f.activeTrendPct,
-        displayQty: f.totalSold,
+        displayQty,
         forecastAccuracy: trendDays === 7 ? "high" : "standard",
       };
     })
     .filter((f) => {
-      // Show products that are trending up OR have combined score > 15 OR need restock
+      // Show products that are trending up OR have combined score > 15 OR need restock OR have any sales
       return (
+        f.totalSold > 0 ||
         f.trendCategory === "trending_up" ||
         f.combinedScore > 15 ||
         f.restockPriority === "urgent" ||
@@ -622,10 +688,10 @@ export const getProductDemandDetails = async (sellerId, productId, options = {})
     { $sort: { _id: 1 } },
   ]);
 
-  // Fill gaps so chart shows a continuous line
+  // Fill gaps so chart shows a continuous line (include today)
   const filledDaily = [];
   const salesMap = Object.fromEntries(dailySales.map((d) => [d._id, d]));
-  for (let i = 0; i < days; i++) {
+  for (let i = 0; i <= days; i++) {
     const d = new Date(since);
     d.setDate(d.getDate() + i);
     const key = d.toISOString().slice(0, 10);
@@ -704,15 +770,31 @@ export const getProductDemandDetails = async (sellerId, productId, options = {})
     if (leadTimes.length > 0) leadTimeDays = Math.round(leadTimes.reduce((a, b) => a + b, 0) / leadTimes.length);
   } catch {}
 
-  // Days until stockout
+  // ── Projected daily qty (accounting for trend) ──────────────────────
+  // If trending ±30%, adjust forecast; otherwise keep current rate
+  let projectedDailyQty = avgDailyQty;
+  if (trendPct >= 30) {
+    // Trending up: forecast higher sales (cap at 200% max growth)
+    projectedDailyQty = avgDailyQty * (1 + Math.min(trendPct, 200) / 100);
+  } else if (trendPct <= -30) {
+    // Trending down: forecast lower sales (cap at -100% minimum)
+    projectedDailyQty = avgDailyQty * (1 + Math.max(trendPct, -100) / 100);
+  }
+  // Else: stable trend (-30% to +30%), use current avgDailyQty
+
+  // Days until stockout (using projected rate to account for trend)
   let daysUntilStockout = null;
-  if (avgDailyQty > 0) {
-    daysUntilStockout = Math.round(totalStock / avgDailyQty);
+  if (projectedDailyQty > 0) {
+    daysUntilStockout = Math.round(totalStock / projectedDailyQty);
   }
 
   // ── Suggested restock qty ─────────────────────────────────────────
+  // Horizon: 7 days (high accuracy) or 4 weeks (standard)
+  // Add 20% safety buffer for demand spikes
   const restockMultiplier = days === 7 ? 1 : 4;
-  const suggestedQty = Math.max(Math.ceil(avgDailyQty * 7 * restockMultiplier - totalStock), 0);
+  const projectedQtyInHorizon = projectedDailyQty * 7 * restockMultiplier;
+  const safetyBuffer = 1.2; // 20% buffer
+  const suggestedQty = Math.max(Math.ceil(projectedQtyInHorizon * safetyBuffer - totalStock), 0);
 
   // ── Web trend data ────────────────────────────────────────────────
   let webTrends = { globalTrendScore: 0, trendSources: [], hasData: false };
@@ -743,10 +825,12 @@ export const getProductDemandDetails = async (sellerId, productId, options = {})
       productName: product.name,
       totalStock,
       avgDailyQty,
+      projectedDailyQty,
       totalSold,
       leadTimeDays,
       daysUntilStockout,
       suggestedQty,
+      projectedQtyInHorizon: Math.round(projectedQtyInHorizon * 10) / 10,
       estimatedRevenue: suggestedQty > 0 && product.models?.[0]?.price
         ? suggestedQty * product.models[0].price
         : null,
@@ -758,10 +842,19 @@ export const getProductDemandDetails = async (sellerId, productId, options = {})
     });
   } catch (err) {
     console.error("[demandForecast] generateDemandInsight failed:", err.message);
-    // Fallback: minimal structured text so the UI still shows something
-    aiInsight = `Analysis of **${product.name}**: ${totalSold} units sold over ${days} days. ` +
-      `Current stock ${totalStock} units${daysUntilStockout !== null ? ` (~${daysUntilStockout} days remaining)` : ""}. ` +
-      `Suggested order: **${suggestedQty} units**.`;
+    // Fallback: structured insight with projection
+    const trendLabel = trendPct >= 30 ? "trending up" : trendPct <= -30 ? "trending down" : "stable";
+    const trendEmoji = trendPct >= 30 ? "📈" : trendPct <= -30 ? "📉" : "➡️";
+    const restockStatus = suggestedQty > 0 ? `**Suggest +${suggestedQty} units**` : "**No restock needed** (stock is sufficient)";
+    const trendNote = trendPct >= 30 
+      ? ` But **monitor closely**: trending up ${Math.round(trendPct)}% means consumption accelerating. Current stock covers ~${daysUntilStockout} days at projected rate.`
+      : trendPct <= -30
+      ? ` And sales are declining ${Math.abs(Math.round(trendPct))}% — demand may slow further.`
+      : "";
+    
+    aiInsight = `${trendEmoji} **${product.name}**: ${totalSold} units sold in ${days} days. ` +
+      `Avg ${Math.round(avgDailyQty * 10) / 10} units/day → Projected **${Math.round(projectedDailyQty * 10) / 10} units/day**. ` +
+      `Inventory: ${totalStock} units. ${restockStatus}.${trendNote}`;
   }
 
   return {
@@ -769,22 +862,25 @@ export const getProductDemandDetails = async (sellerId, productId, options = {})
     name: product.name,
     image: product.images?.[0] || null,
     category: product.category || null,
-    // Section A
+    // Section A: Sales velocity
     salesVelocity: filledDaily,
     totalSold,
     avgDailyQty: Math.round(avgDailyQty * 10) / 10,
+    projectedDailyQty: Math.round(projectedDailyQty * 10) / 10,
     totalStock,
     leadTimeDays,
     daysUntilStockout,
-    // Section B
+    // Section B: Market insights
     webTrends,
     marketPrices,
-    // Section C
+    // Section C: Restock recommendation
+    projectedQtyInHorizon: Math.round(projectedQtyInHorizon * 10) / 10,
     suggestedQty,
     estimatedRevenue: suggestedQty > 0 && product.models?.[0]?.price
       ? suggestedQty * (product.models[0].price)
       : null,
     aiInsight,
     trendPct: Math.round(trendPct * 10) / 10,
+    trendLabel: trendPct >= 30 ? "trending_up" : trendPct <= -30 ? "trending_down" : "stable",
   };
 };
