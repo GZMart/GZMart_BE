@@ -50,6 +50,7 @@ import rmaRoutes from "./routes/rma.routes.js";
 import sellerApplicationRoutes from "./routes/sellerApplication.routes.js";
 import coinRoutes from "./routes/coin.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
+import bannerRoutes from "./routes/banner.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
 import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
@@ -60,6 +61,7 @@ import { startLivestreamCleanupJob } from "./jobs/livestreamCleanup.job.js";
 import { setSocketIO } from "./utils/socketIO.js";
 import { runBatchEmbedding } from "./jobs/batchEmbedding.job.js";
 import { initProductSoldReconcileJob } from "./jobs/productSoldReconcile.job.js";
+import bannerService from "./services/banner.service.js";
 // Load environment variables
 dotenv.config();
 
@@ -232,6 +234,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/rma", rmaRoutes);
 app.use("/api/chat", chatRoutes); // Register chat routes
 app.use("/api/ai", aiRoutes); // Register AI routes
+app.use("/api/banners", bannerRoutes); // Register banner ads routes
 
 // Error handler
 app.use(errorHandler);
@@ -297,6 +300,11 @@ server.listen(PORT, HOST, () => {
   startLivestreamCleanupJob();
   // [Phase 3 - 5.2] Batch embedding cron — registered at import time
   runBatchEmbedding();
+  // Banner Ads status sync: APPROVED→RUNNING, RUNNING→COMPLETED (every 5 minutes)
+  bannerService.syncBannerStatuses().catch((err) => logger.error("syncBannerStatuses (boot):", err));
+  setInterval(() => {
+    bannerService.syncBannerStatuses().catch((err) => logger.error("syncBannerStatuses (interval):", err));
+  }, 5 * 60 * 1000);
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s

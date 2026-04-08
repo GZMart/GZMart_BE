@@ -1,4 +1,4 @@
-import Banner from "../models/Banner.js";
+import bannerService from "./banner.service.js";
 import Deal from "../models/Deal.js";
 import Category from "../models/Category.js";
 import Product from "../models/Product.js";
@@ -6,24 +6,10 @@ import dealService from "./deal.service.js";
 
 class HomeService {
   /**
-   * Get all active banners
+   * Get all active banners (ADMIN + SELLER RUNNING)
    */
   async getBanners() {
-    const now = new Date();
-
-    const banners = await Banner.find({
-      isActive: true,
-      $or: [
-        { startDate: null, endDate: null },
-        { startDate: { $lte: now }, endDate: { $gte: now } },
-        { startDate: { $lte: now }, endDate: null },
-        { startDate: null, endDate: { $gte: now } },
-      ],
-    })
-      .sort("order")
-      .lean();
-
-    return banners;
+    return await bannerService.getActiveBanners();
   }
 
   /**
