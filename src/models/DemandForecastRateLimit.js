@@ -62,13 +62,13 @@ demandForecastRateLimitSchema.methods.checkAndIncrement = function (productId) {
   }
 
   // ── Daily limit check ────────────────────────────────────────────────────
-  if (this.dailyCount >= 50) {
+  if (this.dailyCount >= 200) {
     const msUntilReset = new Date(this.dailyReset.getTime() + 24 * 60 * 60 * 1000) - now;
     const hoursLeft = Math.max(1, Math.ceil(msUntilReset / (1000 * 60 * 60)));
     return {
       allowed: false,
       reason: "daily_limit",
-      message: `Daily forecast limit reached (50 requests/day). Try again in ~${hoursLeft} hour(s).`,
+      message: `Daily forecast limit reached (200 requests/day). Try again in ~${hoursLeft} hour(s).`,
       msUntilReset,
     };
   }
