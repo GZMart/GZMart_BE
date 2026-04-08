@@ -23,3 +23,5 @@ try {
 }
 
 export default payOs;
+
+export const isPayOsConfigured = () => Boolean(payOs);

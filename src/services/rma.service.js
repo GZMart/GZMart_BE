@@ -696,6 +696,29 @@ export const getOrderReturnRequestForBuyer = async (userId, orderId) => {
  * Get seller's return requests (for orders they sold)
  */
 export const getSellerReturnRequests = async (sellerId, filters = {}) => {
+  const normalizeId = (value) => {
+    if (!value) {
+      return null;
+    }
+
+    if (typeof value === "string") {
+      return value;
+    }
+
+    if (typeof value === "object") {
+      if (value._id) {
+        return value._id.toString();
+      }
+      if (value.id) {
+        return value.id.toString();
+      }
+    }
+
+    return value.toString?.() || null;
+  };
+
+  const sellerIdStr = normalizeId(sellerId);
+
   // Get all return requests first
   const query = { isActive: true };
 
@@ -704,10 +727,24 @@ export const getSellerReturnRequests = async (sellerId, filters = {}) => {
   }
 
   let returnRequests = await ReturnRequest.find(query)
-    .populate("orderId")
+    .populate({
+      path: "orderId",
+      select:
+        "orderNumber status shippingAddress trackingCoordinates userId shippingStartedAt shippingEstimatedArrival",
+      populate: {
+        path: "userId",
+        select: "fullName email phone address location",
+      },
+    })
     .populate("userId", "fullName email")
     .populate("items.orderItemId")
-    .populate("items.productId")
+    .populate({
+      path: "items.productId",
+      populate: {
+        path: "sellerId",
+        select: "fullName email phone address location",
+      },
+    })
     .sort({ createdAt: -1 })
     .limit(filters.limit || 50);
 
@@ -719,10 +756,12 @@ export const getSellerReturnRequests = async (sellerId, filters = {}) => {
 
     // Filter items to only include products from this seller
     const sellerItems = request.items.filter((item) => {
+      const itemSellerId = normalizeId(item?.productId?.sellerId);
       return (
         item.productId &&
-        item.productId.sellerId &&
-        item.productId.sellerId.toString() === sellerId.toString()
+        itemSellerId &&
+        sellerIdStr &&
+        itemSellerId === sellerIdStr
       );
     });
 

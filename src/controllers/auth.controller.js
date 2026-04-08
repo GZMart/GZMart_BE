@@ -6,6 +6,7 @@ import jwt from "jsonwebtoken";
 import { sendTemplatedEmail } from "../utils/sendEmail.js";
 import logger from "../utils/logger.js";
 import { generateToken } from "../utils/jwt.js";
+import geocodingService from "../services/geocoding.service.js";
 
 // OTP Store: Map<email, { otp: string, expiresAt: Date, attempts: number }>
 const otpStore = new Map();
@@ -68,6 +69,10 @@ export const register = async (req, res, next) => {
       }
       if (req.body.address) {
         user.address = req.body.address;
+        user.location = {
+          ...(user.location || {}),
+          address: req.body.address,
+        };
       }
 
       await user.save();
@@ -93,6 +98,9 @@ export const register = async (req, res, next) => {
       }
       if (req.body.address) {
         userData.address = req.body.address;
+        userData.location = {
+          address: req.body.address,
+        };
       }
 
       try {
@@ -474,7 +482,9 @@ export const loginWithFacebook = async (req, res) => {
       if (user.hasPassword === undefined) {
         user.hasPassword = false;
         await user.save();
-        console.log("Initialized hasPassword: false for existing Facebook user.");
+        console.log(
+          "Initialized hasPassword: false for existing Facebook user.",
+        );
       }
     }
 
@@ -572,7 +582,9 @@ export const updateProfile = async (req, res, next) => {
     if (fullName) updateFields.fullName = fullName;
     if (email) updateFields.email = email;
     if (phone) updateFields.phone = phone;
-    if (address) updateFields.address = address;
+    if (address) {
+      updateFields.address = address;
+    }
     if (provinceCode) updateFields.provinceCode = provinceCode;
     if (provinceName) updateFields.provinceName = provinceName;
     if (wardCode) updateFields.wardCode = wardCode;
@@ -595,6 +607,24 @@ export const updateProfile = async (req, res, next) => {
           lng: parseFloat(parsedLocation.lng),
           address: parsedLocation.address || address || "",
         };
+
+        // Keep flat user.address synchronized with location.address.
+        if (parsedLocation.address || address) {
+          updateFields.address = parsedLocation.address || address;
+        }
+      }
+    } else if (address) {
+      // Only update nested location.address when no full location object is provided,
+      // to avoid Mongo path conflict between "location" and "location.address".
+      updateFields["location.address"] = address;
+
+      // Auto-geocode profile address to keep location.lat/lng available for tracking maps.
+      const geocoded = await geocodingService.geocodeAddressString(address);
+      if (geocoded && geocoded.lat != null && geocoded.lng != null) {
+        updateFields["location.lat"] = Number(geocoded.lat);
+        updateFields["location.lng"] = Number(geocoded.lng);
+        updateFields["location.address"] = geocoded.formattedAddress || address;
+        updateFields.address = geocoded.formattedAddress || address;
       }
     }
 
@@ -730,7 +760,12 @@ export const setPassword = async (req, res, next) => {
     }
 
     if (user.hasPassword) {
-      return next(new ErrorResponse("Password already set. Use change password instead.", 400));
+      return next(
+        new ErrorResponse(
+          "Password already set. Use change password instead.",
+          400,
+        ),
+      );
     }
 
     user.password = password;
