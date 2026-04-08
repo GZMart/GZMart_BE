@@ -5,8 +5,22 @@ import geocodingService from "../services/geocoding.service.js";
 
 // Helper to sync default address to User table
 const syncDefaultAddressToUser = async (userId, addressData) => {
+  const canonicalAddress =
+    addressData.formattedAddress ||
+    [
+      addressData.details,
+      addressData.street,
+      addressData.wardName,
+      addressData.districtName,
+      addressData.provinceName,
+    ]
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .join(", ");
+
   const updateData = {
-    address: addressData.details, // Mapping 'details' to 'address' in User
+    address: canonicalAddress,
+    "location.address": canonicalAddress || "",
     phone: addressData.phone,
     provinceCode: addressData.provinceCode,
     provinceName: addressData.provinceName,
@@ -21,11 +35,8 @@ const syncDefaultAddressToUser = async (userId, addressData) => {
     addressData.location.lat &&
     addressData.location.lng
   ) {
-    updateData.location = {
-      lat: addressData.location.lat,
-      lng: addressData.location.lng,
-      address: addressData.details || "", // Use address details as formatted address
-    };
+    updateData["location.lat"] = addressData.location.lat;
+    updateData["location.lng"] = addressData.location.lng;
   }
 
   await User.findByIdAndUpdate(userId, updateData);
@@ -244,14 +255,35 @@ export const deleteAddress = async (req, res, next) => {
       throw new ErrorResponse("Address not found", 404);
     }
 
-    if (address.isDefault) {
-      // Optional: Prevent deleting default or force user to switch default first.
-      // For now, allow delete but warn or just leave User table as is (last known state)
-      // Or better: Checking if there are other addresses to promote?
-      // Simplicity: Just delete. The User table will keep the stale data until they pick a new default.
-    }
+    const wasDefault = Boolean(address.isDefault);
 
     await Address.findByIdAndDelete(id);
+
+    if (wasDefault) {
+      const nextDefault = await Address.findOne({ userId }).sort({
+        createdAt: -1,
+      });
+
+      if (nextDefault) {
+        await Address.updateMany({ userId }, { isDefault: false });
+        nextDefault.isDefault = true;
+        await nextDefault.save();
+        await syncDefaultAddressToUser(userId, nextDefault);
+      } else {
+        await User.findByIdAndUpdate(userId, {
+          address: "",
+          "location.address": "",
+          provinceCode: "",
+          provinceName: "",
+          wardCode: "",
+          wardName: "",
+          $unset: {
+            "location.lat": 1,
+            "location.lng": 1,
+          },
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,

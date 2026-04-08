@@ -5,7 +5,7 @@ import User from "../models/User.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { emailTemplates } from "../templates/email.templates.js";
-import payOs from "../config/payos.config.js";
+import payOs, { isPayOsConfigured } from "../config/payos.config.js";
 import * as orderTrackingService from "./orderTracking.service.js";
 import {
   deductOrderResourcesFromOrder,
@@ -17,10 +17,10 @@ class PaymentService {
    * Create PayOS payment link for order
    */
   async createPaymentLink(orderId, userId) {
-    if (!payOs) {
+    if (!isPayOsConfigured()) {
       throw new ErrorResponse(
-        "Hệ thống thanh toán PayOS chưa được cấu hình",
-        500,
+        "Hệ thống thanh toán PayOS chưa được cấu hình. Vui lòng chọn COD hoặc cấu hình PAYOS_CLIENT_ID/PAYOS_API_KEY/PAYOS_CHECKSUM_KEY.",
+        503,
       );
     }
 
@@ -119,7 +119,7 @@ class PaymentService {
       JSON.stringify(webhookData, null, 2),
     );
 
-    if (!payOs) {
+    if (!isPayOsConfigured()) {
       console.error("[Webhook] PayOS not configured!");
       throw new ErrorResponse("PayOS not configured on server", 500);
     }
@@ -345,7 +345,7 @@ class PaymentService {
     console.log("[PayOS Check] OrderCode:", orderCode);
     console.log("[PayOS Check] UserId:", userId);
 
-    if (!payOs) {
+    if (!isPayOsConfigured()) {
       console.error("[PayOS Check] PayOS not configured!");
       throw new ErrorResponse(
         "Hệ thống thanh toán PayOS chưa được cấu hình",
