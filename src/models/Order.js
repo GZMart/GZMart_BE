@@ -118,6 +118,12 @@ const orderSchema = new mongoose.Schema(
     notes: {
       type: String,
     },
+    requestSignature: {
+      type: String,
+      index: true,
+      description:
+        "Fingerprint of create-order payload used for duplicate-submit protection",
+    },
     isActive: {
       type: Boolean,
       default: true,

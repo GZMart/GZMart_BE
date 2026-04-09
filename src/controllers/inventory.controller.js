@@ -229,7 +229,7 @@ export const getLotBreakdown = asyncHandler(async (req, res, next) => {
  */
 export const getDemandForecast = asyncHandler(async (req, res, next) => {
   const sellerId = req.user?._id;
-  const { days = 90 } = req.query;
+  const { days = 90, trendDays = 30, bypassCache = false } = req.query;
 
   if (!sellerId) {
     throw new ErrorResponse("Authentication required", 401);
@@ -237,13 +237,38 @@ export const getDemandForecast = asyncHandler(async (req, res, next) => {
 
   const data = await demandForecastService.getDemandForecast(
     sellerId.toString(),
-    parseInt(days) || 90,
+    { 
+      days: parseInt(days) || 90, 
+      trendDays: parseInt(trendDays) || 30,
+      bypassCache: bypassCache === 'true' || bypassCache === true,
+    },
   );
 
   res.status(200).json({
     success: true,
     data,
   });
+});
+
+/**
+ * @desc    Get detailed demand analysis for a single product
+ * @route   GET /api/inventory/demand-forecast/:productId/details
+ * @access  Private (Seller only)
+ */
+export const getProductDemandDetails = asyncHandler(async (req, res, next) => {
+  const sellerId = req.user?._id;
+  const { productId } = req.params;
+  const { days = 30 } = req.query;
+
+  if (!sellerId) throw new ErrorResponse("Authentication required", 401);
+
+  const data = await demandForecastService.getProductDemandDetails(
+    sellerId.toString(),
+    productId,
+    { days: parseInt(days) || 30 },
+  );
+
+  res.status(200).json({ success: true, data });
 });
 
 /**

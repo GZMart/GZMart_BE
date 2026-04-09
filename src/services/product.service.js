@@ -17,6 +17,12 @@ import { normalizeSku, skuMatch } from "../utils/skuUtils.js";
 // but keep draft/inactive hidden.
 const PUBLIC_VISIBLE_STATUSES = ["active", "out_of_stock"];
 
+const getPublicProductQuery = (extra = {}) => ({
+  ...extra,
+  status: { $in: PUBLIC_VISIBLE_STATUSES },
+  isHidden: { $ne: true },
+});
+
 /**
  * Fetch the currently active flash sale for a product, shaped for the FE.
  * Returns null when there is no active flash sale.
@@ -305,6 +311,10 @@ export const getProductById = async (productId) => {
     throw new ErrorResponse("Product not found", 404);
   }
 
+  if (product.isHidden || !PUBLIC_VISIBLE_STATUSES.includes(product.status)) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
   // Increment view count (GZM-13 feature)
   product.viewCount = (product.viewCount || 0) + 1;
   await product.save({ validateBeforeSave: false });
@@ -377,6 +387,10 @@ export const getProductBySlug = async (slug) => {
     );
 
   if (!product) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
+  if (product.isHidden || !PUBLIC_VISIBLE_STATUSES.includes(product.status)) {
     throw new ErrorResponse("Product not found", 404);
   }
 
@@ -470,6 +484,14 @@ export const getProducts = async (filters = {}, options = {}) => {
 
   Object.assign(query, filters);
 
+  if (query.status === undefined) {
+    query.status = { $in: PUBLIC_VISIBLE_STATUSES };
+  }
+
+  if (query.isHidden === undefined) {
+    query.isHidden = { $ne: true };
+  }
+
   const skip = (page - 1) * limit;
   const sortOptions = { [sortBy]: sortOrder === "desc" ? -1 : 1 };
 
@@ -517,7 +539,7 @@ export const getProductsAdvanced = async (options) => {
     sortOrder = "desc",
   } = options;
 
-  const query = { status: { $in: ["active", "out_of_stock"] } };
+  const query = getPublicProductQuery();
 
   // Resolve categorySlug to categoryId if slug provided instead of ID
   let resolvedCategoryId = categoryId;
@@ -801,7 +823,7 @@ export const deleteProduct = async (productId, sellerId) => {
  * Get featured products (GZM-13 Feature)
  */
 export const getFeaturedProducts = async (limit = 10) => {
-  return await Product.find({ status: "active", isFeatured: true })
+  return await Product.find(getPublicProductQuery({ isFeatured: true }))
     .populate("categoryId", "name slug")
     .sort("-createdAt")
     .limit(limit)
@@ -829,7 +851,7 @@ export const getTodayRecommendations = async (limit = 10) => {
     : 10;
 
   const candidates = await Product.find({
-    status: "active",
+    ...getPublicProductQuery(),
     $or: [
       { stock: { $gt: 0 } },
       { "models.stock": { $gt: 0 } },
@@ -866,7 +888,7 @@ export const getTodayRecommendations = async (limit = 10) => {
  * Get new arrivals (GZM-13 Feature)
  */
 export const getNewArrivals = async (limit = 10) => {
-  return await Product.find({ status: "active", isNewArrival: true })
+  return await Product.find(getPublicProductQuery({ isNewArrival: true }))
     .populate("categoryId", "name slug")
     .sort("-createdAt")
     .limit(limit)
@@ -912,7 +934,7 @@ export const checkStockAvailability = async (
  * Get filter metadata (Min/Max Price, Brands) for UI
  */
 export const getAvailableFilters = async (categoryId = null) => {
-  const query = { status: "active" };
+  const query = getPublicProductQuery();
   if (categoryId) query.categoryId = categoryId;
 
   // Get unique brands
@@ -1113,13 +1135,13 @@ export const getProductsByCategory = async (categoryId, options = {}) => {
   const skip = (page - 1) * limit;
 
   const [products, total] = await Promise.all([
-    Product.find({ categoryId, status: "active" })
+    Product.find(getPublicProductQuery({ categoryId }))
       .populate("categoryId", "name slug")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-    Product.countDocuments({ categoryId, status: "active" }),
+    Product.countDocuments(getPublicProductQuery({ categoryId })),
   ]);
 
   return { products, total, page, pages: Math.ceil(total / limit) };
@@ -1133,7 +1155,7 @@ export const searchProducts = async (keyword, options = {}) => {
   const skip = (page - 1) * limit;
 
   const query = {
-    status: "active",
+    ...getPublicProductQuery(),
     $text: { $search: keyword },
   };
 
@@ -1157,9 +1179,9 @@ export const getRelatedProducts = async (productId, limit = 10) => {
   if (!product) throw new ErrorResponse("Product not found", 404);
 
   return await Product.find({
+    ...getPublicProductQuery(),
     categoryId: product.categoryId,
     _id: { $ne: productId },
-    status: "active",
   })
     .limit(limit)
     .sort({ sold: -1, rating: -1 })
