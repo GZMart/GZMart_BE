@@ -85,10 +85,12 @@ class BannerService {
     const end = new Date(endDate);
 
     // Validate dates
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     if (start >= end) {
       throw new ErrorResponse("End date must be after start date", 400);
     }
-    if (start < new Date()) {
+    if (start < today) {
       throw new ErrorResponse("Start date cannot be in the past", 400);
     }
 
@@ -206,31 +208,55 @@ class BannerService {
     };
   }
 
-  // ─── SELLER: Cancel a pending banner ───────────────────────────────────────
+  // ─── SELLER: Cancel a pending or running banner ────────────────────────────
   async cancelBannerRequest(bannerId, sellerId) {
     const banner = await Banner.findOne({ _id: bannerId, sellerId });
     if (!banner) throw new ErrorResponse("Banner not found", 404);
 
-    if (!["PENDING_REVIEW", "APPROVED"].includes(banner.status)) {
+    if (!["PENDING_REVIEW", "APPROVED", "RUNNING"].includes(banner.status)) {
       throw new ErrorResponse(
-        "Only banners in PENDING_REVIEW or APPROVED status can be cancelled",
+        "Only banners in PENDING_REVIEW, APPROVED, or RUNNING status can be cancelled",
         400
       );
     }
 
-    // Refund coins
-    if (banner.paymentStatus === "HELD" && banner.pricing.totalFee > 0) {
+    // Calculate refund amount
+    let refundAmount = 0;
+    let refundDescription = "";
+
+    if (banner.status === "RUNNING") {
+      // Pro-rated refund: refund only unused days from tomorrow onwards
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const endDate = new Date(banner.endDate);
+      endDate.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const remainingMs = endDate - tomorrow;
+      const remainingDays = Math.max(0, Math.ceil(remainingMs / (1000 * 60 * 60 * 24)) + 1);
+      const pricePerDay = banner.pricing?.pricePerDay || PRICE_PER_DAY;
+      refundAmount = remainingDays * pricePerDay;
+      refundDescription = `Banner partial refund: "${banner.title}" (stopped early — ${remainingDays} unused days refunded)`;
+    } else if (banner.paymentStatus === "HELD" && banner.pricing?.totalFee > 0) {
+      // Full refund for not-yet-running banners
+      refundAmount = banner.pricing.totalFee;
+      refundDescription = `Banner ad refund: "${banner.title}" (cancelled by seller)`;
+    }
+
+    if (refundAmount > 0) {
       await WalletTransaction.recordTransaction({
         userId: sellerId,
         type: "refund",
-        amount: banner.pricing.totalFee,
-        description: `Banner ad refund: "${banner.title}" (cancelled by seller)`,
+        amount: refundAmount,
+        description: refundDescription,
         reference: {},
         metadata: { bannerId: banner._id },
       });
     }
 
     banner.status = "CANCELLED";
+    banner.isActive = false;
     banner.paymentStatus = "REFUNDED";
     await banner.save();
 
@@ -271,13 +297,20 @@ class BannerService {
       throw new ErrorResponse("Only PENDING_REVIEW banners can be approved", 400);
     }
 
-    banner.status = "APPROVED";
+    // If start date is today or already passed, go directly to RUNNING
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startDay = new Date(banner.startDate);
+    startDay.setHours(0, 0, 0, 0);
+
+    banner.status = startDay <= today ? "RUNNING" : "APPROVED";
+    banner.isActive = startDay <= today;
     banner.paymentStatus = "SETTLED";
     banner.reviewedBy = adminId;
     banner.reviewedAt = new Date();
     await banner.save();
 
-    logger.info(`[BannerAds] Admin ${adminId} approved banner ${bannerId}`);
+    logger.info(`[BannerAds] Admin ${adminId} approved banner ${bannerId} → status: ${banner.status}`);
     return banner;
   }
 
@@ -361,7 +394,7 @@ class BannerService {
   async getActiveBanners() {
     const now = new Date();
 
-    // Admin banners (always pull active ones with date check)
+    // Admin banners: active, within date range (or no dates set)
     const adminBanners = await Banner.find({
       ownerType: "ADMIN",
       isActive: true,
@@ -375,7 +408,7 @@ class BannerService {
       .sort("order")
       .lean();
 
-    // Seller banners currently RUNNING
+    // Seller banners: currently RUNNING and within active date range
     const sellerBanners = await Banner.find({
       ownerType: "SELLER",
       status: "RUNNING",
@@ -384,20 +417,27 @@ class BannerService {
     })
       .populate("productId", "name images")
       .populate("sellerId", "fullName avatar")
-      .sort({ "metrics.views": 1 }) // Show least-seen first for fairness
+      .sort({ order: 1, createdAt: 1 })
       .limit(MAX_SELLER_SLOTS)
       .lean();
 
-    // Increment view count for all returned seller banners
-    if (sellerBanners.length > 0) {
-      const sellerBannerIds = sellerBanners.map((b) => b._id);
+    // Merge all banners and sort by admin-assigned order so reordering is reflected
+    const activeBanners = [...adminBanners, ...sellerBanners].sort((a, b) => {
+      const orderA = a.order != null ? a.order : 999;
+      const orderB = b.order != null ? b.order : 999;
+      return orderA - orderB;
+    });
+
+    // Increment view count for all returned banners
+    if (activeBanners.length > 0) {
+      const bannerIds = activeBanners.map((b) => b._id);
       Banner.updateMany(
-        { _id: { $in: sellerBannerIds } },
+        { _id: { $in: bannerIds } },
         { $inc: { "metrics.views": 1 } }
       ).catch((err) => logger.error("[BannerAds] Failed to increment views:", err));
     }
 
-    return [...adminBanners, ...sellerBanners];
+    return activeBanners;
   }
 
   // ─── PUBLIC: Increment click count ───────────────────────────────────────
@@ -438,6 +478,18 @@ class BannerService {
     }
 
     return { activated: activated.modifiedCount, completed: completed.modifiedCount };
+  }
+
+  // ─── ADMIN: Bulk reorder banners ─────────────────────────────────────────
+  async adminReorderBanners(banners) {
+    const bulkOps = banners.map(({ id, order }) => ({
+      updateOne: {
+        filter: { _id: id },
+        update: { $set: { order } },
+      },
+    }));
+    const result = await Banner.bulkWrite(bulkOps);
+    return result;
   }
 }
 

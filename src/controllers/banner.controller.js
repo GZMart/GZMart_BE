@@ -234,3 +234,21 @@ export const getAdsConfig = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * PUT /api/banners/admin/reorder
+ * Admin: bulk reorder banners by updating their `order` field
+ * Body: { banners: [{ id, order }] }
+ */
+export const adminReorderBanners = async (req, res, next) => {
+  try {
+    const { banners } = req.body;
+    if (!Array.isArray(banners) || banners.length === 0) {
+      return res.status(400).json({ success: false, message: "banners array is required" });
+    }
+    const result = await bannerService.adminReorderBanners(banners);
+    res.status(200).json({ success: true, message: `Updated order for ${result.modifiedCount} banners`, data: result });
+  } catch (error) {
+    next(error);
+  }
+};

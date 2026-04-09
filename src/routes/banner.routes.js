@@ -86,6 +86,13 @@ router.get("/admin", requireAdmin, asyncHandler(bannerController.adminGetAllBann
 router.post("/admin", requireAdmin, asyncHandler(bannerController.adminCreateBanner));
 
 /**
+ * @route   PUT /api/banners/admin/reorder
+ * @desc    Reorder banners by bulk-updating their `order` field
+ * @access  Admin
+ */
+router.put("/admin/reorder", requireAdmin, asyncHandler(bannerController.adminReorderBanners));
+
+/**
  * @route   PUT /api/banners/admin/:id
  * @desc    Update any banner
  * @access  Admin
