@@ -13,7 +13,7 @@ const allowedOrigins = [
   "http://127.0.0.1:5174",
 
   // Production (Frontend)
-  "https://www.vic-sport.site",
+  "https://www.gzmart.shop",
   "https://gzmart.vercel.app",
 ];
 

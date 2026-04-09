@@ -110,7 +110,7 @@ app.use((req, res, next) => {
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
-    "https://www.vic-sport.site",
+    "https://www.gzmart.shop",
     "https://gzmart.vercel.app",
     // Azure App Service domains
     process.env.WEBSITE_HOSTNAME
