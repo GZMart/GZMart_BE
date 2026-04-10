@@ -4,13 +4,30 @@ import { asyncHandler } from "../middlewares/async.middleware.js";
 import NotificationService from "../services/notification.service.js";
 import User from "../models/User.js";
 
+// Human-readable labels for deal types (shared with service)
+const TYPE_LABELS = {
+  flash_sale: "Flash Sale",
+  daily_deal: "Daily Deal",
+  weekly_deal: "Weekly Deal",
+  limited_time: "Limited Time Deal",
+  clearance: "Clearance",
+  special: "Special Deal",
+};
+
+/**
+ * Format deal type key to human-readable name
+ */
+function formatTypeName(type) {
+  return TYPE_LABELS[type] || type || "Deal";
+}
+
 /**
  * @desc    Create multiple flash-sale deals for one product in a single request
  * @route   POST /api/flash-sales/batch
  * @access  Private (Seller, Admin)
  */
 export const createBatchFlashSale = asyncHandler(async (req, res) => {
-  const { productId, startAt, endAt, variants } = req.body;
+  const { productId, startAt, endAt, variants, type = "flash_sale" } = req.body;
 
   if (
     !productId ||
@@ -30,6 +47,8 @@ export const createBatchFlashSale = asyncHandler(async (req, res) => {
     sellerId: req.user?._id,
   });
 
+  const dealTypeName = formatTypeName(type);
+
   // Notify followers (fire-and-forget)
   if (req.user?._id) {
     const seller = await User.findById(req.user._id, 'shopName fullName').lean();
@@ -37,8 +56,8 @@ export const createBatchFlashSale = asyncHandler(async (req, res) => {
     const startFormatted = new Date(startAt).toLocaleString('vi-VN');
     NotificationService.notifyShopFollowers(
       req.user._id,
-      `⚡ Flash Sale mới tại ${shopName}!`,
-      `Flash Sale bắt đầu lúc ${startFormatted} — Đừng bỏ lỡ ưu đãi hấp dẫn!`,
+      `${dealTypeName} mới tại ${shopName}!`,
+      `${dealTypeName} bắt đầu lúc ${startFormatted} — Đừng bỏ lỡ ưu đãi hấp dẫn!`,
       'FLASH_SALE',
       { shopId: req.user._id.toString(), startAt }
     );
@@ -46,7 +65,7 @@ export const createBatchFlashSale = asyncHandler(async (req, res) => {
 
   res.status(201).json({
     success: true,
-    message: `${flashSales.length} flash sale(s) created successfully`,
+    message: `${flashSales.length} ${dealTypeName.toLowerCase()}(s) created successfully`,
     data: flashSales,
   });
 });
@@ -102,13 +121,14 @@ export const createFlashSale = asyncHandler(async (req, res) => {
  * @access  Public
  */
 export const getFlashSales = asyncHandler(async (req, res, next) => {
-  const { page, limit, status, sortBy } = req.query;
+  const { page, limit, status, sortBy, type } = req.query;
 
   const result = await flashSaleService.getFlashSales({
     page: Number(page) || 1,
     limit: Number(limit) || 10,
     status,
     sortBy: sortBy || "createdAt",
+    type,
   }, req.user);
 
   res.status(200).json({

@@ -2,6 +2,33 @@ import Deal from "../models/Deal.js";
 import Product from "../models/Product.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
+// Allowed deal types - maps to Deal model's enum
+const DEAL_TYPES = [
+  "flash_sale",
+  "daily_deal",
+  "weekly_deal",
+  "limited_time",
+  "clearance",
+  "special",
+];
+
+// Human-readable labels for deal types
+const TYPE_LABELS = {
+  flash_sale: "Flash Sale",
+  daily_deal: "Daily Deal",
+  weekly_deal: "Weekly Deal",
+  limited_time: "Limited Time Deal",
+  clearance: "Clearance",
+  special: "Special Deal",
+};
+
+/**
+ * Format deal type key to human-readable name
+ */
+function formatTypeName(type) {
+  return TYPE_LABELS[type] || type;
+}
+
 // Helper to map DB Deal fields back to legacy Flash Sale API response
 function mapToFlashSaleShape(deal) {
   if (!deal) return deal;
@@ -10,6 +37,7 @@ function mapToFlashSaleShape(deal) {
 
   return {
     _id: deal._id,
+    type: deal.type || null, // Include deal type
     productId: deal.productId?.toJSON
       ? deal.productId.toJSON()
       : deal.productId,
@@ -149,13 +177,28 @@ export const createFlashSale = async (flashSaleData) => {
  * Each entry in `variants[]` becomes its own Deal document.
  *
  * Payload:
- *   { productId, campaignTitle, startAt, endAt, sellerId,
+ *   { productId, campaignTitle, startAt, endAt, sellerId, type,
  *     variants: [{ variantSku, salePrice, totalQuantity,
  *                  purchaseLimitPerOrder, purchaseLimitPerUser }] }
  */
 export const createBatchFlashSale = async (batchData) => {
-  const { productId, campaignTitle, startAt, endAt, sellerId, variants } =
-    batchData;
+  const {
+    productId,
+    campaignTitle,
+    startAt,
+    endAt,
+    sellerId,
+    type = "flash_sale",
+    variants,
+  } = batchData;
+
+  // Validate type
+  if (!DEAL_TYPES.includes(type)) {
+    throw new ErrorResponse(
+      `Invalid deal type. Allowed types: ${DEAL_TYPES.join(", ")}`,
+      400,
+    );
+  }
 
   if (
     !productId ||
@@ -205,7 +248,7 @@ export const createBatchFlashSale = async (batchData) => {
 
     const dupQuery = {
       productId,
-      type: "flash_sale",
+      type, // Use dynamic type instead of hardcoded "flash_sale"
       status: { $in: ["pending", "active"] },
     };
     if (v.variantSku) dupQuery.variantSku = v.variantSku;
@@ -213,7 +256,7 @@ export const createBatchFlashSale = async (batchData) => {
     const existing = await Deal.findOne(dupQuery);
     if (existing) {
       throw new ErrorResponse(
-        `An active or upcoming flash sale already exists for ${
+        `An active or upcoming ${formatTypeName(type)} already exists for ${
           v.variantSku ? `variant ${v.variantSku}` : "this product"
         }`,
         400,
@@ -236,7 +279,7 @@ export const createBatchFlashSale = async (batchData) => {
           : 0;
 
       return Deal.create({
-        type: "flash_sale",
+        type, // Use dynamic type
         productId,
         variantSku: v.variantSku || null,
         title: campaignTitle || null,
@@ -259,17 +302,18 @@ export const createBatchFlashSale = async (batchData) => {
  * Get all flash sales (with pagination, status filter, and sortBy)
  */
 export const getFlashSales = async (filters = {}, user = null) => {
-  const { page = 1, limit = 10, status, sortBy = "createdAt" } = filters;
+  const { page = 1, limit = 10, status, sortBy = "createdAt", type } = filters;
   const skip = (page - 1) * limit;
 
-  const filterQuery = { type: "flash_sale" };
+  // If type is specified, filter by it; otherwise return all deal types
+  const filterQuery = type ? { type } : {};
 
-  // Sellers can only see their own flash sales
+  // Sellers can only see their own deals
   if (user && user.role === "seller") {
     filterQuery.sellerId = user._id;
   }
 
-  // FlashSale status: upcoming mapped to Deal pending
+  // Deal status: upcoming mapped to Deal pending
   if (status) {
     if (status === "upcoming") filterQuery.status = "pending";
     else filterQuery.status = status;
