@@ -515,3 +515,38 @@ export const getSellerRecentOrders = asyncHandler(async (req, res) => {
     data: orders,
   });
 });
+
+/**
+ * @desc    Get seller wallet balance and earnings summary
+ * @route   GET /api/dashboard/seller-balance
+ * @access  Private (Seller, Admin)
+ */
+export const getSellerBalance = asyncHandler(async (req, res) => {
+  const balance = await dashboardService.getSellerBalance(req.user._id);
+
+  res.status(200).json({
+    success: true,
+    data: balance,
+  });
+});
+
+/**
+ * @desc    Get seller wallet transaction history
+ * @route   GET /api/dashboard/seller-wallet-transactions
+ * @access  Private (Seller, Admin)
+ */
+export const getSellerWalletTransactions = asyncHandler(async (req, res) => {
+  const { limit = 10, skip = 0 } = req.query;
+
+  const result = await dashboardService.getSellerWalletTransactions(
+    req.user._id,
+    parseInt(limit),
+    parseInt(skip),
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result.transactions,
+    total: result.total,
+  });
+});

@@ -25,6 +25,8 @@ import {
   getAllDashboardData,
   getSellerOrderCounts,
   getSellerRecentOrders,
+  getSellerBalance,
+  getSellerWalletTransactions,
 } from "../controllers/dashboard.controller.js";
 import { protect, authorize } from "../middlewares/auth.middleware.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
@@ -370,5 +372,21 @@ router.get("/seller-order-counts", asyncHandler(getSellerOrderCounts));
  * @query   limit: number (default: 20)
  */
 router.get("/seller-recent-orders", asyncHandler(getSellerRecentOrders));
+
+/**
+ * @route   GET /api/dashboard/seller-balance
+ * @desc    Get seller wallet balance and earnings summary
+ * @access  Private (Seller, Admin)
+ * @returns { availableBalance, pendingBalance, totalBalance, totalEarning, totalRefund, totalPayout, totalOrders, completedOrders, pendingOrders }
+ */
+router.get("/seller-balance", asyncHandler(getSellerBalance));
+
+/**
+ * @route   GET /api/dashboard/seller-wallet-transactions
+ * @desc    Get seller wallet transaction history
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 10), skip: number (default: 0)
+ */
+router.get("/seller-wallet-transactions", asyncHandler(getSellerWalletTransactions));
 
 export default router;

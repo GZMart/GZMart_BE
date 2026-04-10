@@ -7,6 +7,7 @@ import InventoryItem from "../models/InventoryItem.js";
 import User from "../models/User.js";
 import Category from "../models/Category.js";
 import ReturnRequest from "../models/ReturnRequest.js";
+import { SellerWallet, SellerWalletTransaction } from "../models/SellerWallet.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
 /**
@@ -1937,6 +1938,132 @@ export const getSellerOrderCounts = async (sellerId) => {
     cancellationCount,
     rmaCount: rmaCounts[0]?.count || 0,
   };
+};
+
+/**
+ * Lấy thông tin số dư và thu nhập của Seller
+ * Tính toán:
+ * - Số dư khả dụng (availableBalance): tổng subtotal của đơn hoàn thành trừ refund
+ * - Số dư chờ xử lý (pendingBalance): tổng subtotal của đơn pending/confirmed/packing/shipping
+ * - Tổng thu nhập (totalEarning): tổng subtotal tất cả đơn hoàn thành
+ * - Tổng refund (totalRefund): tổng tiền refund
+ */
+export const getSellerBalance = async (sellerId) => {
+  const sellerProducts = await Product.find({ sellerId }).select("_id");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
+
+  if (sellerProductIds.length === 0) {
+    return {
+      availableBalance: 0,
+      pendingBalance: 0,
+      totalBalance: 0,
+      totalEarning: 0,
+      totalRefund: 0,
+      totalPayout: 0,
+      totalOrders: 0,
+      completedOrders: 0,
+      pendingOrders: 0,
+    };
+  }
+
+  // Lấy danh sách order IDs của seller
+  const orderItems = await OrderItem.find({
+    productId: { $in: sellerProductIds },
+  }).select("orderId subtotal productId");
+
+  // Map orderId -> tổng subtotal của seller trong đơn đó
+  const orderSubtotalMap = {};
+  orderItems.forEach((item) => {
+    const oid = item.orderId.toString();
+    if (!orderSubtotalMap[oid]) {
+      orderSubtotalMap[oid] = 0;
+    }
+    orderSubtotalMap[oid] += item.subtotal || 0;
+  });
+
+  const orderIds = Object.keys(orderSubtotalMap).map(
+    (id) => new mongoose.Types.ObjectId(id)
+  );
+
+  // Lấy thông tin đơn hàng
+  const orders = await Order.find({ _id: { $in: orderIds } })
+    .select("_id orderNumber status subtotal totalPrice refundAmount")
+    .lean();
+
+  // Tính toán số dư
+  let availableBalance = 0;    // Số dư khả dụng (completed/delivered)
+  let pendingBalance = 0;       // Số dư chờ xử lý (các trạng thái khác)
+  let totalEarning = 0;         // Tổng thu nhập
+  let totalRefund = 0;          // Tổng refund
+  let completedOrders = 0;      // Số đơn hoàn thành
+  let pendingOrders = 0;         // Số đơn chờ
+
+  const COMPLETED_STATUSES = new Set(["completed", "delivered"]);
+  const REFUND_STATUSES = new Set(["refunded", "refund_pending"]);
+  const PENDING_STATUSES = new Set([
+    "pending",
+    "confirmed",
+    "packing",
+    "shipping",
+    "processing",
+    "shipped",
+  ]);
+
+  orders.forEach((order) => {
+    const sellerSubtotal = orderSubtotalMap[order._id.toString()] || 0;
+
+    if (COMPLETED_STATUSES.has(order.status)) {
+      // Đơn hoàn thành -> cộng vào số dư khả dụng
+      availableBalance += sellerSubtotal;
+      totalEarning += sellerSubtotal;
+      completedOrders += 1;
+    } else if (REFUND_STATUSES.has(order.status)) {
+      // Đơn refund -> trừ refund amount
+      totalRefund += sellerSubtotal;
+    } else if (PENDING_STATUSES.has(order.status)) {
+      // Đơn đang xử lý -> vào số dư chờ
+      pendingBalance += sellerSubtotal;
+      pendingOrders += 1;
+    }
+  });
+
+  // Lấy thông tin ví từ SellerWallet (nếu có)
+  let walletInfo = { totalPayout: 0 };
+  try {
+    const wallet = await SellerWallet.findOne({ sellerId }).lean();
+    if (wallet) {
+      walletInfo = wallet;
+    }
+  } catch (err) {
+    console.warn("[SellerWallet] Wallet not found, using computed balance only");
+  }
+
+  const totalBalance = availableBalance + pendingBalance;
+  const totalOrders = orders.length;
+
+  return {
+    availableBalance: Math.round(availableBalance),
+    pendingBalance: Math.round(pendingBalance),
+    totalBalance: Math.round(totalBalance),
+    totalEarning: Math.round(totalEarning),
+    totalRefund: Math.round(totalRefund),
+    totalPayout: Math.round(walletInfo.totalPayout || 0),
+    totalOrders,
+    completedOrders,
+    pendingOrders,
+  };
+};
+
+/**
+ * Lấy lịch sử giao dịch ví của Seller
+ */
+export const getSellerWalletTransactions = async (sellerId, limit = 10, skip = 0) => {
+  const result = await SellerWalletTransaction.getTransactionHistory(
+    sellerId,
+    limit,
+    skip
+  );
+  return result;
 };
 
 /**
