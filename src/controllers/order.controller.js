@@ -708,6 +708,73 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 
   const discount = totalDiscount;
 
+  // 3b. Validate & apply live session voucher (separate from regular voucherIds)
+  let liveVoucherDiscount = 0;
+  let liveVoucherCode = null;
+  if (liveSessionVoucherId) {
+    const Voucher = (await import("../models/Voucher.js")).default;
+    const LiveSession = (await import("../models/LiveSession.js")).default;
+
+    const liveVoucher = await Voucher.findById(liveSessionVoucherId);
+    if (!liveVoucher || liveVoucher.type !== "live") {
+      return next(new ErrorResponse("Invalid live session voucher", 400));
+    }
+    if (!liveVoucher.liveSessionId) {
+      return next(new ErrorResponse("This voucher is not linked to any live session", 400));
+    }
+
+    const { getRoomViewers } = await import("../services/livestreamRedis.service.js");
+    const session = await LiveSession.findById(liveVoucher.liveSessionId).lean();
+    if (!session) {
+      return next(new ErrorResponse("Live session no longer exists", 400));
+    }
+    if (session.status !== "live") {
+      return next(new ErrorResponse("Live session has ended — voucher cannot be used", 400));
+    }
+    const viewerIds = await getRoomViewers(liveVoucher.liveSessionId.toString());
+    const isInSession = viewerIds.includes(req.user._id.toString());
+    if (!isInSession) {
+      return next(new ErrorResponse("You must be in the live session to use this voucher", 400));
+    }
+
+    // Check time & usage
+    const now = new Date();
+    if (liveVoucher.status !== "active" || liveVoucher.startTime > now || liveVoucher.endTime < now) {
+      return next(new ErrorResponse("This voucher is no longer available", 400));
+    }
+    if (liveVoucher.usageCount >= liveVoucher.usageLimit) {
+      return next(new ErrorResponse("This voucher has reached its usage limit", 400));
+    }
+
+    // Calculate discount (same logic as voucherValidator)
+    const applicableSubtotal = cartItems.length > 0
+      ? cartItems
+          .filter((ci) => ci.productId?.sellerId?.toString() === liveVoucher.shopId?.toString())
+          .reduce((sum, ci) => sum + ci.price * ci.quantity, 0)
+      : 0;
+
+    if (liveVoucher.minBasketPrice && applicableSubtotal < liveVoucher.minBasketPrice) {
+      return next(new ErrorResponse(
+        `Minimum order ${liveVoucher.minBasketPrice?.toLocaleString()}đ required for this voucher`,
+        400
+      ));
+    }
+
+    if (liveVoucher.discountType === "amount") {
+      liveVoucherDiscount = Math.min(liveVoucher.discountValue, applicableSubtotal);
+    } else {
+      liveVoucherDiscount = Math.round(applicableSubtotal * (liveVoucher.discountValue / 100));
+      if (liveVoucher.maxDiscountAmount) {
+        liveVoucherDiscount = Math.min(liveVoucherDiscount, liveVoucher.maxDiscountAmount);
+      }
+    }
+
+    liveVoucherCode = liveVoucher.code;
+  }
+
+  // Include live voucher discount in total discount
+  const totalDiscountAmount = discount + liveVoucherDiscount;
+
   // 4. Calculate Totals
   const computedShippingCost = calculateShippingFee(
     subtotal,
@@ -718,7 +785,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   const tax = 0;
   const payableBeforeCoin = Math.max(
     0,
-    subtotal + appliedShippingCost + tax - discount + appliedGiftBoxFee,
+    subtotal + appliedShippingCost + tax - totalDiscountAmount + appliedGiftBoxFee,
   );
 
   // 5. Create Order with Transaction Support
@@ -754,9 +821,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           giftBoxFee: includeGiftBox ? appliedGiftBoxFee : 0,
           paymentMethod,
           notes,
-          discount,
-          discountAmount: discount,
-          discountCode: appliedCodes || undefined,
+          discount: totalDiscountAmount,
+          discountAmount: totalDiscountAmount,
+          discountCode: [appliedCodes, liveVoucherCode].filter(Boolean).join(", ") || undefined,
           isActive: true,
           requestSignature,
           items: [],

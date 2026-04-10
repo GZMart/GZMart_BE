@@ -1,10 +1,54 @@
 import Voucher from "../models/Voucher.js";
 import Order from "../models/Order.js";
+import Follow from "../models/Follow.js";
+import LiveSession from "../models/LiveSession.js";
 
 /**
  * Voucher Validator Utility
  * Shared validation logic between previewOrder and createOrder
  */
+
+/**
+ * Kiểm tra user có phải là người mua mới (chưa có đơn thành công nào)
+ * @param {string} userId
+ * @returns {Promise<boolean>}
+ */
+async function isNewBuyer(userId) {
+  const completedOrders = await Order.countDocuments({
+    userId,
+    status: { $in: ["completed", "delivered"] },
+  });
+  return completedOrders === 0;
+}
+
+/**
+ * Kiểm tra user có phải là khách quen (đã mua >= minOrderCount đơn)
+ * @param {string} userId
+ * @param {number} minOrderCount
+ * @returns {Promise<boolean>}
+ */
+async function isRepeatBuyer(userId, minOrderCount = 2) {
+  const completedOrders = await Order.countDocuments({
+    userId,
+    status: { $in: ["completed", "delivered"] },
+  });
+  return completedOrders >= minOrderCount;
+}
+
+/**
+ * Kiểm tra user đã follow shop chưa
+ * @param {string} userId
+ * @param {string} shopId
+ * @returns {Promise<boolean>}
+ */
+async function isShopFollower(userId, shopId) {
+  if (!shopId) return false;
+  const follow = await Follow.findOne({
+    followerId: userId,
+    followingId: shopId,
+  });
+  return !!follow;
+}
 
 /**
  * Validate and calculate discount for selected voucher IDs
@@ -191,6 +235,126 @@ export const validateAndCalculateVouchers = async (
           0,
         );
       }
+    } else if (voucher.type === "live") {
+      // Live vouchers must be used within their bound session
+      if (!voucher.liveSessionId) {
+        errors.push(`Voucher ${voucher.code} is not linked to any live session`);
+        continue;
+      }
+      const { getRoomViewers } = await import("../services/livestreamRedis.service.js");
+      const session = await LiveSession.findById(voucher.liveSessionId).lean();
+      if (!session) {
+        errors.push(`Voucher ${voucher.code} session is no longer active`);
+        continue;
+      }
+      if (session.status !== "live") {
+        errors.push(`Voucher ${voucher.code} can only be used during the live session`);
+        continue;
+      }
+      const viewerIds = await getRoomViewers(voucher.liveSessionId.toString());
+      const isInSession = viewerIds.includes(userId.toString());
+      if (!isInSession) {
+        errors.push(`Voucher ${voucher.code} can only be used while watching the live session`);
+        continue;
+      }
+      const shopItems = cartItems.filter(
+        (item) =>
+          item.productId?.sellerId?.toString() === voucher.shopId?.toString(),
+      );
+      if (shopItems.length === 0) {
+        errors.push(
+          `Voucher ${voucher.code} is not applicable to any product in your cart`,
+        );
+        continue;
+      }
+      applicableSubtotal = shopItems.reduce(
+        (sum, item) => sum + item.price * item.quantity,
+        0,
+      );
+    } else if (voucher.type === "new_buyer") {
+      // Check if user is a new buyer
+      const eligible = await isNewBuyer(userId);
+      if (!eligible) {
+        errors.push(`Voucher ${voucher.code} is only valid for first-time buyers`);
+        continue;
+      }
+      // new_buyer vouchers are not tied to specific cart items — they're standalone discounts
+      // Apply discount on total cart value from this shop
+      const shopItems = cartItems.filter(
+        (item) =>
+          item.productId?.sellerId?.toString() === voucher.shopId?.toString(),
+      );
+      if (shopItems.length === 0) {
+        errors.push(
+          `Voucher ${voucher.code} is not applicable to any product in your cart`,
+        );
+        continue;
+      }
+      applicableSubtotal = shopItems.reduce(
+        (sum, item) => sum + item.price * item.quantity,
+        0,
+      );
+      // minBasketPrice check và discount calculation được xử lý ở cuối switch
+    } else if (voucher.type === "repeat_buyer") {
+      // Check if user is a repeat buyer
+      const minOrders = voucher.minOrderCount || 2;
+      const eligible = await isRepeatBuyer(userId, minOrders);
+      if (!eligible) {
+        errors.push(
+          `Voucher ${voucher.code} requires at least ${minOrders} completed orders`,
+        );
+        continue;
+      }
+      // Apply discount on total cart value from this shop
+      const shopItems = cartItems.filter(
+        (item) =>
+          item.productId?.sellerId?.toString() === voucher.shopId?.toString(),
+      );
+      if (shopItems.length === 0) {
+        errors.push(
+          `Voucher ${voucher.code} is not applicable to any product in your cart`,
+        );
+        continue;
+      }
+      applicableSubtotal = shopItems.reduce(
+        (sum, item) => sum + item.price * item.quantity,
+        0,
+      );
+      // minBasketPrice check và discount calculation được xử lý ở cuối switch
+    } else if (voucher.type === "follower") {
+      // Check if user follows the shop
+      const eligible = await isShopFollower(userId, voucher.shopId?.toString());
+      if (!eligible) {
+        errors.push(`You must follow this shop to use voucher ${voucher.code}`);
+        continue;
+      }
+      // Apply discount on total cart value from this shop
+      const shopItems = cartItems.filter(
+        (item) =>
+          item.productId?.sellerId?.toString() === voucher.shopId?.toString(),
+      );
+      if (shopItems.length === 0) {
+        errors.push(
+          `Voucher ${voucher.code} is not applicable to any product in your cart`,
+        );
+        continue;
+      }
+      applicableSubtotal = shopItems.reduce(
+        (sum, item) => sum + item.price * item.quantity,
+        0,
+      );
+      // minBasketPrice check và discount calculation được xử lý ở cuối switch
+    } else if (voucher.type === "system_shipping" || voucher.type === "system_order") {
+      // System/admin voucher — applies to entire cart regardless of shop
+      applicableSubtotal = cartItems.reduce(
+        (sum, item) => sum + item.price * item.quantity,
+        0,
+      );
+      if (applicableSubtotal === 0) {
+        errors.push(`Voucher ${voucher.code} is not applicable to an empty cart`);
+        continue;
+      }
+      // minBasketPrice check và discount calculation được xử lý ở cuối switch
     } else {
       // Other types not supported in checkout for now
       errors.push(
@@ -199,7 +363,7 @@ export const validateAndCalculateVouchers = async (
       continue;
     }
 
-    // 6. Check minBasketPrice
+    // 6. Check minBasketPrice (dùng chung cho tất cả types đã xử lý ở trên)
     if (voucher.minBasketPrice && applicableSubtotal < voucher.minBasketPrice) {
       errors.push(
         `Voucher ${voucher.code} requires minimum order of ${voucher.minBasketPrice}`,
@@ -207,7 +371,7 @@ export const validateAndCalculateVouchers = async (
       continue;
     }
 
-    // 7. Calculate discount
+    // 7. Calculate discount (dùng chung cho tất cả types đã xử lý ở trên)
     let savedAmount = 0;
     if (voucher.discountType === "amount") {
       savedAmount = Math.min(voucher.discountValue, applicableSubtotal);

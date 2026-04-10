@@ -24,7 +24,6 @@ const voucherSchema = new mongoose.Schema(
         "product",
         "private",
         "live",
-        "video",
         "new_buyer",
         "repeat_buyer",
         "follower",
@@ -72,6 +71,18 @@ const voucherSchema = new mongoose.Schema(
       min: [1, "Max per buyer must be at least 1"],
     },
 
+    // Buyer Eligibility (for repeat_buyer and follower voucher types)
+    minOrderCount: {
+      type: Number,
+      default: 2,
+      description: "Minimum number of completed orders required to use this voucher (for repeat_buyer type)",
+    },
+    followRequired: {
+      type: Boolean,
+      default: false,
+      description: "Whether buyer must follow the shop to use this voucher (for follower type)",
+    },
+
     // Validity
     startTime: {
       type: Date,
@@ -100,10 +111,17 @@ const voucherSchema = new mongoose.Schema(
       },
     ],
 
+    // For live vouchers — binds the voucher to a specific live session
+    liveSessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "LiveSession",
+      default: null,
+    },
+
     // Display
     displaySetting: {
       type: String,
-      enum: ["public", "private", "live", "video"],
+      enum: ["public", "private", "live"],
       default: "public",
     },
 

@@ -1,6 +1,7 @@
 import { AccessToken } from "livekit-server-sdk";
 import LiveSession from "../models/LiveSession.js";
 import Product from "../models/Product.js";
+import Voucher from "../models/Voucher.js";
 import logger from "../utils/logger.js";
 
 const LIVEKIT_URL = process.env.LIVEKIT_URL || "";
@@ -126,6 +127,13 @@ export async function addSessionVouchers(sessionId, shopId, voucherIds) {
     if (!existing.has(id)) session.vouchers.push(new mongoose.Types.ObjectId(id));
   }
   await session.save();
+
+  // Bind all vouchers to this session and convert them to live vouchers
+  await Voucher.updateMany(
+    { _id: { $in: uniqueIds } },
+    { $set: { liveSessionId: session._id, type: "live", displaySetting: "live" } }
+  );
+
   return session.populate("vouchers", "code discountType discountValue minBasketPrice name");
 }
 
@@ -136,6 +144,13 @@ export async function removeSessionVoucher(sessionId, shopId, voucherId) {
     (v) => v.toString() !== voucherId.toString()
   );
   await session.save();
+
+  // Unbind this voucher from the session
+  await Voucher.updateOne(
+    { _id: voucherId },
+    { $set: { liveSessionId: null } }
+  );
+
   return session.populate("vouchers", "code discountType discountValue minBasketPrice name");
 }
 
