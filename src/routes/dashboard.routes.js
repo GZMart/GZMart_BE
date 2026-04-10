@@ -25,6 +25,12 @@ import {
   getAllDashboardData,
   getSellerOrderCounts,
   getSellerRecentOrders,
+  getSellerBalance,
+  getSellerWalletTransactions,
+  requestRewardPointWithdrawal,
+  getRewardPointWithdrawals,
+  getAllRewardPointWithdrawals,
+  processRewardPointWithdrawal,
 } from "../controllers/dashboard.controller.js";
 import { protect, authorize } from "../middlewares/auth.middleware.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
@@ -370,5 +376,53 @@ router.get("/seller-order-counts", asyncHandler(getSellerOrderCounts));
  * @query   limit: number (default: 20)
  */
 router.get("/seller-recent-orders", asyncHandler(getSellerRecentOrders));
+
+/**
+ * @route   GET /api/dashboard/seller-balance
+ * @desc    Get seller wallet balance and earnings summary
+ * @access  Private (Seller, Admin)
+ * @returns { availableBalance, pendingBalance, totalBalance, totalEarning, totalRefund, totalPayout, totalOrders, completedOrders, pendingOrders }
+ */
+router.get("/seller-balance", asyncHandler(getSellerBalance));
+
+/**
+ * @route   GET /api/dashboard/seller-wallet-transactions
+ * @desc    Get seller wallet transaction history
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 10), skip: number (default: 0)
+ */
+router.get("/seller-wallet-transactions", asyncHandler(getSellerWalletTransactions));
+
+/**
+ * @route   POST /api/dashboard/reward-point-withdrawal/request
+ * @desc    Tạo yêu cầu rút balance để chuyển thành reward_point cho user
+ * @access  Private (Seller, Admin)
+ * @body    { amount, rewardPointAmount, targetUserId, conversionRate, withdrawalMethod, bankAccount, requestNote }
+ */
+router.post("/reward-point-withdrawal/request", asyncHandler(requestRewardPointWithdrawal));
+
+/**
+ * @route   GET /api/dashboard/reward-point-withdrawals
+ * @desc    Lấy danh sách yêu cầu rút reward_point của seller
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 10), skip: number (default: 0)
+ */
+router.get("/reward-point-withdrawals", asyncHandler(getRewardPointWithdrawals));
+
+/**
+ * @route   GET /api/dashboard/admin/reward-point-withdrawals
+ * @desc    Lấy danh sách tất cả yêu cầu rút reward_point (Admin)
+ * @access  Private (Admin only)
+ * @query   status, sellerId, startDate, endDate, limit, skip
+ */
+router.get("/admin/reward-point-withdrawals", asyncHandler(getAllRewardPointWithdrawals));
+
+/**
+ * @route   PUT /api/dashboard/admin/reward-point-withdrawals/:transactionId/process
+ * @desc    Xử lý yêu cầu rút reward_point (approve/reject) - Admin
+ * @access  Private (Admin only)
+ * @body    { action: "approve" | "reject", rejectedReason }
+ */
+router.put("/admin/reward-point-withdrawals/:transactionId/process", asyncHandler(processRewardPointWithdrawal));
 
 export default router;

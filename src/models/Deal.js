@@ -82,7 +82,7 @@ const dealSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "active", "expired", "cancelled"],
+      enum: ["pending", "active", "expired", "cancelled", "paused"],
       default: "pending",
     },
     priority: {
@@ -130,7 +130,12 @@ dealSchema.virtual("timeRemaining").get(function () {
 });
 
 // Pre-save middleware to update status based on dates
+// NOTE: "cancelled" and "paused" are manually set and should NOT be auto-overwritten
 dealSchema.pre("save", async function () {
+  if (this.status === "cancelled" || this.status === "paused") {
+    return; // Manual status - skip auto-update
+  }
+
   const now = new Date();
 
   if (this.startDate > now) {

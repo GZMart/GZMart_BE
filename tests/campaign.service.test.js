@@ -1,8 +1,8 @@
 /**
- * Unit Test: createFlashSale (Create Flash Sale Campaign)
+ * Unit Test: createCampaign (Create Campaign)
  * Function Code : Function1
- * Function Name : createFlashSale
- * Class         : FlashSaleService
+ * Function Name : createCampaign
+ * Class         : CampaignService
  * Lines of code : ~100
  *
  * Test Matrix (8 cases)
@@ -44,8 +44,8 @@ jest.unstable_mockModule("../src/models/Product.js", () => ({
 }));
 
 // ─── Dynamic imports after mocks are registered ───────────────────────────────
-const { createFlashSale } =
-  await import("../src/services/flashsale.service.js");
+const { createCampaign } =
+  await import("../src/services/campaign.service.js");
 
 // ─── Test Helpers ─────────────────────────────────────────────────────────────
 const PRODUCT_ID = "64f1a2b3c4d5e6f7a8b9c001";
@@ -96,7 +96,7 @@ beforeEach(() => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-describe("createFlashSale – Unit Tests", () => {
+describe("createCampaign – Unit Tests", () => {
   // ── NORMAL (N) ──────────────────────────────────────────────────────────────
 
   /**
@@ -108,7 +108,7 @@ describe("createFlashSale – Unit Tests", () => {
    * Log message  : "success"
    */
   test("UTC001 – All required fields valid → returns flash sale object", async () => {
-    const result = await createFlashSale(validPayload());
+    const result = await createCampaign(validPayload());
 
     expect(result).toBeDefined();
     expect(result._id).toBeTruthy();
@@ -128,7 +128,7 @@ describe("createFlashSale – Unit Tests", () => {
   test("UTC002 – campaignTitle provided → propagated to created Deal", async () => {
     mockDealCreate.mockResolvedValue(buildMockDeal({ title: "Summer Sale" }));
 
-    const result = await createFlashSale({
+    const result = await createCampaign({
       ...validPayload(),
       campaignTitle: "Summer Sale",
     });
@@ -151,7 +151,7 @@ describe("createFlashSale – Unit Tests", () => {
   test("UTC003 – salePrice = 1 (boundary min) → success", async () => {
     mockDealCreate.mockResolvedValue(buildMockDeal({ dealPrice: 1 }));
 
-    const result = await createFlashSale({ ...validPayload(), salePrice: 1 });
+    const result = await createCampaign({ ...validPayload(), salePrice: 1 });
 
     expect(result.salePrice).toBe(1);
   });
@@ -166,7 +166,7 @@ describe("createFlashSale – Unit Tests", () => {
   test("UTC004 – totalQuantity = 1 (boundary min) → success", async () => {
     mockDealCreate.mockResolvedValue(buildMockDeal({ quantityLimit: 1 }));
 
-    const result = await createFlashSale({
+    const result = await createCampaign({
       ...validPayload(),
       totalQuantity: 1,
     });
@@ -184,7 +184,7 @@ describe("createFlashSale – Unit Tests", () => {
    */
   test("UTC005 – productId missing → Error 400", async () => {
     await expect(
-      createFlashSale({ ...validPayload(), productId: null }),
+      createCampaign({ ...validPayload(), productId: null }),
     ).rejects.toMatchObject({
       statusCode: 400,
       message: expect.stringContaining("Please provide productId"),
@@ -199,7 +199,7 @@ describe("createFlashSale – Unit Tests", () => {
    */
   test("UTC006 – salePrice = 0 → Error 400", async () => {
     await expect(
-      createFlashSale({ ...validPayload(), salePrice: 0 }),
+      createCampaign({ ...validPayload(), salePrice: 0 }),
     ).rejects.toMatchObject({
       statusCode: 400,
       message: "salePrice must be greater than 0",
@@ -214,7 +214,7 @@ describe("createFlashSale – Unit Tests", () => {
    */
   test("UTC007 – startAt in the past → Error 400", async () => {
     await expect(
-      createFlashSale({
+      createCampaign({
         ...validPayload(),
         startAt: new Date(Date.now() - 3600_000).toISOString(),
       }),
@@ -234,7 +234,7 @@ describe("createFlashSale – Unit Tests", () => {
   test("UTC008 – Product not found → Error 404", async () => {
     mockProductFindById.mockResolvedValue(null);
 
-    await expect(createFlashSale(validPayload())).rejects.toMatchObject({
+    await expect(createCampaign(validPayload())).rejects.toMatchObject({
       statusCode: 404,
       message: "Product not found",
     });

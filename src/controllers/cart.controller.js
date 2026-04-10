@@ -4,7 +4,7 @@ import Product from "../models/Product.js";
 import InventoryItem from "../models/InventoryItem.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
-import * as flashSaleService from "../services/flashsale.service.js";
+import * as campaignService from "../services/campaign.service.js";
 import { getShopProgramPriceForVariant } from "../services/product.service.js";
 
 // Helper to check stock via InventoryItem (source of truth) with fallback to model.stock
@@ -208,7 +208,7 @@ export const addToCart = asyncHandler(async (req, res, next) => {
 
   // Determine best price: Flash Sale > Shop Program > Original
   let cartPrice = model.price;
-  const flashSaleInfo = await flashSaleService.getFlashSalePrice(
+  const flashSaleInfo = await campaignService.getFlashSalePrice(
     productId,
     model.price,
   );

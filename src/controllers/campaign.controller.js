@@ -1,16 +1,33 @@
-import * as flashSaleService from "../services/flashsale.service.js";
+import * as campaignService from "../services/campaign.service.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import NotificationService from "../services/notification.service.js";
 import User from "../models/User.js";
+
+// Human-readable labels for deal types (shared with service)
+const TYPE_LABELS = {
+  flash_sale: "Flash Sale",
+  daily_deal: "Daily Deal",
+  weekly_deal: "Weekly Deal",
+  limited_time: "Limited Time Deal",
+  clearance: "Clearance",
+  special: "Special Deal",
+};
+
+/**
+ * Format deal type key to human-readable name
+ */
+function formatTypeName(type) {
+  return TYPE_LABELS[type] || type || "Deal";
+}
 
 /**
  * @desc    Create multiple flash-sale deals for one product in a single request
  * @route   POST /api/flash-sales/batch
  * @access  Private (Seller, Admin)
  */
-export const createBatchFlashSale = asyncHandler(async (req, res) => {
-  const { productId, startAt, endAt, variants } = req.body;
+export const createBatchCampaign = asyncHandler(async (req, res) => {
+  const { productId, startAt, endAt, variants, type = "flash_sale" } = req.body;
 
   if (
     !productId ||
@@ -25,28 +42,33 @@ export const createBatchFlashSale = asyncHandler(async (req, res) => {
     );
   }
 
-  const flashSales = await flashSaleService.createBatchFlashSale({
+  const flashSales = await campaignService.createBatchCampaign({
     ...req.body,
     sellerId: req.user?._id,
   });
 
+  const dealTypeName = formatTypeName(type);
+
   // Notify followers (fire-and-forget)
   if (req.user?._id) {
-    const seller = await User.findById(req.user._id, 'shopName fullName').lean();
-    const shopName = seller?.shopName || seller?.fullName || 'Shop';
-    const startFormatted = new Date(startAt).toLocaleString('vi-VN');
+    const seller = await User.findById(
+      req.user._id,
+      "shopName fullName",
+    ).lean();
+    const shopName = seller?.shopName || seller?.fullName || "Shop";
+    const startFormatted = new Date(startAt).toLocaleString("vi-VN");
     NotificationService.notifyShopFollowers(
       req.user._id,
-      `⚡ Flash Sale mới tại ${shopName}!`,
-      `Flash Sale bắt đầu lúc ${startFormatted} — Đừng bỏ lỡ ưu đãi hấp dẫn!`,
-      'FLASH_SALE',
-      { shopId: req.user._id.toString(), startAt }
+      `${dealTypeName} mới tại ${shopName}!`,
+      `${dealTypeName} bắt đầu lúc ${startFormatted} — Đừng bỏ lỡ ưu đãi hấp dẫn!`,
+      "FLASH_SALE",
+      { shopId: req.user._id.toString(), startAt },
     );
   }
 
   res.status(201).json({
     success: true,
-    message: `${flashSales.length} flash sale(s) created successfully`,
+    message: `${flashSales.length} ${dealTypeName.toLowerCase()}(s) created successfully`,
     data: flashSales,
   });
 });
@@ -56,7 +78,7 @@ export const createBatchFlashSale = asyncHandler(async (req, res) => {
  * @route   POST /api/flash-sales
  * @access  Private (Seller, Admin)
  */
-export const createFlashSale = asyncHandler(async (req, res) => {
+export const createCampaign = asyncHandler(async (req, res) => {
   const { productId, salePrice, totalQuantity, startAt, endAt } = req.body;
 
   // Validation
@@ -73,19 +95,22 @@ export const createFlashSale = asyncHandler(async (req, res) => {
     );
   }
 
-  const flashSale = await flashSaleService.createFlashSale(req.body);
+  const flashSale = await campaignService.createCampaign(req.body);
 
   // Notify followers (fire-and-forget)
   if (req.user?._id) {
-    const seller = await User.findById(req.user._id, 'shopName fullName').lean();
-    const shopName = seller?.shopName || seller?.fullName || 'Shop';
-    const startFormatted = new Date(startAt).toLocaleString('vi-VN');
+    const seller = await User.findById(
+      req.user._id,
+      "shopName fullName",
+    ).lean();
+    const shopName = seller?.shopName || seller?.fullName || "Shop";
+    const startFormatted = new Date(startAt).toLocaleString("vi-VN");
     NotificationService.notifyShopFollowers(
       req.user._id,
       `⚡ Flash Sale mới tại ${shopName}!`,
       `Flash Sale bắt đầu lúc ${startFormatted} — Đừng bỏ lỡ ưu đãi hấp dẫn!`,
-      'FLASH_SALE',
-      { shopId: req.user._id.toString(), startAt }
+      "FLASH_SALE",
+      { shopId: req.user._id.toString(), startAt },
     );
   }
 
@@ -101,15 +126,19 @@ export const createFlashSale = asyncHandler(async (req, res) => {
  * @route   GET /api/flash-sales
  * @access  Public
  */
-export const getFlashSales = asyncHandler(async (req, res, next) => {
-  const { page, limit, status, sortBy } = req.query;
+export const getCampaigns = asyncHandler(async (req, res, next) => {
+  const { page, limit, status, sortBy, type } = req.query;
 
-  const result = await flashSaleService.getFlashSales({
-    page: Number(page) || 1,
-    limit: Number(limit) || 10,
-    status,
-    sortBy: sortBy || "createdAt",
-  }, req.user);
+  const result = await campaignService.getCampaigns(
+    {
+      page: Number(page) || 1,
+      limit: Number(limit) || 10,
+      status,
+      sortBy: sortBy || "createdAt",
+      type,
+    },
+    req.user,
+  );
 
   res.status(200).json({
     success: true,
@@ -122,10 +151,8 @@ export const getFlashSales = asyncHandler(async (req, res, next) => {
  * @route   GET /api/flash-sales/:flashSaleId
  * @access  Public
  */
-export const getFlashSaleDetail = asyncHandler(async (req, res, next) => {
-  const data = await flashSaleService.getFlashSaleDetail(
-    req.params.flashSaleId,
-  );
+export const getCampaignDetail = asyncHandler(async (req, res, next) => {
+  const data = await campaignService.getCampaignDetail(req.params.campaignId);
 
   res.status(200).json({
     success: true,
@@ -138,8 +165,8 @@ export const getFlashSaleDetail = asyncHandler(async (req, res, next) => {
  * @route   GET /api/flash-sales/active
  * @access  Public
  */
-export const getActiveFlashSales = asyncHandler(async (req, res, next) => {
-  const data = await flashSaleService.getActiveFlashSales();
+export const getActiveCampaigns = asyncHandler(async (req, res, next) => {
+  const data = await campaignService.getActiveCampaigns();
 
   res.status(200).json({
     success: true,
@@ -153,15 +180,15 @@ export const getActiveFlashSales = asyncHandler(async (req, res, next) => {
  * @route   POST /api/flash-sales/:flashSaleId/products
  * @access  Private (Admin only)
  */
-export const addProductsToFlashSale = asyncHandler(async (req, res, next) => {
+export const addProductsToCampaign = asyncHandler(async (req, res, next) => {
   const { products } = req.body;
 
   if (!products || !Array.isArray(products)) {
     return next(new ErrorResponse("Please provide products array", 400));
   }
 
-  const createdProducts = await flashSaleService.addProductsToFlashSale(
-    req.params.flashSaleId,
+  const createdProducts = await campaignService.addProductsToCampaign(
+    req.params.campaignId,
     products,
   );
 
@@ -177,11 +204,11 @@ export const addProductsToFlashSale = asyncHandler(async (req, res, next) => {
  * @route   GET /api/flash-sales/:flashSaleId/products
  * @access  Public
  */
-export const getFlashSaleProducts = asyncHandler(async (req, res, next) => {
+export const getCampaignProducts = asyncHandler(async (req, res, next) => {
   const { page, limit } = req.query;
 
-  const result = await flashSaleService.getFlashSaleProducts(
-    req.params.flashSaleId,
+  const result = await campaignService.getCampaignProducts(
+    req.params.campaignId,
     {
       page: Number(page) || 1,
       limit: Number(limit) || 10,
@@ -199,9 +226,9 @@ export const getFlashSaleProducts = asyncHandler(async (req, res, next) => {
  * @route   GET /api/flash-sales/:flashSaleId
  * @access  Public
  */
-export const getFlashSaleProduct = asyncHandler(async (req, res, next) => {
-  const product = await flashSaleService.getFlashSaleProduct(
-    req.params.flashSaleId,
+export const getCampaignProduct = asyncHandler(async (req, res, next) => {
+  const product = await campaignService.getCampaignProduct(
+    req.params.campaignId,
   );
 
   res.status(200).json({
@@ -215,7 +242,7 @@ export const getFlashSaleProduct = asyncHandler(async (req, res, next) => {
  * @route   PUT /api/flash-sales/:flashSaleId
  * @access  Private (Seller, Admin)
  */
-export const updateFlashSale = asyncHandler(async (req, res, next) => {
+export const updateCampaign = asyncHandler(async (req, res, next) => {
   const allowedFields = ["salePrice", "totalQuantity", "startAt", "endAt"];
   const updateData = {};
 
@@ -225,8 +252,8 @@ export const updateFlashSale = asyncHandler(async (req, res, next) => {
     }
   });
 
-  const flashSale = await flashSaleService.updateFlashSale(
-    req.params.flashSaleId,
+  const flashSale = await campaignService.updateCampaign(
+    req.params.campaignId,
     updateData,
     req.user,
   );
@@ -243,7 +270,7 @@ export const updateFlashSale = asyncHandler(async (req, res, next) => {
  * @route   PUT /api/flash-sales/:flashSaleId/product
  * @access  Private (Seller, Admin)
  */
-export const updateFlashSaleProduct = asyncHandler(async (req, res, next) => {
+export const updateCampaignProduct = asyncHandler(async (req, res, next) => {
   const allowedFields = ["salePrice", "totalQuantity"];
   const updateData = {};
 
@@ -253,8 +280,8 @@ export const updateFlashSaleProduct = asyncHandler(async (req, res, next) => {
     }
   });
 
-  const product = await flashSaleService.updateFlashSaleProduct(
-    req.params.flashSaleId,
+  const product = await campaignService.updateCampaignProduct(
+    req.params.campaignId,
     updateData,
   );
 
@@ -270,10 +297,10 @@ export const updateFlashSaleProduct = asyncHandler(async (req, res, next) => {
  * @route   DELETE /api/flash-sales/:flashSaleId
  * @access  Private (Seller, Admin)
  */
-export const removeProductFromFlashSale = asyncHandler(
+export const removeProductFromCampaign = asyncHandler(
   async (req, res, next) => {
-    const flashSale = await flashSaleService.removeProductFromFlashSale(
-      req.params.flashSaleId,
+    const flashSale = await campaignService.removeProductFromCampaign(
+      req.params.campaignId,
     );
 
     res.status(200).json({
@@ -289,8 +316,8 @@ export const removeProductFromFlashSale = asyncHandler(
  * @route   DELETE /api/flash-sales/:flashSaleId
  * @access  Private (Seller, Admin)
  */
-export const deleteFlashSale = asyncHandler(async (req, res, next) => {
-  await flashSaleService.deleteFlashSale(req.params.flashSaleId, req.user);
+export const deleteCampaign = asyncHandler(async (req, res, next) => {
+  await campaignService.deleteCampaign(req.params.campaignId, req.user);
 
   res.status(200).json({
     success: true,
@@ -300,13 +327,67 @@ export const deleteFlashSale = asyncHandler(async (req, res, next) => {
 });
 
 /**
+ * @desc    Pause flash sale - sets status to "paused"
+ * @route   PATCH /api/campaigns/:campaignId/pause
+ * @access  Private (Seller, Admin)
+ */
+export const pauseCampaign = asyncHandler(async (req, res, next) => {
+  const campaign = await campaignService.pauseCampaign(
+    req.params.campaignId,
+    req.user,
+  );
+
+  res.status(200).json({
+    success: true,
+    message: `Campaign paused successfully (${campaign.pausedCount} variant(s))`,
+    data: campaign,
+  });
+});
+
+/**
+ * @desc    Stop flash sale - sets status to "cancelled"
+ * @route   PATCH /api/campaigns/:campaignId/stop
+ * @access  Private (Seller, Admin)
+ */
+export const stopCampaign = asyncHandler(async (req, res, next) => {
+  const campaign = await campaignService.stopCampaign(
+    req.params.campaignId,
+    req.user,
+  );
+
+  res.status(200).json({
+    success: true,
+    message: `Campaign stopped successfully (${campaign.cancelledCount} variant(s))`,
+    data: campaign,
+  });
+});
+
+/**
+ * @desc    Resume a paused campaign
+ * @route   PATCH /api/campaigns/:campaignId/resume
+ * @access  Private (Seller, Admin)
+ */
+export const resumeCampaign = asyncHandler(async (req, res, next) => {
+  const campaign = await campaignService.resumeCampaign(
+    req.params.campaignId,
+    req.user,
+  );
+
+  res.status(200).json({
+    success: true,
+    message: `Campaign resumed successfully (${campaign.resumedCount} variant(s))`,
+    data: campaign,
+  });
+});
+
+/**
  * @desc    Get flash sale stats (views, sold, revenue, discount)
  * @route   GET /api/flash-sales/:flashSaleId/stats
  * @access  Private (Seller, Admin)
  */
-export const getFlashSaleStats = asyncHandler(async (req, res, next) => {
-  const stats = await flashSaleService.getFlashSaleStats(
-    req.params.flashSaleId,
+export const getCampaignStats = asyncHandler(async (req, res, next) => {
+  const stats = await campaignService.getCampaignStats(
+    req.params.campaignId,
     req.user,
   );
 
@@ -321,15 +402,15 @@ export const getFlashSaleStats = asyncHandler(async (req, res, next) => {
  * @route   GET /api/flash-sales/:flashSaleId/search
  * @access  Public
  */
-export const searchFlashSaleProducts = asyncHandler(async (req, res, next) => {
+export const searchCampaignProducts = asyncHandler(async (req, res, next) => {
   const { q, page, limit } = req.query;
 
   if (!q) {
     return next(new ErrorResponse("Please provide search query", 400));
   }
 
-  const result = await flashSaleService.searchFlashSaleProducts(
-    req.params.flashSaleId,
+  const result = await campaignService.searchCampaignProducts(
+    req.params.campaignId,
     q,
     {
       page: Number(page) || 1,

@@ -1,7 +1,7 @@
 import express from "express";
 import * as rmaController from "../controllers/rma.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
-import { authorize } from "../middlewares/role.middleware.js";
+import { requireRoles } from "../middlewares/role.middleware.js";
 
 const router = express.Router();
 
@@ -30,7 +30,7 @@ router.get("/eligibility/:orderId", protect, rmaController.checkEligibility);
 router.post(
   "/requests",
   protect,
-  authorize("buyer"),
+  requireRoles("buyer"),
   rmaController.createReturnRequest,
 );
 
@@ -57,7 +57,7 @@ router.get("/requests", protect, rmaController.getMyReturnRequests);
 router.get(
   "/requests/order/:orderId",
   protect,
-  authorize("buyer"),
+  requireRoles("buyer"),
   rmaController.getOrderReturnRequest,
 );
 
@@ -84,7 +84,7 @@ router.get("/requests/:id", protect, rmaController.getReturnRequestById);
 router.put(
   "/requests/:id/cancel",
   protect,
-  authorize("buyer"),
+  requireRoles("buyer"),
   rmaController.cancelReturnRequest,
 );
 
@@ -100,14 +100,14 @@ router.put(
 router.put(
   "/requests/:id/shipping",
   protect,
-  authorize("buyer"),
+  requireRoles("buyer"),
   rmaController.updateReturnShipping,
 );
 
 router.put(
   "/requests/:id/confirm-handover",
   protect,
-  authorize("buyer"),
+  requireRoles("buyer"),
   rmaController.confirmBuyerHandover,
 );
 
@@ -153,7 +153,7 @@ router.get(
 router.get(
   "/seller/requests",
   protect,
-  authorize("seller", "admin"),
+  requireRoles("seller", "admin"),
   rmaController.getSellerReturnRequests,
 );
 
@@ -169,7 +169,7 @@ router.get(
 router.put(
   "/seller/requests/:id/respond",
   protect,
-  authorize("seller", "admin"),
+  requireRoles("seller", "admin"),
   rmaController.respondToReturnRequest,
 );
 
@@ -185,7 +185,7 @@ router.put(
 router.put(
   "/seller/requests/:id/confirm-received",
   protect,
-  authorize("seller", "admin"),
+  requireRoles("seller", "admin"),
   rmaController.confirmItemsReceived,
 );
 
@@ -201,7 +201,7 @@ router.put(
 router.post(
   "/seller/requests/:id/process-refund",
   protect,
-  authorize("seller", "admin"),
+  requireRoles("seller", "admin"),
   rmaController.processRefund,
 );
 
@@ -217,7 +217,7 @@ router.post(
 router.post(
   "/seller/requests/:id/process-exchange",
   protect,
-  authorize("seller", "admin"),
+  requireRoles("seller", "admin"),
   rmaController.processExchange,
 );
 
@@ -235,7 +235,7 @@ router.post(
 router.get(
   "/admin/requests",
   protect,
-  authorize("admin"),
+  requireRoles("admin"),
   rmaController.getAllReturnRequests,
 );
 
@@ -251,7 +251,7 @@ router.get(
 router.post(
   "/admin/requests/:id/process",
   protect,
-  authorize("admin"),
+  requireRoles("admin"),
   rmaController.adminProcessRequest,
 );
 
