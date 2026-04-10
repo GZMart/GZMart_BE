@@ -2041,8 +2041,25 @@ export const getSellerBalance = async (sellerId) => {
   const totalBalance = availableBalance + pendingBalance;
   const totalOrders = orders.length;
 
+  // Lấy reward_points từ User
+  let rewardPoints = 0;
+  try {
+    const user = await User.findById(sellerId).select("reward_point").lean();
+    if (user) {
+      rewardPoints = user.reward_point || 0;
+    }
+  } catch (err) {
+    console.warn("[SellerWallet] User reward_points not found");
+  }
+
+  // Trừ số đã convert sang RP để balance chính xác
+  const convertedToRP = walletInfo.totalConvertedToRP || 0;
+  // Raw balance chưa trừ convert (dùng khi cần tính toán)
+  const rawBalance = Math.round(availableBalance + convertedToRP);
+
   return {
-    availableBalance: Math.round(availableBalance),
+    // availableBalance = thu nhập từ orders - đã convert = số dư khả dụng thực
+    availableBalance: Math.round(availableBalance - convertedToRP),
     pendingBalance: Math.round(pendingBalance),
     totalBalance: Math.round(totalBalance),
     totalEarning: Math.round(totalEarning),
@@ -2051,17 +2068,27 @@ export const getSellerBalance = async (sellerId) => {
     totalOrders,
     completedOrders,
     pendingOrders,
+    rewardPoints,
+    rawBalance,
+    totalConvertedToRP: convertedToRP,
   };
 };
 
 /**
  * Lấy lịch sử giao dịch ví của Seller
+ * @param {ObjectId} sellerId
+ * @param {number} limit
+ * @param {number} skip
+ * @param {Object} filters - { type, search }
  */
-export const getSellerWalletTransactions = async (sellerId, limit = 10, skip = 0) => {
+export const getSellerWalletTransactions = async (sellerId, limit = 10, skip = 0, filters = {}) => {
+  const { type, search } = filters;
   const result = await SellerWalletTransaction.getTransactionHistory(
     sellerId,
     limit,
-    skip
+    skip,
+    type,
+    search
   );
   return result;
 };
@@ -2160,4 +2187,127 @@ export const getSellerRecentOrders = async (sellerId, limit = 20) => {
       }),
     };
   });
+};
+
+/**
+ * Tạo yêu cầu rút balance để chuyển thành reward_point cho user
+ * @param {String} sellerId - ID của seller
+ * @param {Object} data - { amount, rewardPointAmount, targetUserId, conversionRate, withdrawalMethod, bankAccount, requestNote }
+ * @returns {Object} - Transaction record
+ */
+export const requestRewardPointWithdrawal = async (sellerId, data) => {
+  const {
+    amount,
+    rewardPointAmount,
+    targetUserId,
+    conversionRate = 1,
+    withdrawalMethod = "bank_transfer",
+    bankAccount,
+    requestNote,
+  } = data;
+
+  // Validate required fields
+  if (!amount || amount <= 0) {
+    throw new ErrorResponse("Số tiền rút phải lớn hơn 0", 400);
+  }
+  if (!rewardPointAmount || rewardPointAmount <= 0) {
+    throw new ErrorResponse("Số reward_point nhận được phải lớn hơn 0", 400);
+  }
+  if (!targetUserId) {
+    throw new ErrorResponse("targetUserId là bắt buộc", 400);
+  }
+
+  // Tỷ lệ chuyển đổi mặc định: 1 VND = 1 RP
+  // Có thể điều chỉnh tỷ lệ này (ví dụ: 1000 VND = 1 RP)
+  const actualConversionRate = conversionRate || 1;
+  const expectedRP = Math.floor(amount / actualConversionRate);
+  if (rewardPointAmount !== expectedRP) {
+    console.warn(
+      `[DashboardService] Reward point mismatch: Expected ${expectedRP}, got ${rewardPointAmount}. Using expected value.`
+    );
+  }
+
+  const transaction = await SellerWalletTransaction.createRewardPointWithdrawalRequest({
+    sellerId,
+    amount,
+    rewardPointAmount: expectedRP,
+    conversionRate: actualConversionRate,
+    targetUserId,
+    withdrawalMethod,
+    bankAccount,
+    requestNote,
+  });
+
+  return transaction;
+};
+
+/**
+ * Xử lý yêu cầu rút reward_point (approve/reject)
+ * @param {String} transactionId - ID của transaction
+ * @param {String} adminId - ID của admin xử lý
+ * @param {String} action - "approve" hoặc "reject"
+ * @param {String} rejectedReason - Lý do từ chối (nếu reject)
+ * @returns {Object} - Updated transaction
+ */
+export const processRewardPointWithdrawal = async (transactionId, adminId = null, action = "approve", rejectedReason = null) => {
+  const transaction = await SellerWalletTransaction.processRewardPointWithdrawal(
+    transactionId,
+    adminId,
+    action
+  );
+
+  return transaction;
+};
+
+/**
+ * Lấy danh sách yêu cầu rút reward_point của seller
+ * @param {String} sellerId - ID của seller
+ * @param {Number} limit - Số lượng bản ghi
+ * @param {Number} skip - Bỏ qua bao nhiêu bản ghi
+ * @returns {Object} - { transactions, total }
+ */
+export const getRewardPointWithdrawals = async (sellerId, limit = 10, skip = 0) => {
+  const result = await SellerWalletTransaction.getRewardPointWithdrawals(
+    sellerId,
+    limit,
+    skip
+  );
+
+  return result;
+};
+
+/**
+ * Lấy danh sách tất cả yêu cầu rút reward_point (admin)
+ * @param {Object} filters - { status, sellerId, startDate, endDate, limit, skip }
+ * @returns {Object} - { transactions, total }
+ */
+export const getAllRewardPointWithdrawals = async (filters = {}) => {
+  const { status, sellerId, startDate, endDate, limit = 20, skip = 0 } = filters;
+
+  const query = { type: "reward_point_withdrawal" };
+
+  if (status) {
+    query.status = status;
+  }
+  if (sellerId) {
+    query.sellerId = new mongoose.Types.ObjectId(sellerId);
+  }
+  if (startDate || endDate) {
+    query.createdAt = {};
+    if (startDate) query.createdAt.$gte = new Date(startDate);
+    if (endDate) query.createdAt.$lte = new Date(endDate);
+  }
+
+  const [transactions, total] = await Promise.all([
+    SellerWalletTransaction.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate("sellerId", "name email phone")
+      .populate("reference.adminId", "name email")
+      .lean(),
+    SellerWalletTransaction.countDocuments(query),
+  ]);
+
+  return { transactions, total };
 };

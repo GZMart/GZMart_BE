@@ -25,8 +25,8 @@ import { setupUploadDirectories } from "./utils/setupUploads.js";
 import cartRoutes from "./routes/cart.routes.js";
 import orderRoutes from "./routes/order.routes.js";
 import orderSellerRoutes from "./routes/orderSeller.routes.js";
-import flashSaleRoutes from "./routes/flashsale.routes.js";
-import { syncDealStatuses } from "./services/flashsale.service.js";
+import campaignRoutes from "./routes/campaign.routes.js";
+import { syncDealStatuses } from "./services/campaign.service.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
 import voucherRoutes from "./routes/voucher.routes.js";
@@ -51,6 +51,7 @@ import sellerApplicationRoutes from "./routes/sellerApplication.routes.js";
 import coinRoutes from "./routes/coin.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
 import disputeRoutes from "./routes/disputeResolution.routes.js";
+import financeRoutes from "./routes/finance.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
 import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
@@ -210,7 +211,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/seller/orders", orderSellerRoutes);
-app.use("/api/flash-sales", flashSaleRoutes);
+app.use("/api/campaigns", campaignRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/vouchers/system", systemVoucherRoutes);
@@ -233,6 +234,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/rma", rmaRoutes);
 app.use("/api/chat", chatRoutes); // Register chat routes
 app.use("/api/ai", aiRoutes); // Register AI routes
+app.use("/api/finance", financeRoutes); // Register finance routes
 app.use("/api/disputes", disputeRoutes);
 
 // Error handler

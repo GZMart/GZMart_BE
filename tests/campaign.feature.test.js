@@ -1,14 +1,14 @@
 /**
- * Feature Test: Flash Sale Setup
+ * Feature Test: Campaign Setup
  * ─────────────────────────────────────────────────────────────────────────────
  * Covers all 23 test-cases defined in the Feature Test document
- * (feature-test-flashsale-setup.html).
+ * (feature-test-campaign-setup.html).
  *
- * Function A – POST /api/flash-sales          (createFlashSale)
- * Function B – POST /api/flash-sales/batch    (createBatchFlashSale)
- * Function C – GET  /api/flash-sales[/:id]    (getFlashSales, getFlashSaleDetail, getActiveFlashSales)
- * Function D – PUT  /api/flash-sales/:id      (updateFlashSale)
- * Function E – DELETE /api/flash-sales/:id    (deleteFlashSale)
+ * Function A – POST /api/campaigns          (createCampaign)
+ * Function B – POST /api/campaigns/batch    (createBatchCampaign)
+ * Function C – GET  /api/campaigns[/:id]    (getCampaigns, getCampaignDetail, getActiveCampaigns)
+ * Function D – PUT  /api/campaigns/:id      (updateCampaign)
+ * Function E – DELETE /api/campaigns/:id     (deleteCampaign)
  */
 
 import { jest } from "@jest/globals";
@@ -28,6 +28,7 @@ jest.unstable_mockModule("../src/models/Deal.js", () => ({
     findOne: mockDealFindOne,
     findOneAndDelete: mockDealFindOneAndDelete,
     countDocuments: mockDealCountDocuments,
+    aggregate: jest.fn(),
   },
 }));
 
@@ -37,14 +38,14 @@ jest.unstable_mockModule("../src/models/Product.js", () => ({
 
 // ─── Dynamic imports (must come after mock registration) ─────────────────────
 const {
-  createFlashSale,
-  createBatchFlashSale,
-  getFlashSales,
-  getFlashSaleDetail,
-  getActiveFlashSales,
-  updateFlashSale,
-  deleteFlashSale,
-} = await import("../src/services/flashsale.service.js");
+  createCampaign,
+  createBatchCampaign,
+  getCampaigns,
+  getCampaignDetail,
+  getActiveCampaigns,
+  updateCampaign,
+  deleteCampaign,
+} = await import("../src/services/campaign.service.js");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const PRODUCT_ID = "64f1a2b3c4d5e6f7a8b9c001";
@@ -64,7 +65,7 @@ const mockProduct = {
 
 /**
  * Build a mock Deal document (pending by default).
- * Includes a `.save()` stub so updateFlashSale tests work.
+ * Includes a `.save()` stub so updateCampaign tests work.
  */
 const buildMockDeal = (overrides = {}) => {
   const deal = {
@@ -87,23 +88,25 @@ const buildMockDeal = (overrides = {}) => {
     endDate: future(86_400_000), // 24 h
     createdAt: new Date(),
     save: jest.fn().mockResolvedValue(true),
+    deleteOne: jest.fn().mockResolvedValue(true),
     ...overrides,
   };
   return deal;
 };
 
-/** Helper to make Deal.find() support fluent chaining (.populate().sort().skip().limit()) */
+/** Helper to make Deal.find() support fluent chaining (.populate().sort().skip().limit().lean()) */
 const makeChainableFindMock = (docs) => {
   const chain = {
     populate: jest.fn().mockReturnThis(),
     sort: jest.fn().mockReturnThis(),
     skip: jest.fn().mockReturnThis(),
     limit: jest.fn().mockResolvedValue(docs),
+    lean: jest.fn().mockResolvedValue(docs),
   };
   return chain;
 };
 
-/** Valid payload for createFlashSale */
+/** Valid payload for createCampaign */
 const validPayload = () => ({
   productId: PRODUCT_ID,
   salePrice: 100_000,
@@ -123,10 +126,10 @@ beforeEach(() => {
 // =============================================================================
 // FUNCTION A – Tạo Flash Sale đơn lẻ
 // =============================================================================
-describe("Function A – createFlashSale", () => {
+describe("Function A – createCampaign", () => {
   // FS-TC-01
   test("FS-TC-01 – Tạo flash sale thành công với đầy đủ dữ liệu hợp lệ", async () => {
-    const result = await createFlashSale(validPayload());
+    const result = await createCampaign(validPayload());
 
     expect(result).toBeDefined();
     expect(result._id).toBeTruthy();
@@ -150,7 +153,7 @@ describe("Function A – createFlashSale", () => {
 
     for (const field of requiredFields) {
       const payload = { ...validPayload(), [field]: undefined };
-      await expect(createFlashSale(payload)).rejects.toMatchObject({
+      await expect(createCampaign(payload)).rejects.toMatchObject({
         statusCode: 400,
         message: expect.stringContaining("Please provide productId"),
       });
@@ -161,7 +164,7 @@ describe("Function A – createFlashSale", () => {
   test("FS-TC-03 – salePrice <= 0 → Error 400", async () => {
     for (const price of [0, -1, -999]) {
       await expect(
-        createFlashSale({ ...validPayload(), salePrice: price }),
+        createCampaign({ ...validPayload(), salePrice: price }),
       ).rejects.toMatchObject({
         statusCode: 400,
         message: "salePrice must be greater than 0",
@@ -174,7 +177,7 @@ describe("Function A – createFlashSale", () => {
     // 0 is falsy → triggers the missing-fields guard first.
     // Use -1 (truthy but < 1) to reach the specific totalQuantity check.
     await expect(
-      createFlashSale({ ...validPayload(), totalQuantity: -1 }),
+      createCampaign({ ...validPayload(), totalQuantity: -1 }),
     ).rejects.toMatchObject({
       statusCode: 400,
       message: "totalQuantity must be at least 1",
@@ -185,14 +188,14 @@ describe("Function A – createFlashSale", () => {
   test("FS-TC-05 – startAt >= endAt → Error 400", async () => {
     const now = future(3_600_000).toISOString();
     await expect(
-      createFlashSale({ ...validPayload(), startAt: now, endAt: now }),
+      createCampaign({ ...validPayload(), startAt: now, endAt: now }),
     ).rejects.toMatchObject({
       statusCode: 400,
       message: "startAt must be before endAt",
     });
 
     await expect(
-      createFlashSale({
+      createCampaign({
         ...validPayload(),
         startAt: future(10_000_000).toISOString(),
         endAt: future(3_600_000).toISOString(),
@@ -203,7 +206,7 @@ describe("Function A – createFlashSale", () => {
   // FS-TC-06
   test("FS-TC-06 – startAt trong quá khứ → Error 400", async () => {
     await expect(
-      createFlashSale({
+      createCampaign({
         ...validPayload(),
         startAt: past(3_600_000).toISOString(),
       }),
@@ -216,7 +219,7 @@ describe("Function A – createFlashSale", () => {
   // FS-TC-07
   test("FS-TC-07 – Sản phẩm không tồn tại → Error 404", async () => {
     mockProductFindById.mockResolvedValue(null);
-    await expect(createFlashSale(validPayload())).rejects.toMatchObject({
+    await expect(createCampaign(validPayload())).rejects.toMatchObject({
       statusCode: 404,
       message: "Product not found",
     });
@@ -227,7 +230,7 @@ describe("Function A – createFlashSale", () => {
     // Simulate an existing active/pending flash sale
     mockDealFindOne.mockResolvedValue(buildMockDeal({ status: "pending" }));
 
-    await expect(createFlashSale(validPayload())).rejects.toMatchObject({
+    await expect(createCampaign(validPayload())).rejects.toMatchObject({
       statusCode: 400,
       message: expect.stringContaining(
         "An active or upcoming flash sale already exists for this product",
@@ -239,7 +242,7 @@ describe("Function A – createFlashSale", () => {
 // =============================================================================
 // FUNCTION B – Tạo Flash Sale hàng loạt (Batch)
 // =============================================================================
-describe("Function B – createBatchFlashSale", () => {
+describe("Function B – createBatchCampaign", () => {
   const batchPayload = () => ({
     productId: PRODUCT_ID,
     campaignTitle: "Summer Campaign",
@@ -261,7 +264,7 @@ describe("Function B – createBatchFlashSale", () => {
         buildMockDeal({ variantSku: "SKU-B", dealPrice: 120_000 }),
       );
 
-    const result = await createBatchFlashSale(batchPayload());
+    const result = await createBatchCampaign(batchPayload());
 
     expect(Array.isArray(result)).toBe(true);
     expect(result).toHaveLength(2);
@@ -271,7 +274,7 @@ describe("Function B – createBatchFlashSale", () => {
   // FS-TC-10
   test("FS-TC-10 – variants rỗng → Error 400", async () => {
     await expect(
-      createBatchFlashSale({ ...batchPayload(), variants: [] }),
+      createBatchCampaign({ ...batchPayload(), variants: [] }),
     ).rejects.toMatchObject({
       statusCode: 400,
       message: expect.stringContaining("at least one variant"),
@@ -284,7 +287,7 @@ describe("Function B – createBatchFlashSale", () => {
       ...batchPayload(),
       variants: [{ variantSku: "SKU-A", salePrice: 0, totalQuantity: 10 }],
     };
-    await expect(createBatchFlashSale(payload)).rejects.toMatchObject({
+    await expect(createBatchCampaign(payload)).rejects.toMatchObject({
       statusCode: 400,
       message: expect.stringContaining("salePrice must be > 0"),
     });
@@ -301,7 +304,7 @@ describe("Function B – createBatchFlashSale", () => {
         { variantSku: "SKU-A", salePrice: 100_000, totalQuantity: 10 },
       ],
     };
-    await expect(createBatchFlashSale(payload)).rejects.toMatchObject({
+    await expect(createBatchCampaign(payload)).rejects.toMatchObject({
       statusCode: 400,
       message: expect.stringContaining("already exists for variant SKU-A"),
     });
@@ -311,14 +314,14 @@ describe("Function B – createBatchFlashSale", () => {
 // =============================================================================
 // FUNCTION C – Xem danh sách / chi tiết Flash Sale
 // =============================================================================
-describe("Function C – getFlashSales / getFlashSaleDetail / getActiveFlashSales", () => {
+describe("Function C – getCampaigns / getCampaignDetail / getActiveCampaigns", () => {
   // FS-TC-13
   test("FS-TC-13 – Danh sách flash sale với phân trang mặc định", async () => {
     const docs = [buildMockDeal()];
     mockDealFind.mockReturnValue(makeChainableFindMock(docs));
     mockDealCountDocuments.mockResolvedValue(1);
 
-    const result = await getFlashSales({});
+    const result = await getCampaigns({});
 
     expect(result.data).toHaveLength(1);
     expect(result.page).toBe(1);
@@ -332,7 +335,7 @@ describe("Function C – getFlashSales / getFlashSaleDetail / getActiveFlashSale
     mockDealFind.mockReturnValue(makeChainableFindMock([activeDeal]));
     mockDealCountDocuments.mockResolvedValue(1);
 
-    const result = await getFlashSales({ status: "active" });
+    const result = await getCampaigns({ status: "active" });
 
     expect(result.data[0].status).toBe("active");
     // Deal.find should have been called with { type: "flash_sale", status: "active" }
@@ -346,7 +349,7 @@ describe("Function C – getFlashSales / getFlashSaleDetail / getActiveFlashSale
     mockDealFind.mockReturnValue(makeChainableFindMock([]));
     mockDealCountDocuments.mockResolvedValue(0);
 
-    await getFlashSales({ status: "upcoming" });
+    await getCampaigns({ status: "upcoming" });
 
     expect(mockDealFind).toHaveBeenCalledWith(
       expect.objectContaining({ status: "pending" }),
@@ -355,27 +358,28 @@ describe("Function C – getFlashSales / getFlashSaleDetail / getActiveFlashSale
 
   // FS-TC-15
   test("FS-TC-15 – Phân trang page=2, limit=5", async () => {
-    const docs = Array.from({ length: 5 }, () => buildMockDeal());
-    mockDealFind.mockReturnValue(makeChainableFindMock(docs));
-    mockDealCountDocuments.mockResolvedValue(12);
+    // Create 12 mock deals (simulating 3 campaigns with 4 SKUs each)
+    const mockDeals = Array.from({ length: 12 }, () => buildMockDeal());
+    mockDealFind.mockReturnValue(makeChainableFindMock(mockDeals));
 
-    const result = await getFlashSales({ page: 2, limit: 5 });
+    const result = await getCampaigns({ page: 2, limit: 5 });
 
     expect(result.page).toBe(2);
     expect(result.limit).toBe(5);
-    expect(result.total).toBe(12);
+    // 12 deals with same product+title+dates = 1 campaign
+    expect(result.total).toBe(1);
     expect(result.data.length).toBeLessThanOrEqual(5);
   });
 
   // FS-TC-16
   test("FS-TC-16 – Lấy chi tiết flash sale theo ID hợp lệ", async () => {
     const deal = buildMockDeal();
-    // getFlashSaleDetail uses findOne().populate()
+    // getCampaignDetail uses findOne().populate()
     mockDealFindOne.mockReturnValue({
       populate: jest.fn().mockResolvedValue(deal),
     });
 
-    const result = await getFlashSaleDetail(FLASH_SALE_ID);
+    const result = await getCampaignDetail(FLASH_SALE_ID);
 
     expect(result).toBeDefined();
     expect(result._id).toBe(FLASH_SALE_ID);
@@ -390,9 +394,9 @@ describe("Function C – getFlashSales / getFlashSaleDetail / getActiveFlashSale
       populate: jest.fn().mockResolvedValue(null),
     });
 
-    await expect(getFlashSaleDetail("nonexistent_id")).rejects.toMatchObject({
+    await expect(getCampaignDetail("nonexistent_id")).rejects.toMatchObject({
       statusCode: 404,
-      message: "Flash sale not found",
+      message: "Campaign not found",
     });
   });
 
@@ -407,7 +411,7 @@ describe("Function C – getFlashSales / getFlashSaleDetail / getActiveFlashSale
       populate: jest.fn().mockResolvedValue([activeDeal]),
     });
 
-    const result = await getActiveFlashSales();
+    const result = await getActiveCampaigns();
 
     expect(Array.isArray(result)).toBe(true);
     expect(result).toHaveLength(1);
@@ -419,13 +423,13 @@ describe("Function C – getFlashSales / getFlashSaleDetail / getActiveFlashSale
 // =============================================================================
 // FUNCTION D – Cập nhật Flash Sale
 // =============================================================================
-describe("Function D – updateFlashSale", () => {
+describe("Function D – updateCampaign", () => {
   // FS-TC-19
   test("FS-TC-19 – Cập nhật flash sale pending với dữ liệu hợp lệ", async () => {
     const pendingDeal = buildMockDeal({ status: "pending" });
     mockDealFindOne.mockResolvedValue(pendingDeal);
 
-    const result = await updateFlashSale(FLASH_SALE_ID, {
+    const result = await updateCampaign(FLASH_SALE_ID, {
       salePrice: 130_000,
       totalQuantity: 60,
     });
@@ -446,7 +450,7 @@ describe("Function D – updateFlashSale", () => {
     mockDealFindOne.mockResolvedValue(activeDeal);
 
     await expect(
-      updateFlashSale(FLASH_SALE_ID, {
+      updateCampaign(FLASH_SALE_ID, {
         startAt: future(7_200_000).toISOString(), // different future time
       }),
     ).rejects.toMatchObject({
@@ -468,7 +472,7 @@ describe("Function D – updateFlashSale", () => {
     mockDealFindOne.mockResolvedValue(activeDeal);
 
     await expect(
-      updateFlashSale(FLASH_SALE_ID, {
+      updateCampaign(FLASH_SALE_ID, {
         endAt: past(3_600_000).toISOString(), // 1 h ago, after startDate of 2 h ago
       }),
     ).rejects.toMatchObject({
@@ -483,7 +487,7 @@ describe("Function D – updateFlashSale", () => {
     mockDealFindOne.mockResolvedValue(pendingDeal);
 
     await expect(
-      updateFlashSale(FLASH_SALE_ID, {
+      updateCampaign(FLASH_SALE_ID, {
         startAt: past(3_600_000).toISOString(),
       }),
     ).rejects.toMatchObject({
@@ -497,10 +501,10 @@ describe("Function D – updateFlashSale", () => {
     mockDealFindOne.mockResolvedValue(null);
 
     await expect(
-      updateFlashSale("nonexistent_id", { salePrice: 50_000 }),
+      updateCampaign("nonexistent_id", { salePrice: 50_000 }),
     ).rejects.toMatchObject({
       statusCode: 404,
-      message: "Flash sale not found",
+      message: "Campaign not found",
     });
   });
 });
@@ -508,27 +512,27 @@ describe("Function D – updateFlashSale", () => {
 // =============================================================================
 // FUNCTION E – Xóa Flash Sale
 // =============================================================================
-describe("Function E – deleteFlashSale", () => {
+describe("Function E – deleteCampaign", () => {
   // FS-TC-24
   test("FS-TC-24 – Xóa flash sale hợp lệ → thành công", async () => {
     const deal = buildMockDeal();
-    mockDealFindOneAndDelete.mockResolvedValue(deal);
+    mockDealFindOne.mockResolvedValue(deal);
 
-    const result = await deleteFlashSale(FLASH_SALE_ID);
+    const result = await deleteCampaign(FLASH_SALE_ID);
 
-    expect(mockDealFindOneAndDelete).toHaveBeenCalledWith(
-      expect.objectContaining({ _id: FLASH_SALE_ID, type: "flash_sale" }),
+    expect(mockDealFindOne).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: FLASH_SALE_ID }),
     );
     expect(result._id).toBe(FLASH_SALE_ID);
   });
 
   // FS-TC-25
   test("FS-TC-25 – Xóa flash sale không tồn tại → Error 404", async () => {
-    mockDealFindOneAndDelete.mockResolvedValue(null);
+    mockDealFindOne.mockResolvedValue(null);
 
-    await expect(deleteFlashSale("nonexistent_id")).rejects.toMatchObject({
+    await expect(deleteCampaign("nonexistent_id")).rejects.toMatchObject({
       statusCode: 404,
-      message: "Flash sale not found",
+      message: "Campaign not found",
     });
   });
 });

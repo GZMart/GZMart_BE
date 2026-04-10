@@ -30,7 +30,7 @@ function formatTypeName(type) {
 }
 
 // Helper to map DB Deal fields back to legacy Flash Sale API response
-function mapToFlashSaleShape(deal) {
+function mapToCampaignShape(deal) {
   if (!deal) return deal;
 
   const originalPrice = deal.productId?.originalPrice || 0;
@@ -74,7 +74,7 @@ function mapToFlashSaleShape(deal) {
 /**
  * Create a new flash sale for a product
  */
-export const createFlashSale = async (flashSaleData) => {
+export const createCampaign = async (flashSaleData) => {
   const {
     productId,
     salePrice,
@@ -169,7 +169,7 @@ export const createFlashSale = async (flashSaleData) => {
     purchaseLimitPerUser: purchaseLimitPerUser || 1,
   });
 
-  return mapToFlashSaleShape(flashSale);
+  return mapToCampaignShape(flashSale);
 };
 
 /**
@@ -181,7 +181,7 @@ export const createFlashSale = async (flashSaleData) => {
  *     variants: [{ variantSku, salePrice, totalQuantity,
  *                  purchaseLimitPerOrder, purchaseLimitPerUser }] }
  */
-export const createBatchFlashSale = async (batchData) => {
+export const createBatchCampaign = async (batchData) => {
   const {
     productId,
     campaignTitle,
@@ -295,25 +295,22 @@ export const createBatchFlashSale = async (batchData) => {
     }),
   );
 
-  return created.map(mapToFlashSaleShape);
+  return created.map(mapToCampaignShape);
 };
 
 /**
- * Get all flash sales (with pagination, status filter, and sortBy)
+ * Get all campaigns (grouped by product + title + startAt + endAt) with pagination
+ * Returns campaigns with aggregated SKU data
  */
-export const getFlashSales = async (filters = {}, user = null) => {
+export const getCampaigns = async (filters = {}, user = null) => {
   const { page = 1, limit = 10, status, sortBy = "createdAt", type } = filters;
   const skip = (page - 1) * limit;
 
-  // If type is specified, filter by it; otherwise return all deal types
+  // Base filter for Deal documents
   const filterQuery = type ? { type } : {};
-
-  // Sellers can only see their own deals
   if (user && user.role === "seller") {
     filterQuery.sellerId = user._id;
   }
-
-  // Deal status: upcoming mapped to Deal pending
   if (status) {
     if (status === "upcoming") filterQuery.status = "pending";
     else filterQuery.status = status;
@@ -328,96 +325,175 @@ export const getFlashSales = async (filters = {}, user = null) => {
     upcoming: { startDate: 1 },
     "active-first": { status: -1 },
   };
+  const sortStage = sortOptions[sortBy] || { createdAt: -1 };
 
-  const flashSales = await Deal.find(filterQuery)
+  // Get all deals matching filter (for grouping)
+  const allDeals = await Deal.find(filterQuery)
     .populate("productId", "name sku originalPrice images models")
-    .sort(sortOptions[sortBy] || { createdAt: -1 })
-    .skip(skip)
-    .limit(Number(limit));
+    .sort(sortStage)
+    .lean();
 
-  const total = await Deal.countDocuments(filterQuery);
+  // Group deals by productId + title + startDate + endDate to form campaigns
+  const campaignMap = {};
+  allDeals.forEach((deal) => {
+    const key = `${deal.productId?._id}_${deal.title}_${deal.startDate}_${deal.endDate}`;
+    if (!campaignMap[key]) {
+      campaignMap[key] = {
+        _id: deal._id,
+        productId: deal.productId,
+        campaignTitle: deal.title,
+        type: deal.type,
+        startAt: deal.startDate,
+        endAt: deal.endDate,
+        status: deal.status,
+        variants: [],
+      };
+    }
+    campaignMap[key].variants.push(mapToCampaignShape(deal));
+  });
+
+  const allCampaigns = Object.values(campaignMap);
+  const totalCampaigns = allCampaigns.length;
+  const paginatedCampaigns = allCampaigns.slice(skip, skip + Number(limit));
+
+  // Aggregate variant data for each campaign
+  const campaigns = paginatedCampaigns.map((campaign) => {
+    const records = campaign.variants;
+    const totalQty = records.reduce((s, r) => s + (r.totalQuantity || 0), 0);
+    const totalSold = records.reduce((s, r) => s + (r.soldQuantity || 0), 0);
+    const priceMin = Math.min(...records.map((r) => r.salePrice || 0));
+    const priceMax = Math.max(...records.map((r) => r.salePrice || 0));
+    const statusOrder = {
+      active: 3,
+      pending: 2,
+      upcoming: 2,
+      expired: 1,
+      ended: 1,
+      cancelled: 0,
+    };
+    const topStatus = records.reduce(
+      (best, r) =>
+        (statusOrder[r.status] || 0) > (statusOrder[best] || 0)
+          ? r.status
+          : best,
+      campaign.status,
+    );
+
+    // If endAt has passed, force status to expired (time-based override, not quantity-based)
+    const now = new Date();
+    const effectiveStatus =
+      campaign.endAt && new Date(campaign.endAt) <= now && topStatus !== "cancelled"
+        ? "expired"
+        : topStatus;
+
+    return {
+      ...campaign,
+      salePrice: priceMin,
+      salePriceMax: priceMax,
+      totalQuantity: totalQty,
+      soldQuantity: totalSold,
+      status: effectiveStatus,
+      skuCount: records.length,
+    };
+  });
 
   return {
-    data: flashSales.map(mapToFlashSaleShape),
+    data: campaigns,
     page: Number(page),
     limit: Number(limit),
-    total,
+    total: totalCampaigns,
   };
 };
 
 /**
  * Get flash sale detail by ID
  */
-export const getFlashSaleDetail = async (flashSaleId) => {
-  const flashSale = await Deal.findOne({
-    _id: flashSaleId,
-    type: "flash_sale",
+export const getCampaignDetail = async (campaignId) => {
+  const campaign = await Deal.findOne({
+    _id: campaignId,
   }).populate(
     "productId",
     "name sku slug images description originalPrice models",
   );
 
-  if (!flashSale) {
-    throw new ErrorResponse("Flash sale not found", 404);
+  if (!campaign) {
+    throw new ErrorResponse("Campaign not found", 404);
   }
 
-  return mapToFlashSaleShape(flashSale);
+  // Force expired based on endAt (time-based, not DB-dependent)
+  const result = mapToCampaignShape(campaign);
+  if (campaign.endDate && new Date(campaign.endDate) <= new Date() && result.status !== "cancelled") {
+    result.status = "expired";
+  }
+  return result;
 };
 
 /**
  * Get active flash sales with countdown info
  */
-export const getActiveFlashSales = async () => {
-  const flashSales = await Deal.find({
-    type: "flash_sale",
+export const getActiveCampaigns = async () => {
+  const now = new Date();
+  // Lọc bỏ các deal có productId bị xóa hoặc inactive
+  const campaigns = await Deal.find({
     status: "active",
-  }).populate(
-    "productId",
-    "name sku slug images originalPrice rating reviewCount sold models",
-  );
+    productId: { $ne: null },
+  })
+    .populate({
+      path: "productId",
+      match: { status: { $ne: "inactive" } },
+      select: "name sku slug images originalPrice rating reviewCount sold models",
+    })
+    .lean();
 
-  return flashSales.map(mapToFlashSaleShape);
+  // Lọc bỏ: (1) deal có productId populate trả về null, (2) deal đã hết hạn theo endDate
+  const validCampaigns = campaigns
+    .filter((c) => c.productId != null)
+    .filter((c) => c.endDate && new Date(c.endDate) > now);
+
+  return validCampaigns.map(mapToCampaignShape);
 };
 
 /**
  * Get flash sale stats
  */
-export const getFlashSaleStats = async (flashSaleId, user = null) => {
-  const flashSale = await Deal.findOne({
-    _id: flashSaleId,
-    type: "flash_sale",
+export const getCampaignStats = async (campaignId, user = null) => {
+  const campaign = await Deal.findOne({
+    _id: campaignId,
   }).populate("productId", "name sku originalPrice images models");
 
-  if (!flashSale) {
-    throw new ErrorResponse("Flash sale not found", 404);
+  if (!campaign) {
+    throw new ErrorResponse("Campaign not found", 404);
   }
 
-  // Sellers can only view stats for their own flash sales
-  if (user && user.role === "seller" && flashSale.sellerId?.toString() !== user._id.toString()) {
-    throw new ErrorResponse("Not authorized to access this flash sale", 403);
+  // Sellers can only view stats for their own campaigns
+  if (
+    user &&
+    user.role === "seller" &&
+    campaign.sellerId?.toString() !== user._id.toString()
+  ) {
+    throw new ErrorResponse("Not authorized to access this campaign", 403);
   }
 
-  return mapToFlashSaleShape(flashSale);
+  return mapToCampaignShape(campaign);
 };
 
 /**
- * Search flash sale products by keyword
+ * Search campaign products by keyword
  */
-export const searchFlashSaleProducts = async (
-  flashSaleId,
+export const searchCampaignProducts = async (
+  campaignId,
   searchTerm,
   pagination = {},
 ) => {
-  const flashSale = await Deal.findOne({
-    _id: flashSaleId,
-    type: "flash_sale",
+  const campaign = await Deal.findOne({
+    _id: campaignId,
   }).populate("productId", "name sku slug images models");
 
-  if (!flashSale) {
-    throw new ErrorResponse("Flash sale not found", 404);
+  if (!campaign) {
+    throw new ErrorResponse("Campaign not found", 404);
   }
 
-  const product = flashSale.productId;
+  const product = campaign.productId;
   const term = (searchTerm || "").toLowerCase();
   const matches =
     product &&
@@ -430,7 +506,7 @@ export const searchFlashSaleProducts = async (
       total: 1,
       page: 1,
       limit: 10,
-      data: [mapToFlashSaleShape(flashSale)],
+      data: [mapToCampaignShape(campaign)],
     };
   }
 
@@ -438,9 +514,9 @@ export const searchFlashSaleProducts = async (
 };
 
 /**
- * Update flash sale
+ * Update campaign
  */
-export const updateFlashSale = async (flashSaleId, updateData, user = null) => {
+export const updateCampaign = async (campaignId, updateData, user = null) => {
   const {
     salePrice,
     totalQuantity,
@@ -452,29 +528,32 @@ export const updateFlashSale = async (flashSaleId, updateData, user = null) => {
     purchaseLimitPerUser,
   } = updateData;
 
-  const flashSale = await Deal.findOne({
-    _id: flashSaleId,
-    type: "flash_sale",
+  const campaign = await Deal.findOne({
+    _id: campaignId,
   });
-  if (!flashSale) {
-    throw new ErrorResponse("Flash sale not found", 404);
+  if (!campaign) {
+    throw new ErrorResponse("Campaign not found", 404);
   }
 
-  // Sellers can only update their own flash sales
-  if (user && user.role === "seller" && flashSale.sellerId?.toString() !== user._id.toString()) {
-    throw new ErrorResponse("Not authorized to update this flash sale", 403);
+  // Sellers can only update their own campaigns
+  if (
+    user &&
+    user.role === "seller" &&
+    campaign.sellerId?.toString() !== user._id.toString()
+  ) {
+    throw new ErrorResponse("Not authorized to update this campaign", 403);
   }
 
   const now = new Date();
-  const isActive = flashSale.startDate <= now && flashSale.endDate >= now;
-  const isPending = flashSale.startDate > now;
+  const isActive = campaign.startDate <= now && campaign.endDate >= now;
+  const isPending = campaign.startDate > now;
 
-  // If flash sale already started, disallow changing startAt
+  // If campaign already started, disallow changing startAt
   if (startAt && isActive) {
     const requestedStart = new Date(startAt);
     // Only block if trying to change to a genuinely different value
     if (
-      Math.abs(requestedStart.getTime() - flashSale.startDate.getTime()) > 1000
+      Math.abs(requestedStart.getTime() - campaign.startDate.getTime()) > 1000
     ) {
       throw new ErrorResponse(
         "Cannot change start time of an already active flash sale",
@@ -494,7 +573,7 @@ export const updateFlashSale = async (flashSaleId, updateData, user = null) => {
 
   if (endAt) {
     const newStartAt =
-      startAt && isPending ? new Date(startAt) : flashSale.startDate;
+      startAt && isPending ? new Date(startAt) : campaign.startDate;
     const newEndAt = new Date(endAt);
     if (newStartAt >= newEndAt) {
       throw new ErrorResponse("startAt must be before endAt", 400);
@@ -504,84 +583,194 @@ export const updateFlashSale = async (flashSaleId, updateData, user = null) => {
     }
   }
 
-  if (salePrice !== undefined) flashSale.dealPrice = Number(salePrice);
+  if (salePrice !== undefined) campaign.dealPrice = Number(salePrice);
   if (totalQuantity !== undefined)
-    flashSale.quantityLimit = Number(totalQuantity);
-  // Only update startAt when flash sale hasn't started yet
-  if (startAt && isPending) flashSale.startDate = new Date(startAt);
-  if (endAt) flashSale.endDate = new Date(endAt);
-  if (variantSku !== undefined) flashSale.variantSku = variantSku;
-  if (campaignTitle !== undefined) flashSale.title = campaignTitle;
+    campaign.quantityLimit = Number(totalQuantity);
+  // Only update startAt when campaign hasn't started yet
+  if (startAt && isPending) campaign.startDate = new Date(startAt);
+  if (endAt) campaign.endDate = new Date(endAt);
+  if (variantSku !== undefined) campaign.variantSku = variantSku;
+  if (campaignTitle !== undefined) campaign.title = campaignTitle;
   if (purchaseLimitPerOrder !== undefined)
-    flashSale.purchaseLimitPerOrder = Number(purchaseLimitPerOrder);
+    campaign.purchaseLimitPerOrder = Number(purchaseLimitPerOrder);
   if (purchaseLimitPerUser !== undefined)
-    flashSale.purchaseLimitPerUser = Number(purchaseLimitPerUser);
+    campaign.purchaseLimitPerUser = Number(purchaseLimitPerUser);
 
   // Recalculate status based on dates (pre-save hook also does this)
   const updatedNow = new Date();
-  if (flashSale.startDate > updatedNow) {
-    flashSale.status = "pending";
-  } else if (flashSale.endDate < updatedNow) {
-    flashSale.status = "expired";
+  if (campaign.startDate > updatedNow) {
+    campaign.status = "pending";
+  } else if (campaign.endDate < updatedNow) {
+    campaign.status = "expired";
   } else {
-    flashSale.status = "active";
+    campaign.status = "active";
   }
 
-  await flashSale.save();
-  return mapToFlashSaleShape(flashSale);
+  await campaign.save();
+  return mapToCampaignShape(campaign);
 };
 
 /**
- * Delete flash sale
+ * Delete campaign
  */
-export const deleteFlashSale = async (flashSaleId, user = null) => {
-  const flashSale = await Deal.findOne({
-    _id: flashSaleId,
-    type: "flash_sale",
+export const deleteCampaign = async (campaignId, user = null) => {
+  const campaign = await Deal.findOne({
+    _id: campaignId,
   });
 
-  if (!flashSale) {
-    throw new ErrorResponse("Flash sale not found", 404);
+  if (!campaign) {
+    throw new ErrorResponse("Campaign not found", 404);
   }
 
-  // Sellers can only delete their own flash sales
-  if (user && user.role === "seller" && flashSale.sellerId?.toString() !== user._id.toString()) {
-    throw new ErrorResponse("Not authorized to delete this flash sale", 403);
+  // Sellers can only delete their own campaigns
+  if (
+    user &&
+    user.role === "seller" &&
+    campaign.sellerId?.toString() !== user._id.toString()
+  ) {
+    throw new ErrorResponse("Not authorized to delete this campaign", 403);
   }
 
-  await flashSale.deleteOne();
-  return mapToFlashSaleShape(flashSale);
+  await campaign.deleteOne();
+  return mapToCampaignShape(campaign);
 };
 
 /**
- * Get flash sale price for order (price override logic)
+ * Pause an active campaign - sets all variants in the group to "paused"
  */
-export const getFlashSalePrice = async (productId, regularPrice) => {
+export const pauseCampaign = async (campaignId, user = null) => {
+  const campaign = await Deal.findOne({ _id: campaignId });
+  if (!campaign) {
+    throw new ErrorResponse("Campaign not found", 404);
+  }
+
+  if (user && user.role === "seller" && campaign.sellerId?.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to pause this campaign", 403);
+  }
+
+  if (campaign.status !== "active" && campaign.status !== "pending") {
+    throw new ErrorResponse("Only active or pending campaigns can be paused", 400);
+  }
+
+  // Pause ALL variants in the same campaign group (same productId + title + startDate + endDate)
+  const groupQuery = {
+    productId: campaign.productId,
+    title: campaign.title,
+    startDate: campaign.startDate,
+    endDate: campaign.endDate,
+    status: { $in: ["active", "pending"] },
+  };
+
+  const result = await Deal.updateMany(groupQuery, { $set: { status: "paused" } });
+
+  // Return the first updated deal as representative
+  const updated = await Deal.findOne({ _id: campaignId });
+  return { ...mapToCampaignShape(updated), pausedCount: result.modifiedCount };
+};
+
+/**
+ * Stop (cancelled) a campaign - sets all variants in the group to "cancelled"
+ */
+export const stopCampaign = async (campaignId, user = null) => {
+  const campaign = await Deal.findOne({ _id: campaignId });
+  if (!campaign) {
+    throw new ErrorResponse("Campaign not found", 404);
+  }
+
+  if (user && user.role === "seller" && campaign.sellerId?.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to stop this campaign", 403);
+  }
+
+  if (campaign.status === "expired" || campaign.status === "cancelled") {
+    throw new ErrorResponse("Campaign is already ended or cancelled", 400);
+  }
+
+  // Stop ALL variants in the same campaign group (same productId + title + startDate + endDate)
+  const groupQuery = {
+    productId: campaign.productId,
+    title: campaign.title,
+    startDate: campaign.startDate,
+    endDate: campaign.endDate,
+    status: { $nin: ["expired", "cancelled"] },
+  };
+
+  const result = await Deal.updateMany(groupQuery, { $set: { status: "cancelled" } });
+
+  // Return the first updated deal as representative
+  const updated = await Deal.findOne({ _id: campaignId });
+  return { ...mapToCampaignShape(updated), cancelledCount: result.modifiedCount };
+};
+
+/**
+ * Resume a paused campaign - reactivates ALL variants in the group
+ */
+export const resumeCampaign = async (campaignId, user = null) => {
+  const campaign = await Deal.findOne({ _id: campaignId });
+  if (!campaign) {
+    throw new ErrorResponse("Campaign not found", 404);
+  }
+
+  if (user && user.role === "seller" && campaign.sellerId?.toString() !== user._id.toString()) {
+    throw new ErrorResponse("Not authorized to resume this campaign", 403);
+  }
+
+  if (campaign.status !== "paused") {
+    throw new ErrorResponse("Only paused campaigns can be resumed", 400);
+  }
+
+  // Resume ALL variants in the same campaign group
+  const groupQuery = {
+    productId: campaign.productId,
+    title: campaign.title,
+    startDate: campaign.startDate,
+    endDate: campaign.endDate,
+    status: "paused",
+  };
+
+  // Reactivate based on dates
+  const now = new Date();
+  let newStatus;
+  if (campaign.startDate > now) {
+    newStatus = "pending";
+  } else if (campaign.endDate < now) {
+    throw new ErrorResponse("Campaign end date has passed, cannot resume", 400);
+  } else {
+    newStatus = "active";
+  }
+
+  const result = await Deal.updateMany(groupQuery, { $set: { status: newStatus } });
+
+  // Return the first updated deal as representative
+  const updated = await Deal.findOne({ _id: campaignId });
+  return { ...mapToCampaignShape(updated), resumedCount: result.modifiedCount };
+};
+
+/**
+ * Get deal price for order (price override logic - supports all deal types)
+ */
+export const getCampaignPrice = async (productId, regularPrice) => {
   const now = new Date();
 
-  const flashSaleDeal = await Deal.findOne({
+  // Find active deal for this product (any deal type)
+  const deal = await Deal.findOne({
     productId,
-    type: "flash_sale",
     status: "active",
+    startDate: { $lte: now },
+    endDate: { $gte: now },
   }).lean();
 
-  if (
-    flashSaleDeal &&
-    now >= flashSaleDeal.startDate &&
-    now <= flashSaleDeal.endDate
-  ) {
-    const salePrice =
-      flashSaleDeal.dealPrice ||
-      regularPrice * (1 - (flashSaleDeal.discountPercent || 0) / 100);
+  if (deal) {
+    const dealPrice =
+      deal.dealPrice || regularPrice * (1 - (deal.discountPercent || 0) / 100);
 
     return {
-      price: salePrice,
+      price: dealPrice,
       originalPrice: regularPrice,
       discountPercent: Math.round(
-        ((regularPrice - salePrice) / regularPrice) * 100,
+        ((regularPrice - dealPrice) / regularPrice) * 100,
       ),
-      isFlashSale: true,
-      flashSaleId: flashSaleDeal._id,
+      isFlashSale: deal.type === "flash_sale",
+      flashSaleId: deal._id,
     };
   }
 
@@ -606,7 +795,6 @@ export const syncDealStatuses = async () => {
   // pending → active
   await Deal.updateMany(
     {
-      type: "flash_sale",
       status: "pending",
       startDate: { $lte: now },
       endDate: { $gt: now },
@@ -616,20 +804,19 @@ export const syncDealStatuses = async () => {
 
   // pending → expired (end date passed before ever going active, e.g. server was down)
   await Deal.updateMany(
-    { type: "flash_sale", status: "pending", endDate: { $lte: now } },
+    { status: "pending", endDate: { $lte: now } },
     { $set: { status: "expired" } },
   );
 
   // active → expired (time exceeded)
   await Deal.updateMany(
-    { type: "flash_sale", status: "active", endDate: { $lte: now } },
+    { status: "active", endDate: { $lte: now } },
     { $set: { status: "expired" } },
   );
 
   // active → expired (quantity exhausted)
   await Deal.updateMany(
     {
-      type: "flash_sale",
       status: "active",
       $expr: {
         $and: [
@@ -644,29 +831,26 @@ export const syncDealStatuses = async () => {
 
 // ─── Unused / legacy stubs kept for backward-compat ──────────────────────────
 
-export const addProductsToFlashSale = async () => {
+export const addProductsToCampaign = async () => {
   throw new ErrorResponse(
     "Cannot add products to flash sale. Each flash sale is for one product only.",
     400,
   );
 };
 
-export const getFlashSaleProducts = async (flashSaleId) => {
-  const data = await getFlashSaleDetail(flashSaleId);
+export const getCampaignProducts = async (campaignId) => {
+  const data = await getCampaignDetail(campaignId);
   return { total: 1, page: 1, limit: 10, data: [data] };
 };
 
-export const getFlashSaleProduct = async (flashSaleProductId) => {
-  return getFlashSaleDetail(flashSaleProductId);
+export const getCampaignProduct = async (campaignProductId) => {
+  return getCampaignDetail(campaignProductId);
 };
 
-export const updateFlashSaleProduct = async (
-  flashSaleProductId,
-  updateData,
-) => {
-  return updateFlashSale(flashSaleProductId, updateData);
+export const updateCampaignProduct = async (campaignProductId, updateData) => {
+  return updateCampaign(campaignProductId, updateData);
 };
 
-export const removeProductFromFlashSale = async (flashSaleProductId) => {
-  return deleteFlashSale(flashSaleProductId);
+export const removeProductFromCampaign = async (campaignProductId) => {
+  return deleteCampaign(campaignProductId);
 };
