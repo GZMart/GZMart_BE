@@ -5,10 +5,15 @@ import {
   getPaymentStatus,
   cancelPayment,
   checkPaymentFromPayOS,
+  createTopupLink,
+  checkTopupStatus
 } from "../controllers/payment.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 
 const router = express.Router();
+
+router.post("/wallet/create-link", protect, createTopupLink);
+router.get("/wallet/check/:orderCode", protect, checkTopupStatus);
 
 /**
  * @swagger

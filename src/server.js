@@ -46,10 +46,12 @@ import followRoutes from "./routes/follow.routes.js";
 import livestreamRoutes from "./routes/livestream.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
+import voucherCampaignRoutes from "./routes/voucherCampaign.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
 import sellerApplicationRoutes from "./routes/sellerApplication.routes.js";
 import coinRoutes from "./routes/coin.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
+import bannerRoutes from "./routes/banner.routes.js";
 import disputeRoutes from "./routes/disputeResolution.routes.js";
 import financeRoutes from "./routes/finance.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
@@ -59,9 +61,12 @@ import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
 import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
 import { startCoinJobs } from "./jobs/coinExpirationJob.js";
 import { startLivestreamCleanupJob } from "./jobs/livestreamCleanup.job.js";
+import { startBirthdayVoucherJob } from "./jobs/birthdayVoucher.job.js";
+import { startOccasionVoucherJob } from "./jobs/occasionVoucher.job.js";
 import { setSocketIO } from "./utils/socketIO.js";
 import { runBatchEmbedding } from "./jobs/batchEmbedding.job.js";
 import { initProductSoldReconcileJob } from "./jobs/productSoldReconcile.job.js";
+import bannerService from "./services/banner.service.js";
 // Load environment variables
 dotenv.config();
 
@@ -109,7 +114,7 @@ app.use((req, res, next) => {
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
-    "https://www.vic-sport.site",
+    "https://www.gzmart.shop",
     "https://gzmart.vercel.app",
     // Azure App Service domains
     process.env.WEBSITE_HOSTNAME
@@ -215,6 +220,7 @@ app.use("/api/campaigns", campaignRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/vouchers/system", systemVoucherRoutes);
+app.use("/api/voucher-campaigns", voucherCampaignRoutes);
 app.use("/api/vouchers", voucherRoutes);
 app.use("/api/seller/shop-programs", shopProgramRoutes);
 app.use("/api/seller/shop-decoration", shopDecorationRoutes);
@@ -235,6 +241,7 @@ app.use("/api/rma", rmaRoutes);
 app.use("/api/chat", chatRoutes); // Register chat routes
 app.use("/api/ai", aiRoutes); // Register AI routes
 app.use("/api/finance", financeRoutes); // Register finance routes
+app.use("/api/banners", bannerRoutes); // Register banner ads routes
 app.use("/api/disputes", disputeRoutes);
 
 // Error handler
@@ -299,8 +306,15 @@ server.listen(PORT, HOST, () => {
   startCoinJobs();
   initProductSoldReconcileJob();
   startLivestreamCleanupJob();
+  startBirthdayVoucherJob();
+  startOccasionVoucherJob();
   // [Phase 3 - 5.2] Batch embedding cron — registered at import time
   runBatchEmbedding();
+  // Banner Ads status sync: APPROVED→RUNNING, RUNNING→COMPLETED (every 5 minutes)
+  bannerService.syncBannerStatuses().catch((err) => logger.error("syncBannerStatuses (boot):", err));
+  setInterval(() => {
+    bannerService.syncBannerStatuses().catch((err) => logger.error("syncBannerStatuses (interval):", err));
+  }, 5 * 60 * 1000);
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s
