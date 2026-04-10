@@ -169,3 +169,46 @@ export const checkPaymentFromPayOS = asyncHandler(async (req, res, next) => {
     data: result,
   });
 });
+
+/**
+ * @desc    Tạo link nạp xu vào ví qua PayOS
+ * @route   POST /api/payments/wallet/create-link
+ * @access  Private
+ */
+export const createTopupLink = asyncHandler(async (req, res, next) => {
+  const { amount, coinAmount } = req.body;
+  const userId = req.user._id;
+
+  if (!amount || !coinAmount) {
+    return next(new ErrorResponse("Vui lòng cung cấp số tiền và số xu", 400));
+  }
+
+  const result = await paymentService.createTopupLink(userId, amount, coinAmount);
+
+  res.status(200).json({
+    success: true,
+    message: "Tạo link nạp xu thành công",
+    data: result,
+  });
+});
+
+/**
+ * @desc    Kiểm tra trạng thái giao dịch nạp xu từ PayOS
+ * @route   GET /api/payments/wallet/check/:orderCode
+ * @access  Private
+ */
+export const checkTopupStatus = asyncHandler(async (req, res, next) => {
+  const { orderCode } = req.params;
+  const userId = req.user._id;
+
+  if (!orderCode) {
+    return next(new ErrorResponse("Vui lòng cung cấp mã giao dịch", 400));
+  }
+
+  const result = await paymentService.checkTopupStatus(orderCode, userId);
+
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+});
