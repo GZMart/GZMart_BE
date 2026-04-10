@@ -22,6 +22,7 @@ import {
   clearUserCart,
 } from "../utils/orderInventory.js";
 import mongoose from "mongoose";
+import { isPayOsConfigured } from "../config/payos.config.js";
 
 // @desc    Get checkout info (user details)
 // @route   GET /api/orders/checkout-info
@@ -53,8 +54,8 @@ export const getCheckoutInfo = asyncHandler(async (req, res, next) => {
 const calculateShippingFee = (subtotal, city = "") => {
   // Free shipping for orders > 500k
   if (subtotal >= 500000) {
-return 0;
-}
+    return 0;
+  }
 
   // Example logic: HCM = 20k, others = 35k
   // In reality, this would call a shipping provider API
@@ -72,8 +73,54 @@ const normalizeFee = (value, fallback = 0) => {
   return Math.round(parsed);
 };
 
+const normalizeAddressForSignature = (value = "") =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/\s*,\s*/g, ",")
+    .trim();
+
+const buildOrderRequestSignature = ({
+  paymentMethod,
+  shippingAddress,
+  cartItems = [],
+  liveItems = [],
+  voucherIds = [],
+  useCoin,
+  includeGiftBox,
+}) => {
+  const cartPart = cartItems
+    .map((item) => `cart:${item._id}:${Number(item.quantity) || 0}`)
+    .sort()
+    .join("|");
+
+  const livePart = (liveItems || [])
+    .map(
+      (item) =>
+        `live:${item.productId || ""}:${item.modelId || ""}:${item.color || ""}:${item.size || ""}:${Number(item.quantity) || 0}`,
+    )
+    .sort()
+    .join("|");
+
+  const voucherPart = (voucherIds || [])
+    .map((id) => String(id))
+    .sort()
+    .join(",");
+
+  return [
+    String(paymentMethod || ""),
+    normalizeAddressForSignature(shippingAddress),
+    cartPart,
+    livePart,
+    voucherPart,
+    includeGiftBox ? "gift:1" : "gift:0",
+    useCoin === false ? "coin:0" : "coin:1",
+  ].join("::");
+};
+
 // Helper: Generate Order Number
-const generateOrderNumber = () => `ORD-${  Date.now()  }-${  Math.floor(Math.random() * 1000)}`;
+const generateOrderNumber = () =>
+  `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
 // Deduct GZCoin using packets with nearest expiration first.
 const deductCoinsForOrder = async ({
@@ -120,8 +167,8 @@ const deductCoinsForOrder = async ({
 
   for (const packet of packets) {
     if (remaining <= 0) {
-break;
-}
+      break;
+    }
 
     const useAmount = Math.min(packet.remainingAmount, remaining);
     packet.remainingAmount -= useAmount;
@@ -220,8 +267,8 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
   let subtotal = 0;
   for (const item of cartItems) {
     if (!item.productId) {
-continue;
-}
+      continue;
+    }
     const product = item.productId;
 
     // Find model for this variant
@@ -361,6 +408,15 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     );
   }
 
+  if (paymentMethod === "payos" && !isPayOsConfigured()) {
+    return next(
+      new ErrorResponse(
+        "PayOS is not configured on server. Please choose Cash on Delivery.",
+        400,
+      ),
+    );
+  }
+
   // Track live order item IDs (persisted inside transaction)
   const liveOrderItemIds = [];
 
@@ -374,7 +430,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         .select("name models sellerId images tiers")
         .lean();
       if (!product) {
-        return next(new ErrorResponse(`Product ${liveItem.productId} not found`, 400));
+        return next(
+          new ErrorResponse(`Product ${liveItem.productId} not found`, 400),
+        );
       }
 
       // Find the model matching color + size by examining tierIndex
@@ -391,8 +449,8 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 
           targetModel = product.models.find((m) => {
             if (!m.tierIndex || m.tierIndex.length === 0) {
-return false;
-}
+              return false;
+            }
             const colorMatch =
               colorIdx === -1 ||
               m.tierIndex[colorIdx] ===
@@ -422,13 +480,20 @@ return false;
       }
 
       if (!targetModel) {
-        return next(new ErrorResponse(`Variant not found for product ${product.name}`, 400));
+        return next(
+          new ErrorResponse(
+            `Variant not found for product ${product.name}`,
+            400,
+          ),
+        );
       }
       if (targetModel.stock < liveItem.quantity) {
-        return next(new ErrorResponse(
-          `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
-          400,
-        ));
+        return next(
+          new ErrorResponse(
+            `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
+            400,
+          ),
+        );
       }
 
       const clientPrice = Number(liveItem.price);
@@ -488,33 +553,43 @@ return false;
     }
   } else {
     // ── Live-session-only order: cart may be empty — this is fine ──
-    console.log("[createOrder] Live-session-only order — skipping cart validation.", {
-      liveItems: liveItems.length,
-      cartItemIds,
-    });
+    console.log(
+      "[createOrder] Live-session-only order — skipping cart validation.",
+      {
+        liveItems: liveItems.length,
+        cartItemIds,
+      },
+    );
   }
 
-  // DUPLICATE ORDER PREVENTION (BUG 9): Check for recent duplicate orders
-  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-  const recentOrder = await Order.findOne({
+  // DUPLICATE ORDER PREVENTION: block only same payload submitted in a short window.
+  const useCoin = req.body.useCoin === false ? false : true;
+  const requestSignature = buildOrderRequestSignature({
+    paymentMethod,
+    shippingAddress,
+    cartItems,
+    liveItems,
+    voucherIds,
+    useCoin,
+    includeGiftBox,
+  });
+
+  const duplicateWindowMs = 15000;
+  const duplicateCutoff = new Date(Date.now() - duplicateWindowMs);
+  const duplicateOrder = await Order.findOne({
     userId: req.user._id,
-    totalPrice: { $exists: true },
-    createdAt: { $gte: fiveMinutesAgo },
+    requestSignature,
+    createdAt: { $gte: duplicateCutoff },
     status: { $nin: ["cancelled", "refunded"] },
   }).sort({ createdAt: -1 });
 
-  if (recentOrder) {
-    // Calculate if this is a duplicate (same total price and similar timestamp)
-    const timeDiff = Date.now() - new Date(recentOrder.createdAt).getTime();
-    if (timeDiff < 10000) {
-      // Less than 10 seconds
-      return next(
-        new ErrorResponse(
-          "Duplicate order detected. Please wait before creating another order.",
-          429,
-        ),
-      );
-    }
+  if (duplicateOrder) {
+    return next(
+      new ErrorResponse(
+        "Duplicate order detected. Please wait before creating another order.",
+        429,
+      ),
+    );
   }
 
   // 2. Validate Stock & Calculate Subtotal
@@ -523,8 +598,8 @@ return false;
 
   for (const item of cartItems) {
     if (!item.productId) {
-continue;
-} // Skip deleted products
+      continue;
+    } // Skip deleted products
 
     // Find model to get SKU
     const product = item.productId;
@@ -633,6 +708,73 @@ continue;
 
   const discount = totalDiscount;
 
+  // 3b. Validate & apply live session voucher (separate from regular voucherIds)
+  let liveVoucherDiscount = 0;
+  let liveVoucherCode = null;
+  if (liveSessionVoucherId) {
+    const Voucher = (await import("../models/Voucher.js")).default;
+    const LiveSession = (await import("../models/LiveSession.js")).default;
+
+    const liveVoucher = await Voucher.findById(liveSessionVoucherId);
+    if (!liveVoucher || liveVoucher.type !== "live") {
+      return next(new ErrorResponse("Invalid live session voucher", 400));
+    }
+    if (!liveVoucher.liveSessionId) {
+      return next(new ErrorResponse("This voucher is not linked to any live session", 400));
+    }
+
+    const { getRoomViewers } = await import("../services/livestreamRedis.service.js");
+    const session = await LiveSession.findById(liveVoucher.liveSessionId).lean();
+    if (!session) {
+      return next(new ErrorResponse("Live session no longer exists", 400));
+    }
+    if (session.status !== "live") {
+      return next(new ErrorResponse("Live session has ended — voucher cannot be used", 400));
+    }
+    const viewerIds = await getRoomViewers(liveVoucher.liveSessionId.toString());
+    const isInSession = viewerIds.includes(req.user._id.toString());
+    if (!isInSession) {
+      return next(new ErrorResponse("You must be in the live session to use this voucher", 400));
+    }
+
+    // Check time & usage
+    const now = new Date();
+    if (liveVoucher.status !== "active" || liveVoucher.startTime > now || liveVoucher.endTime < now) {
+      return next(new ErrorResponse("This voucher is no longer available", 400));
+    }
+    if (liveVoucher.usageCount >= liveVoucher.usageLimit) {
+      return next(new ErrorResponse("This voucher has reached its usage limit", 400));
+    }
+
+    // Calculate discount (same logic as voucherValidator)
+    const applicableSubtotal = cartItems.length > 0
+      ? cartItems
+          .filter((ci) => ci.productId?.sellerId?.toString() === liveVoucher.shopId?.toString())
+          .reduce((sum, ci) => sum + ci.price * ci.quantity, 0)
+      : 0;
+
+    if (liveVoucher.minBasketPrice && applicableSubtotal < liveVoucher.minBasketPrice) {
+      return next(new ErrorResponse(
+        `Minimum order ${liveVoucher.minBasketPrice?.toLocaleString()}đ required for this voucher`,
+        400
+      ));
+    }
+
+    if (liveVoucher.discountType === "amount") {
+      liveVoucherDiscount = Math.min(liveVoucher.discountValue, applicableSubtotal);
+    } else {
+      liveVoucherDiscount = Math.round(applicableSubtotal * (liveVoucher.discountValue / 100));
+      if (liveVoucher.maxDiscountAmount) {
+        liveVoucherDiscount = Math.min(liveVoucherDiscount, liveVoucher.maxDiscountAmount);
+      }
+    }
+
+    liveVoucherCode = liveVoucher.code;
+  }
+
+  // Include live voucher discount in total discount
+  const totalDiscountAmount = discount + liveVoucherDiscount;
+
   // 4. Calculate Totals
   const computedShippingCost = calculateShippingFee(
     subtotal,
@@ -643,7 +785,7 @@ continue;
   const tax = 0;
   const payableBeforeCoin = Math.max(
     0,
-    subtotal + appliedShippingCost + tax - discount + appliedGiftBoxFee,
+    subtotal + appliedShippingCost + tax - totalDiscountAmount + appliedGiftBoxFee,
   );
 
   // 5. Create Order with Transaction Support
@@ -660,7 +802,6 @@ continue;
     }
 
     // Respect client preference whether to use GZCoin. Default: use coins.
-    const useCoin = req.body.useCoin === false ? false : true;
     const coinPlanAmount = useCoin
       ? Math.min(Math.max(0, userInTx.reward_point || 0), payableBeforeCoin)
       : 0;
@@ -680,10 +821,11 @@ continue;
           giftBoxFee: includeGiftBox ? appliedGiftBoxFee : 0,
           paymentMethod,
           notes,
-          discount,
-          discountAmount: discount,
-          discountCode: appliedCodes || undefined,
+          discount: totalDiscountAmount,
+          discountAmount: totalDiscountAmount,
+          discountCode: [appliedCodes, liveVoucherCode].filter(Boolean).join(", ") || undefined,
           isActive: true,
+          requestSignature,
           items: [],
           resourcesDeducted: false, // Will be set to true after deduction
           liveSessionVoucherId: liveSessionVoucherId || null,
@@ -770,8 +912,8 @@ continue;
 
           targetModel = product.models.find((m) => {
             if (!m.tierIndex || m.tierIndex.length === 0) {
-return false;
-}
+              return false;
+            }
             const colorMatch =
               colorIdx === -1 ||
               m.tierIndex[colorIdx] ===
@@ -800,7 +942,10 @@ return false;
       }
 
       if (!targetModel) {
-        throw new ErrorResponse(`Variant not found for product ${product.name}`, 400);
+        throw new ErrorResponse(
+          `Variant not found for product ${product.name}`,
+          400,
+        );
       }
       if (targetModel.stock < liveItem.quantity) {
         throw new ErrorResponse(
@@ -823,24 +968,24 @@ return false;
               (product.tiers || []).map((tier, idx) => [
                 tier.name,
                 idx ===
-                  product.tiers.findIndex((t) =>
-                    /color|màu|mau/.test(t.name.toLowerCase()),
-                  )
-                  ? String(liveItem.color || 'Default')
+                product.tiers.findIndex((t) =>
+                  /color|màu|mau/.test(t.name.toLowerCase()),
+                )
+                  ? String(liveItem.color || "Default")
                   : idx ===
-                    product.tiers.findIndex((t) =>
-                      /size|kích|kich/.test(t.name.toLowerCase()),
-                    )
-                    ? String(liveItem.size || 'Default')
-                    : 'Default',
+                      product.tiers.findIndex((t) =>
+                        /size|kích|kich/.test(t.name.toLowerCase()),
+                      )
+                    ? String(liveItem.size || "Default")
+                    : "Default",
               ]),
             ),
             quantity: liveItem.quantity,
             subtotal: effectivePrice * liveItem.quantity,
             originalPrice: targetModel.price || effectivePrice,
             price: effectivePrice,
-            color: liveItem.color || 'Default',
-            size: liveItem.size || 'Default',
+            color: liveItem.color || "Default",
+            size: liveItem.size || "Default",
             image: liveItem.image || product.images?.[0] || null,
             name: product.name,
             isFlashSale: false,
@@ -968,7 +1113,7 @@ export const getMyOrders = asyncHandler(async (req, res) => {
         select: "name slug images sellerId",
         populate: {
           path: "sellerId",
-          select: "fullName email avatar",
+          select: "fullName email avatar address location",
         },
       });
 
@@ -1162,7 +1307,7 @@ export const getOrderById = asyncHandler(async (req, res, next) => {
       select: "name slug images sellerId",
       populate: {
         path: "sellerId",
-        select: "fullName email avatar",
+        select: "fullName email avatar address location",
       },
     });
     console.log(`[DEBUG] Items found: ${items.length}`);

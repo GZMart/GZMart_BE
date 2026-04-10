@@ -4,7 +4,7 @@ import { getSocketIO } from "../utils/socketIO.js";
 // Store active timers for cleanup
 const activeTimers = new Map();
 
-const DEFAULT_DELIVERY_TIMER_SECONDS = 10;
+const DEFAULT_DELIVERY_TIMER_SECONDS = 20;
 const DELIVERY_TIMER_SECONDS = Number.isFinite(
   Number(process.env.ORDER_DELIVERY_TIMER_SECONDS),
 )

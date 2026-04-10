@@ -101,9 +101,24 @@ export const getMyReturnRequests = asyncHandler(async (req, res, next) => {
  */
 export const getReturnRequestById = asyncHandler(async (req, res, next) => {
   const returnRequest = await ReturnRequest.findById(req.params.id)
-    .populate("orderId")
-    .populate("userId", "fullName email phone")
-    .populate("items.orderItemId")
+    .populate({
+      path: "orderId",
+      populate: {
+        path: "userId",
+        select: "fullName email phone address location",
+      },
+    })
+    .populate("userId", "fullName email phone address location")
+    .populate({
+      path: "items.orderItemId",
+      populate: {
+        path: "productId",
+        populate: {
+          path: "sellerId",
+          select: "fullName email phone address location",
+        },
+      },
+    })
     .populate("sellerResponse.respondedBy", "fullName email");
 
   if (!returnRequest) {

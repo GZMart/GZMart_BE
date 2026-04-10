@@ -245,6 +245,11 @@ const productSchema = new mongoose.Schema(
       default: "active",
       index: true,
     },
+    isHidden: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     sellerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -323,7 +328,9 @@ productSchema.virtual("totalStock").get(function () {
 
 productSchema.virtual("price").get(function () {
   if (!this.models || this.models.length === 0) return null;
-  const prices = this.models.map((m) => m.price).filter((p) => typeof p === "number");
+  const prices = this.models
+    .map((m) => m.price)
+    .filter((p) => typeof p === "number");
   if (prices.length === 0) return null;
   return Math.min(...prices);
 });
@@ -353,17 +360,29 @@ productSchema.pre("save", function (next) {
 
 productSchema.post("save", async function () {
   const modifiedPaths = this.modifiedPaths();
-  const relevantFields = ["name", "description", "attributes", "tags", "brand", "categoryId"];
+  const relevantFields = [
+    "name",
+    "description",
+    "attributes",
+    "tags",
+    "brand",
+    "categoryId",
+  ];
   const needsUpdate = relevantFields.some((f) => modifiedPaths.includes(f));
 
   if (needsUpdate && this.status === "active") {
     try {
-      const { default: embeddingService } = await import("../services/embedding.service.js");
+      const { default: embeddingService } =
+        await import("../services/embedding.service.js");
       const { default: Category } = await import("./Category.js");
-      const cat = await Category.findById(this.categoryId).select("name").lean();
+      const cat = await Category.findById(this.categoryId)
+        .select("name")
+        .lean();
 
       const parts = [
-        this.name, cat?.name || "", this.brand || "",
+        this.name,
+        cat?.name || "",
+        this.brand || "",
         this.description?.replace(/<[^>]*>/g, "").slice(0, 300) || "",
         (this.attributes || []).map((a) => `${a.label} ${a.value}`).join(" "),
         (this.tags || []).join(" "),
@@ -373,7 +392,7 @@ productSchema.post("save", async function () {
 
       await this.constructor.updateOne(
         { _id: this._id },
-        { $set: { embedding, embeddingText: text } }
+        { $set: { embedding, embeddingText: text } },
       );
     } catch (err) {
       console.error(`[Embedding] Failed for product ${this._id}:`, err.message);

@@ -265,6 +265,33 @@ export const confirmOrder = asyncHandler(async (req, res, next) => {
   });
 });
 
+const toAddressText = (value, fallback = "") => {
+  if (!value) {
+    return fallback;
+  }
+
+  if (typeof value === "string") {
+    return value.trim() || fallback;
+  }
+
+  if (typeof value === "object") {
+    const candidates = [
+      value.fullAddress,
+      value.formattedAddress,
+      value.address,
+      value.street,
+    ];
+    const picked = candidates.find(
+      (item) => typeof item === "string" && item.trim(),
+    );
+    if (picked) {
+      return picked.trim();
+    }
+  }
+
+  return String(value).trim() || fallback;
+};
+
 /**
  * @desc    Start shipping with tracking (Confirmed -> Shipping)
  * @route   PUT /api/seller/orders/:orderId/start-shipping
@@ -292,30 +319,54 @@ export const startShipping = asyncHandler(async (req, res, next) => {
 
   // Get coordinates from real user data or use provided or fallback to mock
   let coordinates;
+  const sellerAddress = toAddressText(
+    req.user?.location?.address || req.user?.address,
+    "Địa chỉ người bán chưa cập nhật",
+  );
+  const buyerAddress = toAddressText(
+    order.userId?.location?.address || order.userId?.address,
+    "Địa chỉ người mua chưa cập nhật",
+  );
 
   if (req.body.coordinates) {
     // Use provided coordinates from request
-    coordinates = req.body.coordinates;
+    coordinates = {
+      seller: {
+        ...req.body.coordinates?.seller,
+        address: sellerAddress,
+      },
+      buyer: {
+        ...req.body.coordinates?.buyer,
+        address: buyerAddress,
+      },
+    };
   } else if (req.user?.location?.lat && order.userId?.location?.lat) {
     // Use real GPS from seller (req.user) and buyer profiles
     coordinates = {
       seller: {
         lat: req.user.location.lat,
         lng: req.user.location.lng,
-        address: req.user.location.address || req.user.address || "Người bán",
+        address: sellerAddress,
       },
       buyer: {
         lat: order.userId.location.lat,
         lng: order.userId.location.lng,
-        address:
-          order.userId.location.address ||
-          order.shippingAddress?.fullAddress ||
-          "Người mua",
+        address: buyerAddress,
       },
     };
   } else {
-    // Fallback to mock data (Da Nang)
-    coordinates = orderTrackingService.getMockCoordinates();
+    // Fallback to mock coordinates when GPS is missing, but keep real address labels.
+    const mockCoordinates = orderTrackingService.getMockCoordinates();
+    coordinates = {
+      seller: {
+        ...mockCoordinates.seller,
+        address: sellerAddress,
+      },
+      buyer: {
+        ...mockCoordinates.buyer,
+        address: buyerAddress,
+      },
+    };
   }
 
   // Start the 60-second timer and get shipping info

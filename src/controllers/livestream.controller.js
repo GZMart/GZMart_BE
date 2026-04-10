@@ -207,9 +207,12 @@ export const getSessionVouchers = async (req, res, next) => {
     const session = await LiveSession.findById(sessionId).lean();
     if (!session) return res.status(404).json({ message: "Session not found" });
 
+    const now = new Date();
     const vouchers = await Voucher.find({
       _id: { $in: session.vouchers || [] },
       status: 'active',
+      startTime: { $lte: now },
+      endTime: { $gte: now },
     })
       .select("code discountType discountValue minBasketPrice name startTime endTime status")
       .lean();
