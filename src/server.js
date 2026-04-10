@@ -46,6 +46,7 @@ import followRoutes from "./routes/follow.routes.js";
 import livestreamRoutes from "./routes/livestream.routes.js";
 
 import systemVoucherRoutes from "./routes/systemVoucher.routes.js";
+import voucherCampaignRoutes from "./routes/voucherCampaign.routes.js";
 import rmaRoutes from "./routes/rma.routes.js";
 import sellerApplicationRoutes from "./routes/sellerApplication.routes.js";
 import coinRoutes from "./routes/coin.routes.js";
@@ -58,6 +59,8 @@ import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
 import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
 import { startCoinJobs } from "./jobs/coinExpirationJob.js";
 import { startLivestreamCleanupJob } from "./jobs/livestreamCleanup.job.js";
+import { startBirthdayVoucherJob } from "./jobs/birthdayVoucher.job.js";
+import { startOccasionVoucherJob } from "./jobs/occasionVoucher.job.js";
 import { setSocketIO } from "./utils/socketIO.js";
 import { runBatchEmbedding } from "./jobs/batchEmbedding.job.js";
 import { initProductSoldReconcileJob } from "./jobs/productSoldReconcile.job.js";
@@ -214,6 +217,7 @@ app.use("/api/flash-sales", flashSaleRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/vouchers/system", systemVoucherRoutes);
+app.use("/api/voucher-campaigns", voucherCampaignRoutes);
 app.use("/api/vouchers", voucherRoutes);
 app.use("/api/seller/shop-programs", shopProgramRoutes);
 app.use("/api/seller/shop-decoration", shopDecorationRoutes);
@@ -297,6 +301,8 @@ server.listen(PORT, HOST, () => {
   startCoinJobs();
   initProductSoldReconcileJob();
   startLivestreamCleanupJob();
+  startBirthdayVoucherJob();
+  startOccasionVoucherJob();
   // [Phase 3 - 5.2] Batch embedding cron — registered at import time
   runBatchEmbedding();
 });
