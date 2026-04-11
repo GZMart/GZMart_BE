@@ -208,7 +208,7 @@ export const addToCart = asyncHandler(async (req, res, next) => {
 
   // Determine best price: Flash Sale > Shop Program > Original
   let cartPrice = model.price;
-  const flashSaleInfo = await campaignService.getFlashSalePrice(
+  const flashSaleInfo = await campaignService.getCampaignPrice(
     productId,
     model.price,
   );

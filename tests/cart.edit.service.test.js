@@ -34,8 +34,8 @@ jest.unstable_mockModule("../src/models/InventoryItem.js", () => ({
   },
 }));
 
-jest.unstable_mockModule("../src/services/flashsale.service.js", () => ({
-  getFlashSalePrice: jest.fn(),
+jest.unstable_mockModule("../src/services/campaign.service.js", () => ({
+  getCampaignPrice: jest.fn(),
 }));
 
 jest.unstable_mockModule("../src/services/product.service.js", () => ({
