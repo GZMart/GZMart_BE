@@ -257,10 +257,26 @@ const io = new SocketIOServer(server, {
       // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
 
+      const envFrontendOrigins = [
+        process.env.FRONTEND_URL,
+        process.env.FRONTEND_APP_URL,
+        process.env.CORS_ORIGIN,
+      ]
+        .filter(Boolean)
+        .map((value) => value.trim())
+        .filter(Boolean);
+
+      const envFrontendOriginsMulti = (process.env.CORS_ORIGINS || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+
       const allowedOrigins = [
         "http://localhost:5173",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
+        "https://www.gzmart.shop",
+        "https://gzmart.vercel.app",
         // Azure App Service domains
         process.env.WEBSITE_HOSTNAME
           ? `https://${process.env.WEBSITE_HOSTNAME}`
@@ -268,6 +284,8 @@ const io = new SocketIOServer(server, {
         process.env.WEBSITE_HOSTNAME
           ? `http://${process.env.WEBSITE_HOSTNAME}`
           : null,
+        ...envFrontendOrigins,
+        ...envFrontendOriginsMulti,
         // Additional domains for better cross-network support
         // 'https://kicks-shoes-frontend.azurewebsites.net',
         // 'https://kicks-shoes-app.azurewebsites.net',
