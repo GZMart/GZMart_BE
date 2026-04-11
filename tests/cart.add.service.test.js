@@ -10,7 +10,7 @@ const mockCartItemFind = jest.fn();
 const mockProductFindById = jest.fn();
 const mockInventoryFindOne = jest.fn();
 
-const mockGetFlashSalePrice = jest.fn();
+const mockGetCampaignPrice = jest.fn();
 const mockGetShopProgramPriceForVariant = jest.fn();
 
 jest.unstable_mockModule("../src/models/Cart.js", () => ({
@@ -40,8 +40,8 @@ jest.unstable_mockModule("../src/models/InventoryItem.js", () => ({
   },
 }));
 
-jest.unstable_mockModule("../src/services/flashsale.service.js", () => ({
-  getFlashSalePrice: mockGetFlashSalePrice,
+jest.unstable_mockModule("../src/services/campaign.service.js", () => ({
+  getCampaignPrice: mockGetCampaignPrice,
 }));
 
 jest.unstable_mockModule("../src/services/product.service.js", () => ({
@@ -121,7 +121,7 @@ describe("Add To Cart - addToCart controller", () => {
     mockInventoryFindOne.mockReturnValue({
       lean: jest.fn().mockResolvedValue({ quantity: 10 }),
     });
-    mockGetFlashSalePrice.mockResolvedValue({ isFlashSale: false, price: 100 });
+    mockGetCampaignPrice.mockResolvedValue({ isFlashSale: false, price: 100 });
     mockGetShopProgramPriceForVariant.mockResolvedValue({
       isShopProgram: false,
       price: 100,
@@ -237,7 +237,7 @@ describe("Add To Cart - addToCart controller", () => {
     // Arrange
     mockProductFindById.mockResolvedValueOnce(simpleProduct);
     mockCartItemFind.mockResolvedValueOnce([{ price: 120, quantity: 1 }]);
-    mockGetFlashSalePrice.mockResolvedValueOnce({
+    mockGetCampaignPrice.mockResolvedValueOnce({
       isFlashSale: false,
       price: 120,
     });

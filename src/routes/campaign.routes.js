@@ -1,33 +1,36 @@
 import express from "express";
 import {
-  createFlashSale,
-  createBatchFlashSale,
-  getFlashSales,
-  getFlashSaleDetail,
-  getActiveFlashSales,
-  addProductsToFlashSale,
-  getFlashSaleProducts,
-  getFlashSaleProduct,
-  updateFlashSale,
-  updateFlashSaleProduct,
-  removeProductFromFlashSale,
-  deleteFlashSale,
-  getFlashSaleStats,
-  searchFlashSaleProducts,
-} from "../controllers/flashsale.controller.js";
+  createCampaign,
+  createBatchCampaign,
+  getCampaigns,
+  getCampaignDetail,
+  getActiveCampaigns,
+  addProductsToCampaign,
+  getCampaignProducts,
+  getCampaignProduct,
+  updateCampaign,
+  updateCampaignProduct,
+  removeProductFromCampaign,
+  deleteCampaign,
+  pauseCampaign,
+  stopCampaign,
+  resumeCampaign,
+  getCampaignStats,
+  searchCampaignProducts,
+} from "../controllers/campaign.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
-import { authorize } from "../middlewares/role.middleware.js";
+import { requireRoles } from "../middlewares/role.middleware.js";
 import { protect, optionalAuth } from "../middlewares/auth.middleware.js";
 
 const router = express.Router();
 
 /**
  * @swagger
- * /api/flash-sales/active:
+ * /api/campaigns/active:
  *   get:
- *     tags: [Flash Sales]
- *     summary: Get active flash sales
- *     description: Get all currently active flash sales with countdown information
+ *     tags: [Campaigns]
+ *     summary: Get active campaigns
+ *     description: Get all currently active campaigns with countdown information
  *     responses:
  *       200:
  *         description: Success
@@ -68,11 +71,11 @@ const router = express.Router();
  *                       status:
  *                         type: string
  */
-router.get("/active", asyncHandler(getActiveFlashSales));
+router.get("/active", asyncHandler(getActiveCampaigns));
 
 /**
  * @swagger
- * /api/flash-sales:
+ * /api/campaigns:
  *   get:
  *     tags: [Flash Sales]
  *     summary: Get all flash sales
@@ -230,13 +233,13 @@ router.get("/active", asyncHandler(getActiveFlashSales));
  *         description: Product not found
  */
 // Public but optionalAuth so: unauthenticated → all, seller → own only
-router.get("/", optionalAuth, asyncHandler(getFlashSales));
+router.get("/", optionalAuth, asyncHandler(getCampaigns));
 
 router.post(
   "/",
   protect,
-  authorize("seller", "admin"),
-  asyncHandler(createFlashSale),
+  requireRoles("seller", "admin"),
+  asyncHandler(createCampaign),
 );
 
 // ============= SPECIFIC ROUTES BEFORE PARAMETERIZED ROUTES =============
@@ -244,13 +247,13 @@ router.post(
 router.post(
   "/batch",
   protect,
-  authorize("seller", "admin"),
-  asyncHandler(createBatchFlashSale),
+  requireRoles("seller", "admin"),
+  asyncHandler(createBatchCampaign),
 );
 
 /**
  * @swagger
- * /api/flash-sales/{flashSaleId}/stats:
+ * /api/campaigns/{flashSaleId}/stats:
  *   get:
  *     tags: [Flash Sales]
  *     summary: Get flash sale statistics
@@ -330,15 +333,15 @@ router.post(
  *         description: Flash sale not found
  */
 router.get(
-  "/:flashSaleId/stats",
+  "/:campaignId/stats",
   protect,
-  authorize("seller", "admin"),
-  asyncHandler(getFlashSaleStats),
+  requireRoles("seller", "admin"),
+  asyncHandler(getCampaignStats),
 );
 
 /**
  * @swagger
- * /api/flash-sales/{flashSaleId}/search:
+ * /api/campaigns/{flashSaleId}/search:
  *   get:
  *     tags: [Flash Sales]
  *     summary: Search flash sale products
@@ -376,13 +379,106 @@ router.get(
  *       404:
  *         description: Flash sale not found
  */
-router.get("/:flashSaleId/search", asyncHandler(searchFlashSaleProducts));
+router.get("/:campaignId/search", asyncHandler(searchCampaignProducts));
 
 // ============= PARAMETERIZED ROUTES =============
 
 /**
  * @swagger
- * /api/flash-sales/{flashSaleId}:
+ * /api/campaigns/{campaignId}/pause:
+ *   patch:
+ *     tags: [Flash Sales]
+ *     summary: Pause a campaign
+ *     description: Pause an active or pending campaign (sets status to "paused")
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: campaignId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Campaign ID
+ *     responses:
+ *       200:
+ *         description: Campaign paused successfully
+ *       400:
+ *         description: Campaign cannot be paused
+ *       404:
+ *         description: Campaign not found
+ */
+router.patch(
+  "/:campaignId/pause",
+  protect,
+  requireRoles("seller", "admin"),
+  asyncHandler(pauseCampaign),
+);
+
+/**
+ * @swagger
+ * /api/campaigns/{campaignId}/stop:
+ *   patch:
+ *     tags: [Flash Sales]
+ *     summary: Stop a campaign
+ *     description: Stop/cancel an active or pending campaign (sets status to "cancelled")
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: campaignId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Campaign ID
+ *     responses:
+ *       200:
+ *         description: Campaign stopped successfully
+ *       400:
+ *         description: Campaign cannot be stopped
+ *       404:
+ *         description: Campaign not found
+ */
+router.patch(
+  "/:campaignId/stop",
+  protect,
+  requireRoles("seller", "admin"),
+  asyncHandler(stopCampaign),
+);
+
+/**
+ * @swagger
+ * /api/campaigns/{campaignId}/resume:
+ *   patch:
+ *     tags: [Flash Sales]
+ *     summary: Resume a paused campaign
+ *     description: Reactivate a paused campaign (sets status back to active/pending)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: campaignId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Campaign ID
+ *     responses:
+ *       200:
+ *         description: Campaign resumed successfully
+ *       400:
+ *         description: Campaign cannot be resumed
+ *       404:
+ *         description: Campaign not found
+ */
+router.patch(
+  "/:campaignId/resume",
+  protect,
+  requireRoles("seller", "admin"),
+  asyncHandler(resumeCampaign),
+);
+
+/**
+ * @swagger
+ * /api/campaigns/{flashSaleId}:
  *   get:
  *     tags: [Flash Sales]
  *     summary: Get flash sale detail
@@ -434,11 +530,11 @@ router.get("/:flashSaleId/search", asyncHandler(searchFlashSaleProducts));
  *       404:
  *         description: Flash sale not found
  */
-router.get("/:flashSaleId", asyncHandler(getFlashSaleDetail));
+router.get("/:campaignId", asyncHandler(getCampaignDetail));
 
 /**
  * @swagger
- * /api/flash-sales/{flashSaleId}:
+ * /api/campaigns/{flashSaleId}:
  *   put:
  *     tags: [Flash Sales]
  *     summary: Update flash sale
@@ -496,15 +592,15 @@ router.get("/:flashSaleId", asyncHandler(getFlashSaleDetail));
  *         description: Flash sale not found
  */
 router.put(
-  "/:flashSaleId",
+  "/:campaignId",
   protect,
-  authorize("seller", "admin"),
-  asyncHandler(updateFlashSale),
+  requireRoles("seller", "admin"),
+  asyncHandler(updateCampaign),
 );
 
 /**
  * @swagger
- * /api/flash-sales/{flashSaleId}:
+ * /api/campaigns/{flashSaleId}:
  *   delete:
  *     tags: [Flash Sales]
  *     summary: Delete flash sale
@@ -527,10 +623,10 @@ router.put(
  *         description: Flash sale not found
  */
 router.delete(
-  "/:flashSaleId",
+  "/:campaignId",
   protect,
-  authorize("seller", "admin"),
-  asyncHandler(deleteFlashSale),
+  requireRoles("seller", "admin"),
+  asyncHandler(deleteCampaign),
 );
 
 export default router;

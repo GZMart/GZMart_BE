@@ -515,3 +515,152 @@ export const getSellerRecentOrders = asyncHandler(async (req, res) => {
     data: orders,
   });
 });
+
+/**
+ * @desc    Get seller wallet balance and earnings summary
+ * @route   GET /api/dashboard/seller-balance
+ * @access  Private (Seller, Admin)
+ */
+export const getSellerBalance = asyncHandler(async (req, res) => {
+  const balance = await dashboardService.getSellerBalance(req.user._id);
+
+  res.status(200).json({
+    success: true,
+    data: balance,
+  });
+});
+
+/**
+ * @desc    Get seller wallet transaction history
+ * @route   GET /api/dashboard/seller-wallet-transactions
+ * @access  Private (Seller, Admin)
+ */
+export const getSellerWalletTransactions = asyncHandler(async (req, res) => {
+  const { limit = 10, skip = 0 } = req.query;
+
+  const result = await dashboardService.getSellerWalletTransactions(
+    req.user._id,
+    parseInt(limit),
+    parseInt(skip),
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result.transactions,
+    total: result.total,
+  });
+});
+
+/**
+ * @desc    Tạo yêu cầu rút balance để chuyển thành reward_point
+ * @route   POST /api/dashboard/reward-point-withdrawal/request
+ * @access  Private (Seller, Admin)
+ * @body    { amount, rewardPointAmount, targetUserId, conversionRate, withdrawalMethod, bankAccount, requestNote }
+ */
+export const requestRewardPointWithdrawal = asyncHandler(async (req, res) => {
+  const {
+    amount,
+    rewardPointAmount,
+    targetUserId,
+    conversionRate,
+    withdrawalMethod,
+    bankAccount,
+    requestNote,
+  } = req.body;
+
+  const transaction = await dashboardService.requestRewardPointWithdrawal(
+    req.user._id,
+    {
+      amount: Number(amount),
+      rewardPointAmount: Number(rewardPointAmount),
+      targetUserId,
+      conversionRate: conversionRate ? Number(conversionRate) : 1,
+      withdrawalMethod,
+      bankAccount,
+      requestNote,
+    },
+  );
+
+  res.status(201).json({
+    success: true,
+    message: "Yêu cầu rút reward_point đã được tạo thành công",
+    data: transaction,
+  });
+});
+
+/**
+ * @desc    Lấy danh sách yêu cầu rút reward_point của seller
+ * @route   GET /api/dashboard/reward-point-withdrawals
+ * @access  Private (Seller, Admin)
+ * @query   limit: number (default: 10), skip: number (default: 0)
+ */
+export const getRewardPointWithdrawals = asyncHandler(async (req, res) => {
+  const { limit = 10, skip = 0 } = req.query;
+
+  const result = await dashboardService.getRewardPointWithdrawals(
+    req.user._id,
+    parseInt(limit),
+    parseInt(skip),
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result.transactions,
+    total: result.total,
+  });
+});
+
+/**
+ * @desc    Lấy danh sách tất cả yêu cầu rút reward_point (Admin)
+ * @route   GET /api/dashboard/admin/reward-point-withdrawals
+ * @access  Private (Admin only)
+ * @query   status, sellerId, startDate, endDate, limit, skip
+ */
+export const getAllRewardPointWithdrawals = asyncHandler(async (req, res) => {
+  const { status, sellerId, startDate, endDate, limit = 20, skip = 0 } = req.query;
+
+  const result = await dashboardService.getAllRewardPointWithdrawals({
+    status,
+    sellerId,
+    startDate,
+    endDate,
+    limit: parseInt(limit),
+    skip: parseInt(skip),
+  });
+
+  res.status(200).json({
+    success: true,
+    data: result.transactions,
+    total: result.total,
+  });
+});
+
+/**
+ * @desc    Xử lý yêu cầu rút reward_point (approve/reject) - Admin
+ * @route   PUT /api/dashboard/admin/reward-point-withdrawals/:transactionId/process
+ * @access  Private (Admin only)
+ * @body    { action: "approve" | "reject", rejectedReason }
+ */
+export const processRewardPointWithdrawal = asyncHandler(async (req, res) => {
+  const { transactionId } = req.params;
+  const { action, rejectedReason } = req.body;
+
+  if (!["approve", "reject"].includes(action)) {
+    throw new ErrorResponse('Action must be "approve" or "reject"', 400);
+  }
+
+  const transaction = await dashboardService.processRewardPointWithdrawal(
+    transactionId,
+    req.user._id,
+    action,
+    rejectedReason,
+  );
+
+  res.status(200).json({
+    success: true,
+    message: action === "approve"
+      ? "Yêu cầu đã được duyệt, reward_point đã được cộng cho user"
+      : "Yêu cầu đã bị từ chối, số dư đã được hoàn",
+    data: transaction,
+  });
+});

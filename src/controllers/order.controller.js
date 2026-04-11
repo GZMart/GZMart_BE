@@ -12,7 +12,7 @@ import Coin from "../models/Coin.js";
 import WalletTransaction from "../models/WalletTransaction.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
-import * as flashSaleService from "../services/flashsale.service.js";
+import * as campaignService from "../services/campaign.service.js";
 import { getShopProgramPriceForVariant } from "../services/product.service.js";
 import { validateAndCalculateVouchers } from "../utils/voucherValidator.js";
 import * as orderTrackingService from "../services/orderTracking.service.js";
@@ -301,7 +301,7 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
       const modelIdx = product.models.findIndex(
         (m) => m._id.toString() === model._id.toString(),
       );
-      const flashSaleInfo = await flashSaleService.getFlashSalePrice(
+      const flashSaleInfo = await campaignService.getCampaignPrice(
         product._id,
         model.price,
       );
@@ -653,7 +653,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     }
 
     // Check pricing: Flash Sale > Shop Program > Original
-    const flashSaleInfo = await flashSaleService.getFlashSalePrice(
+    const flashSaleInfo = await campaignService.getCampaignPrice(
       product._id,
       model.price,
     );
