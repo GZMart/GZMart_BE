@@ -301,7 +301,7 @@ export const previewOrder = asyncHandler(async (req, res, next) => {
       const modelIdx = product.models.findIndex(
         (m) => m._id.toString() === model._id.toString(),
       );
-      const flashSaleInfo = await campaignService.getFlashSalePrice(
+      const flashSaleInfo = await campaignService.getCampaignPrice(
         product._id,
         model.price,
       );
@@ -653,7 +653,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     }
 
     // Check pricing: Flash Sale > Shop Program > Original
-    const flashSaleInfo = await campaignService.getFlashSalePrice(
+    const flashSaleInfo = await campaignService.getCampaignPrice(
       product._id,
       model.price,
     );
