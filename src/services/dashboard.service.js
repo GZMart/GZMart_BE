@@ -7,7 +7,10 @@ import InventoryItem from "../models/InventoryItem.js";
 import User from "../models/User.js";
 import Category from "../models/Category.js";
 import ReturnRequest from "../models/ReturnRequest.js";
-import { SellerWallet, SellerWalletTransaction } from "../models/SellerWallet.js";
+import {
+  SellerWallet,
+  SellerWalletTransaction,
+} from "../models/SellerWallet.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
 /**
@@ -43,10 +46,10 @@ export const getRevenueStats = async (sellerId) => {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const weekAgo = new Date(today);
   weekAgo.setDate(weekAgo.getDate() - 7);
-  
+
   // THIS MONTH: From 1st day of current month to today
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  
+
   // LAST YEAR: From same date last year to today
   const yearAgo = new Date(today);
   yearAgo.setFullYear(yearAgo.getFullYear() - 1);
@@ -71,7 +74,7 @@ export const getRevenueStats = async (sellerId) => {
     {
       $match: {
         createdAt: { $gte: yearAgo },
-        status: { $in: ['completed', 'delivered'] }, // Finance logic: completed/delivered only
+        status: { $in: ["completed", "delivered"] }, // Finance logic: completed/delivered only
       },
     },
     {
@@ -272,11 +275,21 @@ export const getBestSellingProducts = async (sellerId, limit = 5) => {
     {
       $project: {
         _id: 0,
-        productId: '$_id',
-        name: '$product.name',
-        originalPrice: '$product.originalPrice',
-        minPrice: { $ifNull: [{ $min: '$product.models.price' }, '$product.originalPrice'] },
-        maxPrice: { $ifNull: [{ $max: '$product.models.price' }, '$product.originalPrice'] },
+        productId: "$_id",
+        name: "$product.name",
+        originalPrice: "$product.originalPrice",
+        minPrice: {
+          $ifNull: [
+            { $min: "$product.models.price" },
+            "$product.originalPrice",
+          ],
+        },
+        maxPrice: {
+          $ifNull: [
+            { $max: "$product.models.price" },
+            "$product.originalPrice",
+          ],
+        },
         totalSold: 1,
       },
     },
@@ -410,8 +423,8 @@ export const getOrderStats = async (sellerId) => {
  * Get customer statistics
  */
 export const getCustomerStats = async (sellerId) => {
-  const sellerProducts = await Product.find({ sellerId }).select('_id');
-  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProducts = await Product.find({ sellerId }).select("_id");
+  const sellerProductIds = sellerProducts.map((p) => p._id);
 
   if (sellerProductIds.length === 0) {
     return {
@@ -439,12 +452,12 @@ export const getCustomerStats = async (sellerId) => {
     },
     {
       $group: {
-        _id: { userId: '$userId', orderId: '$_id' },
+        _id: { userId: "$userId", orderId: "$_id" },
       },
     },
     {
       $group: {
-        _id: '$_id.userId',
+        _id: "$_id.userId",
         orderCount: { $sum: 1 },
       },
     },
@@ -452,8 +465,11 @@ export const getCustomerStats = async (sellerId) => {
 
   // Calculate repeat customers
   const totalCustomers = orders.length;
-  const repeatCustomers = orders.filter(order => order.orderCount > 1).length;
-  const repeatedPurchaseRate = totalCustomers > 0 ? Math.round((repeatCustomers / totalCustomers) * 100 * 100) / 100 : 0;
+  const repeatCustomers = orders.filter((order) => order.orderCount > 1).length;
+  const repeatedPurchaseRate =
+    totalCustomers > 0
+      ? Math.round((repeatCustomers / totalCustomers) * 100 * 100) / 100
+      : 0;
 
   return {
     repeatedPurchaseRate,
@@ -552,7 +568,7 @@ export const getSalesTrend = async (sellerId, days = 30) => {
     {
       $match: {
         createdAt: { $gte: startDate },
-        status: { $in: ['completed', 'delivered'] },
+        status: { $in: ["completed", "delivered"] },
       },
     },
     {
@@ -681,7 +697,11 @@ export const getComparisonStats = async (sellerId, period = "30days", customRang
     };
   }
 
-  const getStatsByDateRange = async (start, end, { endExclusive = false } = {}) => {
+  const getStatsByDateRange = async (
+    start,
+    end,
+    { endExclusive = false } = {},
+  ) => {
     const createdAtFilter = endExclusive
       ? { $gte: start, $lt: end }
       : { $gte: start, $lte: end };
@@ -689,7 +709,7 @@ export const getComparisonStats = async (sellerId, period = "30days", customRang
       {
         $match: {
           createdAt: createdAtFilter,
-          status: { $in: ['completed', 'delivered'] },
+          status: { $in: ["completed", "delivered"] },
         },
       },
       {
@@ -811,9 +831,7 @@ export const getComparisonStats = async (sellerId, period = "30days", customRang
 
   const profitGrowthVsPrevious = (previous, current) => {
     if (previous !== 0) {
-      return Math.round(
-        ((current - previous) / Math.abs(previous)) * 100,
-      );
+      return Math.round(((current - previous) / Math.abs(previous)) * 100);
     }
     if (current > 0) return 100;
     if (current < 0) return -100;
@@ -821,10 +839,7 @@ export const getComparisonStats = async (sellerId, period = "30days", customRang
   };
 
   const growth = {
-    orders: percentGrowthVsPrevious(
-      previousStats.orders,
-      currentStats.orders,
-    ),
+    orders: percentGrowthVsPrevious(previousStats.orders, currentStats.orders),
     revenue: percentGrowthVsPrevious(
       previousStats.revenue,
       currentStats.revenue,
@@ -833,10 +848,7 @@ export const getComparisonStats = async (sellerId, period = "30days", customRang
       previousStats.quantity,
       currentStats.quantity,
     ),
-    profit: profitGrowthVsPrevious(
-      previousStats.profit,
-      currentStats.profit,
-    ),
+    profit: profitGrowthVsPrevious(previousStats.profit, currentStats.profit),
   };
 
   return {
@@ -887,7 +899,9 @@ export const getProfitLossAnalysis = async (sellerId, period = "30days") => {
     dateFormat = { $dateToString: { format: "%Y-%m", date: "$createdAt" } };
   }
 
-  const sellerProducts = await Product.find({ sellerId }).select("_id originalPrice");
+  const sellerProducts = await Product.find({ sellerId }).select(
+    "_id originalPrice",
+  );
   const sellerProductIds = sellerProducts.map((p) => p._id);
 
   if (sellerProductIds.length === 0) {
@@ -922,10 +936,16 @@ export const getProfitLossAnalysis = async (sellerId, period = "30days") => {
         from: "inventoryitems",
         let: { pid: "$items.productId", mid: "$items.modelId" },
         pipeline: [
-          { $match: { $expr: { $and: [
-            { $eq: ["$productId", "$$pid"] },
-            { $eq: ["$modelId",  "$$mid"] },
-          ] } } },
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$productId", "$$pid"] },
+                  { $eq: ["$modelId", "$$mid"] },
+                ],
+              },
+            },
+          },
           { $project: { costPrice: 1, _id: 0 } },
         ],
         as: "invItem",
@@ -955,7 +975,7 @@ export const getProfitLossAnalysis = async (sellerId, period = "30days") => {
         _id: dateFormat,
         totalRevenue: { $sum: "$items.subtotal" },
         totalQuantity: { $sum: "$items.quantity" },
-        totalItems:    { $sum: 1 },
+        totalItems: { $sum: 1 },
         totalCost: {
           $sum: { $multiply: ["$unitCost", "$items.quantity"] },
         },
@@ -965,9 +985,9 @@ export const getProfitLossAnalysis = async (sellerId, period = "30days") => {
       $project: {
         _id: 1,
         revenue: "$totalRevenue",
-        cost:    "$totalCost",
+        cost: "$totalCost",
         quantity: "$totalQuantity",
-        orders:  "$totalItems",
+        orders: "$totalItems",
         profit: {
           $subtract: ["$totalRevenue", "$totalCost"],
         },
@@ -1054,15 +1074,33 @@ export const getExpenseAnalysis = async (sellerId, period = "12months", customRa
         // finalAmount includes everything: totalAmount + shipping + tax + other + fixed costs
         totalProductCost: { $sum: "$finalAmount" },
         // break down for display
-        totalGoodsValue:    { $sum: "$totalAmount" },
-        totalBuyingFee:     { $sum: { $multiply: ["$totalAmount", { $ifNull: ["$importConfig.buyingServiceFeeRate", 0] }] } },
-        totalIntlShipping:  { $sum: { $ifNull: ["$shippingCost", 0] } },
-        totalTax:           { $sum: { $ifNull: ["$taxAmount", 0] } },
-        totalCnDomestic:    { $sum: { $multiply: [{ $ifNull: ["$fixedCosts.cnDomesticShippingCny", 0] }, { $ifNull: ["$importConfig.exchangeRate", 3500] }] } },
-        totalPackaging:     { $sum: { $ifNull: ["$fixedCosts.packagingCostVnd", 0] } },
-        totalVnDomestic:    { $sum: { $ifNull: ["$fixedCosts.vnDomesticShippingVnd", 0] } },
-        totalOtherCost:     { $sum: { $ifNull: ["$otherCost", 0] } },
-        poCount:            { $sum: 1 },
+        totalGoodsValue: { $sum: "$totalAmount" },
+        totalBuyingFee: {
+          $sum: {
+            $multiply: [
+              "$totalAmount",
+              { $ifNull: ["$importConfig.buyingServiceFeeRate", 0] },
+            ],
+          },
+        },
+        totalIntlShipping: { $sum: { $ifNull: ["$shippingCost", 0] } },
+        totalTax: { $sum: { $ifNull: ["$taxAmount", 0] } },
+        totalCnDomestic: {
+          $sum: {
+            $multiply: [
+              { $ifNull: ["$fixedCosts.cnDomesticShippingCny", 0] },
+              { $ifNull: ["$importConfig.exchangeRate", 3500] },
+            ],
+          },
+        },
+        totalPackaging: {
+          $sum: { $ifNull: ["$fixedCosts.packagingCostVnd", 0] },
+        },
+        totalVnDomestic: {
+          $sum: { $ifNull: ["$fixedCosts.vnDomesticShippingVnd", 0] },
+        },
+        totalOtherCost: { $sum: { $ifNull: ["$otherCost", 0] } },
+        poCount: { $sum: 1 },
       },
     },
   ]);
@@ -1083,36 +1121,56 @@ export const getExpenseAnalysis = async (sellerId, period = "12months", customRa
           status: { $in: ["completed", "delivered"] },
         },
       },
-      { $lookup: { from: "orderitems", localField: "_id", foreignField: "orderId", as: "items" } },
+      {
+        $lookup: {
+          from: "orderitems",
+          localField: "_id",
+          foreignField: "orderId",
+          as: "items",
+        },
+      },
       { $match: { "items.productId": { $in: sellerProductIds } } },
-      { $group: { _id: null, totalShipping: { $sum: { $ifNull: ["$shippingCost", 0] } } } },
+      {
+        $group: {
+          _id: null,
+          totalShipping: { $sum: { $ifNull: ["$shippingCost", 0] } },
+        },
+      },
     ]);
     shippingCost = shippingData[0]?.totalShipping || 0;
   }
 
-  const goodsValue    = Math.round(poCostData.totalGoodsValue    || 0);
-  const buyingFee     = Math.round(poCostData.totalBuyingFee     || 0);
+  const goodsValue = Math.round(poCostData.totalGoodsValue || 0);
+  const buyingFee = Math.round(poCostData.totalBuyingFee || 0);
   const intlShipping = Math.round(poCostData.totalIntlShipping || 0);
-  const tax           = Math.round(poCostData.totalTax           || 0);
-  const cnDomestic    = Math.round(poCostData.totalCnDomestic    || 0);
-  const packaging     = Math.round(poCostData.totalPackaging     || 0);
-  const vnDomestic   = Math.round(poCostData.totalVnDomestic   || 0);
-  const otherCost     = Math.round(poCostData.totalOtherCost    || 0);
+  const tax = Math.round(poCostData.totalTax || 0);
+  const cnDomestic = Math.round(poCostData.totalCnDomestic || 0);
+  const packaging = Math.round(poCostData.totalPackaging || 0);
+  const vnDomestic = Math.round(poCostData.totalVnDomestic || 0);
+  const otherCost = Math.round(poCostData.totalOtherCost || 0);
 
   // Each cost component becomes a distinct slice — zero-value entries are dropped
   const breakdownByType = [
-    { type: "Goods Value (PO)",          amount: goodsValue    },
-    { type: "Buying Service Fee",         amount: buyingFee     },
-    { type: "Intl Freight (CN→VN)",      amount: intlShipping  },
-    { type: "Import Tax",                 amount: tax          },
-    { type: "CN Domestic Shipping",       amount: cnDomestic   },
-    { type: "Packaging / Insurance",      amount: packaging    },
+    { type: "Goods Value (PO)", amount: goodsValue },
+    { type: "Buying Service Fee", amount: buyingFee },
+    { type: "Intl Freight (CN→VN)", amount: intlShipping },
+    { type: "Import Tax", amount: tax },
+    { type: "CN Domestic Shipping", amount: cnDomestic },
+    { type: "Packaging / Insurance", amount: packaging },
     { type: "VN Last-Mile (PO→Warehouse)", amount: vnDomestic },
-    { type: "Other Costs",               amount: otherCost    },
+    { type: "Other Costs", amount: otherCost },
     { type: "Last-Mile Delivery (Order)", amount: shippingCost },
   ].filter((x) => x.amount > 0);
 
-  const totalProductCost = goodsValue + buyingFee + intlShipping + tax + cnDomestic + packaging + vnDomestic + otherCost;
+  const totalProductCost =
+    goodsValue +
+    buyingFee +
+    intlShipping +
+    tax +
+    cnDomestic +
+    packaging +
+    vnDomestic +
+    otherCost;
 
   return {
     totalProductCost,
@@ -1120,15 +1178,15 @@ export const getExpenseAnalysis = async (sellerId, period = "12months", customRa
     totalExpense: totalProductCost + shippingCost,
     breakdownByType,
     poDetail: {
-      totalGoodsValue:    goodsValue,
-      totalBuyingFee:     buyingFee,
-      totalIntlShipping:  intlShipping,
-      totalTax:           tax,
-      totalCnDomestic:    cnDomestic,
-      totalPackaging:     packaging,
-      totalVnDomestic:   vnDomestic,
-      totalOtherCost:     otherCost,
-      poCount:            poCostData.poCount || 0,
+      totalGoodsValue: goodsValue,
+      totalBuyingFee: buyingFee,
+      totalIntlShipping: intlShipping,
+      totalTax: tax,
+      totalCnDomestic: cnDomestic,
+      totalPackaging: packaging,
+      totalVnDomestic: vnDomestic,
+      totalOtherCost: otherCost,
+      poCount: poCostData.poCount || 0,
     },
   };
 };
@@ -1165,7 +1223,9 @@ export const getProductAnalyticsByCategory = async (sellerId, period = "12months
     endDate = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59);
   }
 
-  const sellerProducts = await Product.find({ sellerId }).select("_id name categoryId originalPrice images");
+  const sellerProducts = await Product.find({ sellerId }).select(
+    "_id name categoryId originalPrice images",
+  );
   const sellerProductIds = sellerProducts.map((p) => p._id);
 
   if (sellerProductIds.length === 0) {
@@ -1273,9 +1333,18 @@ export const getProductAnalyticsByCategory = async (sellerId, period = "12months
     },
   ]);
 
-  const totalRevenue = categorySales.reduce((sum, c) => sum + (c.totalRevenue || 0), 0);
-  const totalQuantity = categorySales.reduce((sum, c) => sum + (c.totalQuantity || 0), 0);
-  const totalProfit = categorySales.reduce((sum, c) => sum + (c.profit || 0), 0);
+  const totalRevenue = categorySales.reduce(
+    (sum, c) => sum + (c.totalRevenue || 0),
+    0,
+  );
+  const totalQuantity = categorySales.reduce(
+    (sum, c) => sum + (c.totalQuantity || 0),
+    0,
+  );
+  const totalProfit = categorySales.reduce(
+    (sum, c) => sum + (c.profit || 0),
+    0,
+  );
 
   // Add percentage of total revenue for each category
   const categories = categorySales.map((c) => ({
@@ -1283,9 +1352,14 @@ export const getProductAnalyticsByCategory = async (sellerId, period = "12months
     totalRevenue: Math.round(c.totalRevenue || 0),
     totalCost: Math.round(c.totalCost || 0),
     profit: Math.round(c.profit || 0),
-    profitMargin: typeof c.profitMargin === 'number' ? Math.round(c.profitMargin * 10) / 10 : 0,
+    profitMargin:
+      typeof c.profitMargin === "number"
+        ? Math.round(c.profitMargin * 10) / 10
+        : 0,
     revenuePercent:
-      totalRevenue > 0 ? Math.round(((c.totalRevenue || 0) / totalRevenue) * 1000) / 10 : 0,
+      totalRevenue > 0
+        ? Math.round(((c.totalRevenue || 0) / totalRevenue) * 1000) / 10
+        : 0,
   }));
 
   return {
@@ -1328,7 +1402,9 @@ export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, peri
     endDate = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59);
   }
 
-  const sellerProducts = await Product.find({ sellerId }).select("_id name originalPrice images");
+  const sellerProducts = await Product.find({ sellerId }).select(
+    "_id name originalPrice images",
+  );
   const sellerProductIds = sellerProducts.map((p) => p._id);
 
   if (sellerProductIds.length === 0) {
@@ -1378,10 +1454,16 @@ export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, peri
         from: "inventoryitems",
         let: { pid: "$_id", mid: "$modelId" },
         pipeline: [
-          { $match: { $expr: { $and: [
-            { $eq: ["$productId", "$$pid"] },
-            { $eq: ["$modelId", "$$mid"] },
-          ] } } },
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$productId", "$$pid"] },
+                  { $eq: ["$modelId", "$$mid"] },
+                ],
+              },
+            },
+          },
           { $project: { costPrice: 1, _id: 0 } },
         ],
         as: "invItem",
@@ -1425,7 +1507,10 @@ export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, peri
         unitCost: 1,
         cost: { $multiply: ["$unitCost", "$totalQuantity"] },
         profit: {
-          $subtract: ["$totalRevenue", { $multiply: ["$unitCost", "$totalQuantity"] }],
+          $subtract: [
+            "$totalRevenue",
+            { $multiply: ["$unitCost", "$totalQuantity"] },
+          ],
         },
         profitMargin: {
           $cond: [
@@ -1434,7 +1519,12 @@ export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, peri
               $multiply: [
                 {
                   $divide: [
-                    { $subtract: ["$totalRevenue", { $multiply: ["$unitCost", "$totalQuantity"] }] },
+                    {
+                      $subtract: [
+                        "$totalRevenue",
+                        { $multiply: ["$unitCost", "$totalQuantity"] },
+                      ],
+                    },
                     "$totalRevenue",
                   ],
                 },
@@ -1919,7 +2009,9 @@ export const getSellerOrderCounts = async (sellerId) => {
     };
   }
 
-  const orderItems = await OrderItem.find({ productId: { $in: sellerProductIds } }).select("orderId");
+  const orderItems = await OrderItem.find({
+    productId: { $in: sellerProductIds },
+  }).select("orderId");
   const orderIds = [
     ...new Set(orderItems.map((item) => item.orderId.toString())),
   ].map((id) => new mongoose.Types.ObjectId(id));
@@ -1966,7 +2058,9 @@ export const getSellerOrderCounts = async (sellerId) => {
     {
       $match: {
         "orderItems.productId": { $in: sellerProductIds },
-        status: { $in: ["pending", "approved", "items_returned", "processing"] },
+        status: {
+          $in: ["pending", "approved", "items_returned", "processing"],
+        },
       },
     },
     { $count: "count" },
@@ -2025,7 +2119,7 @@ export const getSellerBalance = async (sellerId) => {
   });
 
   const orderIds = Object.keys(orderSubtotalMap).map(
-    (id) => new mongoose.Types.ObjectId(id)
+    (id) => new mongoose.Types.ObjectId(id),
   );
 
   // Lấy thông tin đơn hàng
@@ -2034,12 +2128,12 @@ export const getSellerBalance = async (sellerId) => {
     .lean();
 
   // Tính toán số dư
-  let availableBalance = 0;    // Số dư khả dụng (completed/delivered)
-  let pendingBalance = 0;       // Số dư chờ xử lý (các trạng thái khác)
-  let totalEarning = 0;         // Tổng thu nhập
-  let totalRefund = 0;          // Tổng refund
-  let completedOrders = 0;      // Số đơn hoàn thành
-  let pendingOrders = 0;         // Số đơn chờ
+  let availableBalance = 0; // Số dư khả dụng (completed/delivered)
+  let pendingBalance = 0; // Số dư chờ xử lý (các trạng thái khác)
+  let totalEarning = 0; // Tổng thu nhập
+  let totalRefund = 0; // Tổng refund
+  let completedOrders = 0; // Số đơn hoàn thành
+  let pendingOrders = 0; // Số đơn chờ
 
   const COMPLETED_STATUSES = new Set(["completed", "delivered"]);
   const REFUND_STATUSES = new Set(["refunded", "refund_pending"]);
@@ -2078,7 +2172,9 @@ export const getSellerBalance = async (sellerId) => {
       walletInfo = wallet;
     }
   } catch (err) {
-    console.warn("[SellerWallet] Wallet not found, using computed balance only");
+    console.warn(
+      "[SellerWallet] Wallet not found, using computed balance only",
+    );
   }
 
   const totalBalance = availableBalance + pendingBalance;
@@ -2095,19 +2191,21 @@ export const getSellerBalance = async (sellerId) => {
     console.warn("[SellerWallet] User reward_points not found");
   }
 
-  // Trừ số đã convert sang RP để balance chính xác
+  // Trừ số đã convert sang RP và số đã payout để balance chính xác
   const convertedToRP = walletInfo.totalConvertedToRP || 0;
+  const totalPayout = walletInfo.totalPayout || 0;
+  const netAvailableBalance = availableBalance - convertedToRP - totalPayout;
   // Raw balance chưa trừ convert (dùng khi cần tính toán)
   const rawBalance = Math.round(availableBalance + convertedToRP);
 
   return {
     // availableBalance = thu nhập từ orders - đã convert = số dư khả dụng thực
-    availableBalance: Math.round(availableBalance - convertedToRP),
+    availableBalance: Math.max(0, Math.round(netAvailableBalance)),
     pendingBalance: Math.round(pendingBalance),
     totalBalance: Math.round(totalBalance),
     totalEarning: Math.round(totalEarning),
     totalRefund: Math.round(totalRefund),
-    totalPayout: Math.round(walletInfo.totalPayout || 0),
+    totalPayout: Math.round(totalPayout),
     totalOrders,
     completedOrders,
     pendingOrders,
@@ -2124,14 +2222,18 @@ export const getSellerBalance = async (sellerId) => {
  * @param {number} skip
  * @param {Object} filters - { type, search }
  */
-export const getSellerWalletTransactions = async (sellerId, limit = 10, skip = 0, filters = {}) => {
+export const getSellerWalletTransactions = async (
+  sellerId,
+  limit = 10,
+  skip = 0,
+  filters = {},
+) => {
   const { type, search } = filters;
   const result = await SellerWalletTransaction.getTransactionHistory(
     sellerId,
     limit,
     skip,
-    type,
-    search
+    { type, search },
   );
   return result;
 };
@@ -2208,10 +2310,14 @@ export const getSellerRecentOrders = async (sellerId, limit = 20) => {
 
   return orders.map((order) => {
     const items = itemMap[order._id.toString()] || [];
-    const sellerSubtotal = items.reduce((sum, it) => sum + (it.subtotal || 0), 0);
+    const sellerSubtotal = items.reduce(
+      (sum, it) => sum + (it.subtotal || 0),
+      0,
+    );
     return {
       _id: order._id,
-      orderNumber: order.orderNumber || `#ORD-${order._id.toString().slice(-8)}`,
+      orderNumber:
+        order.orderNumber || `#ORD-${order._id.toString().slice(-8)}`,
       customer: order.userId?.name || "—",
       email: order.userId?.email || "—",
       phone: order.userId?.phone || "—",
@@ -2266,20 +2372,21 @@ export const requestRewardPointWithdrawal = async (sellerId, data) => {
   const expectedRP = Math.floor(amount / actualConversionRate);
   if (rewardPointAmount !== expectedRP) {
     console.warn(
-      `[DashboardService] Reward point mismatch: Expected ${expectedRP}, got ${rewardPointAmount}. Using expected value.`
+      `[DashboardService] Reward point mismatch: Expected ${expectedRP}, got ${rewardPointAmount}. Using expected value.`,
     );
   }
 
-  const transaction = await SellerWalletTransaction.createRewardPointWithdrawalRequest({
-    sellerId,
-    amount,
-    rewardPointAmount: expectedRP,
-    conversionRate: actualConversionRate,
-    targetUserId,
-    withdrawalMethod,
-    bankAccount,
-    requestNote,
-  });
+  const transaction =
+    await SellerWalletTransaction.createRewardPointWithdrawalRequest({
+      sellerId,
+      amount,
+      rewardPointAmount: expectedRP,
+      conversionRate: actualConversionRate,
+      targetUserId,
+      withdrawalMethod,
+      bankAccount,
+      requestNote,
+    });
 
   return transaction;
 };
@@ -2292,12 +2399,18 @@ export const requestRewardPointWithdrawal = async (sellerId, data) => {
  * @param {String} rejectedReason - Lý do từ chối (nếu reject)
  * @returns {Object} - Updated transaction
  */
-export const processRewardPointWithdrawal = async (transactionId, adminId = null, action = "approve", rejectedReason = null) => {
-  const transaction = await SellerWalletTransaction.processRewardPointWithdrawal(
-    transactionId,
-    adminId,
-    action
-  );
+export const processRewardPointWithdrawal = async (
+  transactionId,
+  adminId = null,
+  action = "approve",
+  rejectedReason = null,
+) => {
+  const transaction =
+    await SellerWalletTransaction.processRewardPointWithdrawal(
+      transactionId,
+      adminId,
+      action,
+    );
 
   return transaction;
 };
@@ -2309,11 +2422,15 @@ export const processRewardPointWithdrawal = async (transactionId, adminId = null
  * @param {Number} skip - Bỏ qua bao nhiêu bản ghi
  * @returns {Object} - { transactions, total }
  */
-export const getRewardPointWithdrawals = async (sellerId, limit = 10, skip = 0) => {
+export const getRewardPointWithdrawals = async (
+  sellerId,
+  limit = 10,
+  skip = 0,
+) => {
   const result = await SellerWalletTransaction.getRewardPointWithdrawals(
     sellerId,
     limit,
-    skip
+    skip,
   );
 
   return result;
@@ -2797,7 +2914,14 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
  * @returns {Object} - { transactions, total }
  */
 export const getAllRewardPointWithdrawals = async (filters = {}) => {
-  const { status, sellerId, startDate, endDate, limit = 20, skip = 0 } = filters;
+  const {
+    status,
+    sellerId,
+    startDate,
+    endDate,
+    limit = 20,
+    skip = 0,
+  } = filters;
 
   const query = { type: "reward_point_withdrawal" };
 
