@@ -253,6 +253,24 @@ const orderSchema = new mongoose.Schema(
       default: false,
       description: "Flag to track if inventory/vouchers have been deducted",
     },
+
+    // ===== Live stream attribution (seller stats / session revenue) =====
+    liveSessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "LiveSession",
+      index: true,
+      default: null,
+    },
+    liveSessionVoucherId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Voucher",
+      default: null,
+    },
+    /** Client-sent session id string when placing live line items (audit / mismatch checks) */
+    fromLiveSession: {
+      type: String,
+      default: null,
+    },
   },
   {
     timestamps: true,

@@ -18,7 +18,27 @@ const viewerTokenRateLimiter = new RateLimiterMemory({
   blockDuration: 5,
 });
 
+const handoffMintRateLimiter = new RateLimiterMemory({
+  points: 10,
+  duration: 60,
+  blockDuration: 30,
+});
+
 // Middleware: rate limit viewer token requests
+export async function handoffMintRateLimitMiddleware(req, res, next) {
+  const key = req.user?._id?.toString() || req.ip;
+  try {
+    await handoffMintRateLimiter.consume(key);
+    next();
+  } catch (e) {
+    if (e instanceof RateLimiterRes) {
+      res.status(429).json({ message: "Too many handoff links. Please wait." });
+    } else {
+      next(e);
+    }
+  }
+}
+
 export async function viewerTokenRateLimitMiddleware(req, res, next) {
   const key = req.params.sessionId || req.ip;
   try {
@@ -36,10 +56,19 @@ export async function viewerTokenRateLimitMiddleware(req, res, next) {
 
 const router = Router();
 
+router.get("/sessions/history", protect, ctrl.getSessionsHistory);
 router.post("/session", protect, ctrl.createSession);
+router.post("/handoff/exchange", protect, ctrl.exchangeHandoff);
+router.post(
+  "/session/:sessionId/handoff",
+  protect,
+  handoffMintRateLimitMiddleware,
+  ctrl.createSessionHandoff,
+);
 router.post("/session/:sessionId/start", protect, ctrl.startSession);
 router.post("/session/:sessionId/token", optionalAuth, viewerTokenRateLimitMiddleware, ctrl.getViewerToken);
 router.post("/session/:sessionId/end", protect, ctrl.endSession);
+router.get("/session/:sessionId/stats", protect, ctrl.getSessionStats);
 router.get("/active", ctrl.getActiveByShop);
 router.get('/session/:sessionId/config', ctrl.getSessionConfig);
 router.get("/session/:sessionId", ctrl.getSession);

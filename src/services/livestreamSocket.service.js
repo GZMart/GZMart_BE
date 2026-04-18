@@ -14,19 +14,38 @@ import {
   getViewerCount,
 } from './livestreamRedis.service.js';
 
+/** Match Redis presence id to REST API user id (live voucher checkout checks getRoomViewers vs req.user._id). */
+function resolveLivePresenceUserId(payload, socket) {
+  const raw = payload?.userId;
+  if (raw != null && raw !== '' && String(raw) !== 'anonymous') {
+    return String(raw);
+  }
+  if (socket.data?.userId) {
+    return String(socket.data.userId);
+  }
+  return String(socket.id);
+}
+
 export function setupLiveStreamHandlers(io, socket) {
-  const userId = socket.data.userId || socket.id;
+  const fallbackSocketUserId = socket.data.userId || socket.id;
   const isSeller = socket.data.role === 'seller';
 
   // ---- livestream_join ----
-  socket.on('livestream_join', async ({ sessionId, displayName }) => {
+  socket.on('livestream_join', async (payload = {}) => {
+    const { sessionId, displayName } = payload;
     if (!sessionId) return;
 
     try {
+      const presenceUserId = resolveLivePresenceUserId(payload, socket);
+      socket.data.livePresenceUserId = presenceUserId;
+      if (payload.role === 'seller' || payload.role === 'buyer') {
+        socket.data.role = payload.role;
+      }
+
       socket.join(`livestream_${sessionId}`);
       socket.data.currentRoom = `livestream_${sessionId}`;
 
-      await addViewerToRoom(sessionId, userId);
+      await addViewerToRoom(sessionId, presenceUserId);
       const viewerCount = await incrementViewerCount(sessionId);
 
       // Emit current viewer count to the joining user and everyone in the room
@@ -36,7 +55,9 @@ export function setupLiveStreamHandlers(io, socket) {
       const safeDisplayName = displayName || 'Viewer';
       io.to(`livestream_${sessionId}`).emit('livestream_join', { displayName: safeDisplayName });
 
-      logger.info(`[Livestream] ${safeDisplayName} (${userId}, seller=${isSeller}) joined session ${sessionId} — count: ${viewerCount}`);
+      logger.info(
+        `[Livestream] ${safeDisplayName} (${presenceUserId}, seller=${socket.data.role === 'seller'}) joined session ${sessionId} — count: ${viewerCount}`,
+      );
     } catch (err) {
       logger.error(`[Livestream] Error in join (${sessionId}):`, err.message);
     }
@@ -62,7 +83,7 @@ export function setupLiveStreamHandlers(io, socket) {
     // socket.data.userId is often unset → was falling back to socket.id and broke dedup.
     const resolvedUserId = msgUserId != null && msgUserId !== ''
       ? String(msgUserId)
-      : String(userId);
+      : String(socket.data.livePresenceUserId || fallbackSocketUserId);
 
     // Role: explicit payload wins (seller dashboard sends role: 'seller'), else socket auth
     const role =
@@ -101,15 +122,17 @@ export function setupLiveStreamHandlers(io, socket) {
   socket.on('livestream_leave', async ({ sessionId }) => {
     if (!sessionId) return;
 
+    const presenceId = socket.data.livePresenceUserId || fallbackSocketUserId;
+
     try {
       socket.leave(`livestream_${sessionId}`);
-      await removeViewerFromRoom(sessionId, userId);
+      await removeViewerFromRoom(sessionId, presenceId);
       const viewerCount = await decrementViewerCount(sessionId);
 
       // Emit updated viewer count to remaining room members
       io.to(`livestream_${sessionId}`).emit('livestream_viewer_update', { count: Math.max(0, viewerCount) });
 
-      logger.info(`[Livestream] User ${userId} left session ${sessionId} — count: ${viewerCount}`);
+      logger.info(`[Livestream] User ${presenceId} left session ${sessionId} — count: ${viewerCount}`);
     } catch (err) {
       logger.error(`[Livestream] Error in leave (${sessionId}):`, err.message);
     }
@@ -119,12 +142,13 @@ export function setupLiveStreamHandlers(io, socket) {
   socket.on('disconnect', async () => {
     const room = socket.data.currentRoom;
     if (room) {
+      const presenceId = socket.data.livePresenceUserId || fallbackSocketUserId;
       try {
         const sessionId = room.replace('livestream_', '');
-        await removeViewerFromRoom(sessionId, userId);
+        await removeViewerFromRoom(sessionId, presenceId);
         const viewerCount = await decrementViewerCount(sessionId);
         io.to(`livestream_${sessionId}`).emit('livestream_viewer_update', { count: Math.max(0, viewerCount) });
-        logger.info(`[Livestream] User ${userId} disconnected from session ${sessionId} — count: ${viewerCount}`);
+        logger.info(`[Livestream] User ${presenceId} disconnected from session ${sessionId} — count: ${viewerCount}`);
       } catch (err) {
         logger.error(`[Livestream] Error in disconnect:`, err.message);
       }
