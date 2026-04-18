@@ -5,7 +5,7 @@ import mongoose from "mongoose";
  * Tracks individual coin packets with expiration dates (like Shopee Coin)
  *
  * Business Rules:
- * - Refund coins: No expiration (expiresAt = null)
+ * - Refund/topup/seller convert coins: No expiration (expiresAt = null)
  * - System coins (rewards, promotions): 14 days expiration
  * - FIFO usage: Coins expiring soonest are used first
  */
@@ -24,6 +24,8 @@ const coinSchema = new mongoose.Schema(
       type: String,
       enum: [
         "refund", // From return/refund - NO EXPIRATION
+        "topup", // User tops up coins with real money - NO EXPIRATION
+        "seller_convert", // Seller converts VND balance to coins - NO EXPIRATION
         "reward", // From completing orders, reviews, etc. - 14 days
         "promotion", // From promotional campaigns - 14 days
         "admin_grant", // Admin manually granted - 14 days
@@ -161,8 +163,9 @@ coinSchema.statics.createCoinPacket = async function (data) {
   // Calculate expiration date
   let expiresAt = null;
 
-  // Refund coins never expire
-  if (source === "refund") {
+  // Money-backed sources never expire
+  const NON_EXPIRING_SOURCES = new Set(["refund", "topup", "seller_convert"]);
+  if (NON_EXPIRING_SOURCES.has(source)) {
     expiresAt = null;
   } else {
     // Other sources: 14 days from now

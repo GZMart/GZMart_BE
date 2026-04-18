@@ -19,10 +19,15 @@ const walletTransactionSchema = new mongoose.Schema(
       type: String,
       enum: [
         "refund", // Refund from return request
+        "topup", // Topup from PayOS deposit
+        "seller_convert", // Seller converts VND balance to coin
         "purchase", // Coin deduction from purchase
         "reward", // Reward points earned
         "admin_adjustment", // Manual admin adjustment
+        "admin_grant", // Admin granted coins
         "promotion", // Promotional bonus
+        "signup_bonus", // Signup bonus coins
+        "referral", // Referral bonus coins
         "withdrawal", // User withdrawal (future feature)
       ],
       required: true,
