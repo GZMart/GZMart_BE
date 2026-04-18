@@ -453,7 +453,32 @@ class SearchService {
       console.log("[SearchByImage] English keywords:", englishSearchStr);
       console.log("[SearchByImage] Vietnamese mapped keywords:", viKeywords);
 
-      // Strategy 0: Semantic Vector Search (Best for visual similarity across languages)
+      // Stage 1: Build text candidate pool from name/brand match.
+      // This prevents unrelated categories (shoes leaking into shirt results)
+      // before vector search even runs.
+      const engRegexParts = allEnKeywords.filter(k => k.length > 2).slice(0, 6);
+      const viRegexParts = viKeywords.filter(k => k.length > 1).slice(0, 6);
+
+      const candidateMatch = {
+        status: "active",
+        $or: [
+          ...(engRegexParts.length > 0 ? [{ name: { $regex: engRegexParts.join("|"), $options: "i" } }] : []),
+          ...(viRegexParts.length > 0 ? [{ name: { $regex: viRegexParts.join("|"), $options: "i" } }] : []),
+          ...(engRegexParts.length > 0 ? [{ brand: { $regex: engRegexParts.join("|"), $options: "i" } }] : []),
+          ...(viRegexParts.length > 0 ? [{ brand: { $regex: viRegexParts.join("|"), $options: "i" } }] : []),
+        ],
+      };
+
+      let candidateIds = [];
+      if (candidateMatch.$or.length > 0) {
+        const candidates = await Product.find(candidateMatch)
+          .select("_id")
+          .limit(60)
+          .lean();
+        candidateIds = candidates.map(c => c._id);
+      }
+
+      // Strategy 0: Vector rank over the candidate pool (two-stage)
       let vectorEmbedding = null;
       try {
         const { default: embeddingService } = await import("./embedding.service.js");
@@ -469,16 +494,11 @@ class SearchService {
         isAvailable: true,
       };
 
-      // Strategy 2: Regex search on name/description with English terms
-      const engRegexParts = allEnKeywords
-        .filter(k => k.length > 2)
-        .slice(0, 6);
+      // engRegexParts & viRegexParts already declared in Stage 1 above
       const engRegex = engRegexParts.length > 0
         ? new RegExp(engRegexParts.join("|"), "i")
         : null;
 
-      // Strategy 3: Regex search with Vietnamese keywords
-      const viRegexParts = viKeywords.filter(k => k.length > 1).slice(0, 6);
       const viRegex = viRegexParts.length > 0
         ? new RegExp(viRegexParts.join("|"), "i")
         : null;
@@ -487,9 +507,9 @@ class SearchService {
       const allTagsKeywords = [...allEnKeywords, ...viKeywords].slice(0, 10);
 
       const searchStrategies = [
-        // S0: Vector Search (Semantic similarity)
-        ...(vectorEmbedding ? [{
-          name: "Semantic Vector Search",
+        // S0: Two-stage: Vector rank over text-filtered candidate pool
+        ...(vectorEmbedding && candidateIds.length > 0 ? [{
+          name: "Two-Stage Vector Rank",
           find: async () => {
             const results = await Product.aggregate([
               {
@@ -497,9 +517,19 @@ class SearchService {
                   index: "product_vector_index",
                   path: "embedding",
                   queryVector: vectorEmbedding,
-                  numCandidates: 16 * 5,
-                  limit: 16,
-                  filter: { status: "active" },
+                  numCandidates: candidateIds.length,
+                  limit: Math.min(16 * 2, candidateIds.length),
+                  filter: { _id: { $in: candidateIds } },
+                },
+              },
+              {
+                $addFields: {
+                  score: { $meta: "vectorSearchScore" },
+                },
+              },
+              {
+                $match: {
+                  score: { $gte: 0.88 },
                 },
               },
               {
@@ -509,11 +539,11 @@ class SearchService {
                   rating: 1, reviewCount: 1, sold: 1, brand: 1,
                   tags: 1, "models.price": 1, "models.sku": 1,
                   "models.stock": 1, images: 1, isAvailable: 1,
-                  score: { $meta: "vectorSearchScore" },
                 },
               },
+              { $sort: { score: -1 } },
+              { $limit: 16 },
             ]);
-            // Populate categoryId for consistency with other find() returns
             return Product.populate(results, { path: "categoryId", select: "name slug" });
           }
         }] : []),
