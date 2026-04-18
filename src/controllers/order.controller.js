@@ -23,6 +23,20 @@ import {
 } from "../utils/orderInventory.js";
 import mongoose from "mongoose";
 import { isPayOsConfigured } from "../config/payos.config.js";
+import { getSocketIO } from "../utils/socketIO.js";
+
+function emitLivestreamSessionStatsTick(liveSessionId) {
+  if (!liveSessionId) {
+    return;
+  }
+  const sid = String(liveSessionId);
+  const io = getSocketIO();
+  if (io) {
+    io.to(`livestream_${sid}`).emit("livestream_session_stats_tick", {
+      sessionId: sid,
+    });
+  }
+}
 
 // @desc    Get checkout info (user details)
 // @route   GET /api/orders/checkout-info
@@ -388,17 +402,6 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     fromLiveSession,
   } = req.body;
 
-  // DEBUG: log raw request payload to diagnose 400
-  console.log("[createOrder] Request payload:", {
-    hasShippingAddress: !!shippingAddress,
-    paymentMethod,
-    hasLiveItems: Array.isArray(liveItems),
-    liveItemsCount: liveItems?.length,
-    liveItems,
-    cartItemIds,
-    voucherIds,
-  });
-
   if (!shippingAddress || !paymentMethod) {
     return next(
       new ErrorResponse(
@@ -422,6 +425,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 
   /** Sum of (unit price × qty) for live lines — same logic as OrderItem.effectivePrice */
   let liveItemsMonetarySubtotal = 0;
+
+  /** CartItem-shaped rows for voucher validation when order includes live-only lines (DB cart empty). */
+  const liveVirtualCartRows = [];
 
   // === Pre-transaction validation for live session items ===
   if (liveItems && liveItems.length > 0) {
@@ -503,13 +509,24 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           : Number(targetModel.price) || 0;
       const qty = Math.max(1, Number(liveItem.quantity) || 1);
       liveItemsMonetarySubtotal += lineUnit * qty;
+
+      liveVirtualCartRows.push({
+        productId: product,
+        price: lineUnit,
+        quantity: qty,
+      });
     }
   }
 
-  // 1. Get Cart — skip if order contains only live-session items
+  // 1. Get Cart
+  // - No live lines: require cart (all items or selected cartItemIds).
+  // - Live + cart (mixed): load selected cart lines when cartItemIds is non-empty.
+  // - Live-only: cartItemIds empty — cartItems stays [].
   let cartItems = [];
   let cart = null;
   const hasLiveItems = Array.isArray(liveItems) && liveItems.length > 0;
+  const hasCartItemSelection =
+    cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0;
 
   if (!hasLiveItems) {
     // ── Normal cart order (no live-session items) ──────────────────
@@ -519,7 +536,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     }
 
     const query = { cartId: cart._id };
-    if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+    if (hasCartItemSelection) {
       query._id = { $in: cartItemIds };
     }
 
@@ -535,7 +552,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     }
 
     // SECURITY FIX (BUG 8): Validate that all cartItemIds belong to this user's cart
-    if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+    if (hasCartItemSelection) {
       const foundItemIds = cartItems.map((item) => item._id.toString());
       const requestedItemIds = cartItemIds.map((id) => id.toString());
       const invalidItems = requestedItemIds.filter(
@@ -551,16 +568,38 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         );
       }
     }
-  } else {
-    // ── Live-session-only order: cart may be empty — this is fine ──
-    console.log(
-      "[createOrder] Live-session-only order — skipping cart validation.",
-      {
-        liveItems: liveItems.length,
-        cartItemIds,
-      },
+  } else if (hasCartItemSelection) {
+    // ── Mixed: live items + cart lines ─────────────────────────────
+    cart = await Cart.findOne({ userId: req.user._id });
+    if (!cart) {
+      return next(new ErrorResponse("Cart is empty", 400));
+    }
+
+    cartItems = await CartItem.find({
+      cartId: cart._id,
+      _id: { $in: cartItemIds },
+    }).populate("productId");
+
+    if (cartItems.length === 0) {
+      return next(new ErrorResponse("Cart is empty", 400));
+    }
+
+    const foundItemIds = cartItems.map((item) => item._id.toString());
+    const requestedItemIds = cartItemIds.map((id) => id.toString());
+    const invalidItems = requestedItemIds.filter(
+      (id) => !foundItemIds.includes(id),
     );
+
+    if (invalidItems.length > 0) {
+      return next(
+        new ErrorResponse(
+          "Some cart items do not belong to your cart or do not exist",
+          403,
+        ),
+      );
+    }
   }
+  // else: live-only — cartItems remains []
 
   // DUPLICATE ORDER PREVENTION: block only same payload submitted in a short window.
   const useCoin = req.body.useCoin === false ? false : true;
@@ -690,6 +729,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 
   subtotal += liveItemsMonetarySubtotal;
 
+  // Voucher rules need product/seller context from live lines too (live-only orders have cartItems = [])
+  const cartItemsForVouchers = [...cartItems, ...liveVirtualCartRows];
+
   // 3. Validate Vouchers & Calculate Discount
   const {
     totalDiscount,
@@ -697,7 +739,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     errors: voucherErrors,
   } = await validateAndCalculateVouchers(
     voucherIds || [],
-    cartItems,
+    cartItemsForVouchers,
     req.user._id,
   );
 
@@ -707,6 +749,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   }
 
   const discount = totalDiscount;
+
+  /** Canonical session for stats — set from live voucher and/or fromLiveSession + liveItems */
+  let resolvedLiveSessionId = null;
 
   // 3b. Validate & apply live session voucher (separate from regular voucherIds)
   let liveVoucherDiscount = 0;
@@ -732,8 +777,15 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       return next(new ErrorResponse("Live session has ended — voucher cannot be used", 400));
     }
     const viewerIds = await getRoomViewers(liveVoucher.liveSessionId.toString());
-    const isInSession = viewerIds.includes(req.user._id.toString());
-    if (!isInSession) {
+    const isInPresence = viewerIds.includes(req.user._id.toString());
+    /** Checkout flow often leaves the viewer page before POST /orders — socket/Redis may not list the buyer anymore. */
+    const checkoutFromSameLiveSession =
+      hasLiveItems &&
+      fromLiveSession &&
+      mongoose.Types.ObjectId.isValid(fromLiveSession) &&
+      String(fromLiveSession) === String(liveVoucher.liveSessionId);
+
+    if (!isInPresence && !checkoutFromSameLiveSession) {
       return next(new ErrorResponse("You must be in the live session to use this voucher", 400));
     }
 
@@ -746,12 +798,11 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       return next(new ErrorResponse("This voucher has reached its usage limit", 400));
     }
 
-    // Calculate discount (same logic as voucherValidator)
-    const applicableSubtotal = cartItems.length > 0
-      ? cartItems
-          .filter((ci) => ci.productId?.sellerId?.toString() === liveVoucher.shopId?.toString())
-          .reduce((sum, ci) => sum + ci.price * ci.quantity, 0)
-      : 0;
+    // Calculate discount (same logic as voucherValidator) — include live-only lines
+    const rowsForLiveVoucherShop = [...cartItems, ...liveVirtualCartRows];
+    const applicableSubtotal = rowsForLiveVoucherShop
+      .filter((ci) => ci.productId?.sellerId?.toString() === liveVoucher.shopId?.toString())
+      .reduce((sum, ci) => sum + Number(ci.price) * Number(ci.quantity), 0);
 
     if (liveVoucher.minBasketPrice && applicableSubtotal < liveVoucher.minBasketPrice) {
       return next(new ErrorResponse(
@@ -770,6 +821,39 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     }
 
     liveVoucherCode = liveVoucher.code;
+    resolvedLiveSessionId = liveVoucher.liveSessionId;
+  }
+
+  // Live line items must be attributed to an active session (explicit id or via voucher above)
+  if (hasLiveItems) {
+    if (!resolvedLiveSessionId) {
+      if (!fromLiveSession || !mongoose.Types.ObjectId.isValid(fromLiveSession)) {
+        return next(
+          new ErrorResponse(
+            "fromLiveSession is required when ordering live showcase items",
+            400,
+          ),
+        );
+      }
+      const LiveSession = (await import("../models/LiveSession.js")).default;
+      const ls = await LiveSession.findById(fromLiveSession).lean();
+      if (!ls || ls.status !== "live") {
+        return next(
+          new ErrorResponse("Live session is not active or no longer exists", 400),
+        );
+      }
+      resolvedLiveSessionId = new mongoose.Types.ObjectId(fromLiveSession);
+    } else if (
+      fromLiveSession &&
+      String(resolvedLiveSessionId) !== String(fromLiveSession)
+    ) {
+      return next(
+        new ErrorResponse(
+          "Live session does not match the applied live voucher",
+          400,
+        ),
+      );
+    }
   }
 
   // Include live voucher discount in total discount
@@ -828,8 +912,12 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           requestSignature,
           items: [],
           resourcesDeducted: false, // Will be set to true after deduction
+          liveSessionId: resolvedLiveSessionId || null,
           liveSessionVoucherId: liveSessionVoucherId || null,
-          fromLiveSession: fromLiveSession || null,
+          fromLiveSession:
+            fromLiveSession != null && fromLiveSession !== ""
+              ? String(fromLiveSession)
+              : null,
         },
       ],
       { session },
@@ -1048,6 +1136,10 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       createdAt: createdOrder.createdAt,
       customerName: user?.fullName || "Customer",
     });
+
+    if (createdOrder.liveSessionId) {
+      emitLivestreamSessionStatsTick(createdOrder.liveSessionId);
+    }
 
     // Notify Buyer via New Notification System
     try {

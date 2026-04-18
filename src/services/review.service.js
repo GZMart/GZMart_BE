@@ -3,6 +3,7 @@ import Review from "../models/Review.js";
 import Product from "../models/Product.js";
 import Order from "../models/Order.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
+import { updateShopRatingForSeller } from "./shopRating.service.js";
 
 class ReviewService {
   formatVariantLabel(tierSelections) {
@@ -435,6 +436,11 @@ class ReviewService {
    * Update product rating (calculate average and count)
    */
   async updateProductRating(productId) {
+    const product = await Product.findById(productId).select("_id sellerId");
+    if (!product) {
+      return;
+    }
+
     const reviews = await Review.find({
       productId,
       status: "approved",
@@ -446,22 +452,23 @@ class ReviewService {
         rating: 0,
         reviewCount: 0,
       });
-      return;
+    } else {
+      // Calculate average rating
+      const totalRating = reviews.reduce((sum, review) => sum + review.rating, 0);
+      const averageRating = (totalRating / reviews.length).toFixed(1);
+      const reviewCount = reviews.length;
+
+      console.log(
+        `Updating product ${productId}: rating=${averageRating}, reviewCount=${reviewCount}`,
+      );
+
+      await Product.findByIdAndUpdate(productId, {
+        rating: parseFloat(averageRating),
+        reviewCount,
+      });
     }
 
-    // Calculate average rating
-    const totalRating = reviews.reduce((sum, review) => sum + review.rating, 0);
-    const averageRating = (totalRating / reviews.length).toFixed(1);
-    const reviewCount = reviews.length;
-
-    console.log(
-      `Updating product ${productId}: rating=${averageRating}, reviewCount=${reviewCount}`,
-    );
-
-    await Product.findByIdAndUpdate(productId, {
-      rating: parseFloat(averageRating),
-      reviewCount,
-    });
+    await updateShopRatingForSeller(product.sellerId);
   }
 
   /**
