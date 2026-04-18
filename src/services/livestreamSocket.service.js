@@ -70,11 +70,16 @@ export function setupLiveStreamHandlers(io, socket) {
   // Seller: also sends via this event (role: 'seller') — stored + broadcast by this handler.
   socket.on(
     'livestream_chat',
-    async ({ sessionId, content, displayName, userId: msgUserId, role: msgRole }) => {
+    async ({ sessionId, content, displayName, userId: msgUserId, role: msgRole, avatar: rawAvatar }) => {
     if (!sessionId || !content?.trim()) return;
 
     const safeContent = String(content).trim().replace(/\s+/g, ' ').slice(0, 300);
     if (!safeContent) return;
+
+    const safeAvatar =
+      typeof rawAvatar === 'string' && rawAvatar.trim().length > 0
+        ? rawAvatar.trim().slice(0, 2048)
+        : undefined;
 
     // Use a single, server-generated ID so deduplication is reliable across channels
     const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -103,6 +108,7 @@ export function setupLiveStreamHandlers(io, socket) {
       timestamp: new Date().toISOString(),
       role,
       isOwn: false,
+      ...(safeAvatar ? { avatar: safeAvatar } : {}),
     };
 
     // Persist to Redis for chat history API (late joiners via GET /session/:id/messages)
