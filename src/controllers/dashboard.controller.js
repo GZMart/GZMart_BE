@@ -172,16 +172,22 @@ export const getSalesTrend = asyncHandler(async (req, res) => {
  * @access  Private (Seller, Admin)
  */
 export const getComparisonStats = asyncHandler(async (req, res) => {
-  const { period } = req.query; // calendar: month, week — rolling (aligns with revenue-trend): daily, weekly, monthly, quarterly, yearly
+  const { period, startDate, endDate } = req.query;
+
+  const customRange = startDate && endDate
+    ? { startDate, endDate }
+    : null;
 
   const comparison = await dashboardService.getComparisonStats(
     req.user._id,
     period || "month",
+    customRange,
   );
 
   res.status(200).json({
     success: true,
     period: period || "month",
+    customRange,
     data: comparison,
   });
 });
@@ -662,5 +668,65 @@ export const processRewardPointWithdrawal = asyncHandler(async (req, res) => {
       ? "Yêu cầu đã được duyệt, reward_point đã được cộng cho user"
       : "Yêu cầu đã bị từ chối, số dư đã được hoàn",
     data: transaction,
+  });
+});
+
+/**
+ * @desc    Get customer age analytics for shop (overall)
+ * @route   GET /api/dashboard/customer-age-analytics
+ * @access  Private (Seller, Admin)
+ * @query   period: '7days' | '30days' | '90days' | '12months' | 'yearly' (default: '12months')
+ * @query   startDate: ISO date string (custom range)
+ * @query   endDate: ISO date string (custom range)
+ */
+export const getCustomerAgeAnalytics = asyncHandler(async (req, res) => {
+  const { period = '12months', startDate, endDate } = req.query;
+
+  const customRange = startDate && endDate
+    ? { startDate, endDate }
+    : null;
+
+  const analytics = await dashboardService.getCustomerAgeAnalytics(
+    req.user._id,
+    period,
+    customRange,
+  );
+
+  res.status(200).json({
+    success: true,
+    period,
+    customRange,
+    data: analytics,
+  });
+});
+
+/**
+ * @desc    Get customer age analytics by product
+ * @route   GET /api/dashboard/customer-age-analytics-by-product
+ * @access  Private (Seller, Admin)
+ * @query   period: '7days' | '30days' | '90days' | '12months' | 'yearly' (default: '12months')
+ * @query   startDate: ISO date string (custom range)
+ * @query   endDate: ISO date string (custom range)
+ * @query   limit: number (default: 10)
+ */
+export const getCustomerAgeAnalyticsByProduct = asyncHandler(async (req, res) => {
+  const { period = '12months', startDate, endDate, limit = 10 } = req.query;
+
+  const customRange = startDate && endDate
+    ? { startDate, endDate }
+    : null;
+
+  const analytics = await dashboardService.getCustomerAgeAnalyticsByProduct(
+    req.user._id,
+    period,
+    customRange,
+    parseInt(limit),
+  );
+
+  res.status(200).json({
+    success: true,
+    period,
+    customRange,
+    data: analytics,
   });
 });

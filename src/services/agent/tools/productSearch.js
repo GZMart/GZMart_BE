@@ -13,53 +13,73 @@ const TOP_K = 10;
 async function execute({ query, limit = TOP_K, categoryId = null }) {
   const queryEmbedding = await embeddingService.getEmbedding(query);
 
-  const filter = { status: "active" };
-  if (categoryId) filter.categoryId = new mongoose.Types.ObjectId(categoryId);
+  // ─── Stage 1: Text filter — fast, precise, no cross-category bleed ────
+  // Build candidate pool from name/brand match so vector search never
+  // sees unrelated categories (shoes won't appear for a shirt query).
+  const textCandidates = await Product.find({
+    status: "active",
+    ...(categoryId ? { categoryId: new mongoose.Types.ObjectId(categoryId) } : {}),
+    $or: [
+      { name: { $regex: query, $options: "i" } },
+      { brand: { $regex: query, $options: "i" } },
+      { tags: { $regex: query, $options: "i" } },
+    ],
+  })
+    .select("_id name slug categoryId sellerId description attributes originalPrice rating reviewCount sold brand tags models.price models.sku images")
+    .sort({ sold: -1 })
+    .limit(60)
+    .lean();
 
+  const candidateIds = textCandidates.map((p) => p._id);
+
+  // ─── Stage 2: Vector rank — re-rank candidates by semantic similarity ─
   let products = [];
-  try {
-    products = await Product.aggregate([
-      {
-        $vectorSearch: {
-          index: "product_vector_index",
-          path: "embedding",
-          queryVector: queryEmbedding,
-          numCandidates: limit * 5,
-          limit,
-          filter,
+  let vectorSearchHadResults = false;
+
+  if (candidateIds.length > 0) {
+    try {
+      const rawResults = await Product.aggregate([
+        {
+          $vectorSearch: {
+            index: "product_vector_index",
+            path: "embedding",
+            queryVector: queryEmbedding,
+            numCandidates: candidateIds.length,
+            limit: Math.min(limit * 2, candidateIds.length),
+            filter: { _id: { $in: candidateIds } },
+          },
         },
-      },
-      {
-        $project: {
-          name: 1, slug: 1, categoryId: 1, sellerId: 1,
-          description: 1, attributes: 1, originalPrice: 1,
-          rating: 1, reviewCount: 1, sold: 1, brand: 1,
-          tags: 1, "models.price": 1, "models.sku": 1, images: 1,
-          score: { $meta: "vectorSearchScore" },
+        {
+          $addFields: {
+            score: { $meta: "vectorSearchScore" },
+          },
         },
-      },
-    ]);
-  } catch (err) {
-    console.warn("[productSearch] Vector search failed, falling back to text:", err.message);
+        {
+          $match: {
+            score: { $gte: 0.88 },
+          },
+        },
+        {
+          $project: {
+            name: 1, slug: 1, categoryId: 1, sellerId: 1,
+            description: 1, attributes: 1, originalPrice: 1,
+            rating: 1, reviewCount: 1, sold: 1, brand: 1,
+            tags: 1, "models.price": 1, "models.sku": 1, images: 1,
+          },
+        },
+        { $sort: { score: -1 } },
+        { $limit: limit },
+      ]);
+      products = rawResults;
+      vectorSearchHadResults = rawResults.length > 0;
+    } catch (err) {
+      console.warn("[productSearch] Vector search failed, falling back to text:", err.message);
+    }
   }
 
-  if (products.length < 3) {
-    try {
-      const textResults = await Product.find({
-        status: "active",
-        $text: { $search: query },
-      })
-        .select("name slug categoryId sellerId description attributes originalPrice rating reviewCount sold brand tags models.price models.sku images")
-        .limit(limit)
-        .lean();
-
-      const existingIds = new Set(products.map((p) => p._id.toString()));
-      for (const p of textResults) {
-        if (!existingIds.has(p._id.toString())) products.push(p);
-      }
-    } catch {
-      // text index may not exist
-    }
+  // ─── Fallback: if vector returned nothing, use pure text results ───────
+  if (products.length === 0 && textCandidates.length > 0) {
+    products = textCandidates.slice(0, limit);
   }
 
   if (products.length === 0) {

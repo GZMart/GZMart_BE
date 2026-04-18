@@ -1009,7 +1009,7 @@ async function execute({ sellerId, query, productId, modelId, strategy = "balanc
   if (productId && isValidObjectId(productId)) {
     const found = await Product.findOne({
       sellerId: sellerOid,
-      status: "active",
+      status: { $in: ["active", "draft"] },
       _id: new mongoose.Types.ObjectId(productId),
     })
       .select("name originalPrice rating sold models categoryId brand")

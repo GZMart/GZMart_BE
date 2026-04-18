@@ -90,13 +90,24 @@ export async function setViewerCount(sessionId, count) {
 // --- Chat Message Storage ---
 const CHAT_TTL_MS = 60 * 60 * 1000; // 1 hour
 
+/** Normalize message timestamp (ISO string or ms number) for TTL pruning. */
+function messageTimestampMs(m) {
+  const t = m?.timestamp;
+  if (t == null) return NaN;
+  if (typeof t === "number" && Number.isFinite(t)) return t;
+  const ms = Date.parse(String(t));
+  return Number.isNaN(ms) ? NaN : ms;
+}
+
 export async function storeChatMessage(sessionId, messageId, message) {
   if (!chatMessages.has(sessionId)) chatMessages.set(sessionId, []);
   const msgs = chatMessages.get(sessionId);
   msgs.push({ id: messageId, ...message });
-  // Prune messages older than 1 hour
   const cutoff = Date.now() - CHAT_TTL_MS;
-  const filtered = msgs.filter((m) => m.timestamp && m.timestamp > cutoff);
+  const filtered = msgs.filter((m) => {
+    const ms = messageTimestampMs(m);
+    return Number.isFinite(ms) && ms >= cutoff;
+  });
   chatMessages.set(sessionId, filtered.slice(-200)); // keep last 200
 }
 

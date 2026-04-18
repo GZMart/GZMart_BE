@@ -379,11 +379,13 @@ productSchema.post("save", async function () {
         .select("name")
         .lean();
 
+      // Compose text from identity fields only — NO description to avoid
+      // e-commerce noise ("mua hàng", "giảm giá", "ship nhanh") that pulls
+      // unrelated categories (e.g. shoes) into apparel search results.
       const parts = [
         this.name,
         cat?.name || "",
         this.brand || "",
-        this.description?.replace(/<[^>]*>/g, "").slice(0, 300) || "",
         (this.attributes || []).map((a) => `${a.label} ${a.value}`).join(" "),
         (this.tags || []).join(" "),
       ];
