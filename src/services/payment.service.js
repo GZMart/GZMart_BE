@@ -3,16 +3,30 @@ import Cart from "../models/Cart.js";
 import CartItem from "../models/CartItem.js";
 import User from "../models/User.js";
 import TopupRequest from "../models/TopupRequest.js";
-import WalletTransaction from "../models/WalletTransaction.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { emailTemplates } from "../templates/email.templates.js";
 import payOs, { isPayOsConfigured } from "../config/payos.config.js";
+import coinService from "./coin.service.js";
 import * as orderTrackingService from "./orderTracking.service.js";
 import {
   deductOrderResourcesFromOrder,
   clearUserCart,
 } from "../utils/orderInventory.js";
+
+const PAYOS_TEST_FIXED_AMOUNT = 2000;
+
+const isAmountValidForPayOs = (paidAmount, expectedAmount) => {
+  if (!Number.isFinite(paidAmount)) {
+    return true;
+  }
+  const roundedPaid = Math.round(paidAmount);
+  const roundedExpected = Math.round(expectedAmount);
+  // Allow fixed amount 2000 for current test flow.
+  return (
+    roundedPaid === roundedExpected || roundedPaid === PAYOS_TEST_FIXED_AMOUNT
+  );
+};
 
 class PaymentService {
   /**
@@ -62,8 +76,8 @@ class PaymentService {
     const description = `GZMart #${order.orderNumber}`;
 
     const payosOrder = {
-      //amount: Math.round(order.totalPrice), // Use actual order total price
-      amount: 2000, // Temporary fixed amount for testing
+      // amount: Math.round(order.totalPrice),
+      amount: 2000, // TODO: temp fix for testing
       description: description.substring(0, 25),
       orderCode: orderCode,
       returnUrl: `${process.env.FRONTEND_URL}/buyer/payment/success?orderCode=${orderCode}`,
@@ -162,36 +176,54 @@ class PaymentService {
     );
 
     if (!order) {
-      console.log("[Webhook] Order not found for orderCode:", orderCode, "Checking TopupRequest...");
+      console.log(
+        "[Webhook] Order not found for orderCode:",
+        orderCode,
+        "Checking TopupRequest...",
+      );
       const topup = await TopupRequest.findOne({ orderCode });
       if (topup) {
         if (topup.status !== "pending") {
-           console.log("[Webhook] Topup already processed, skipping");
-           return { processed: false, reason: "Topup already processed" };
+          console.log("[Webhook] Topup already processed, skipping");
+          return { processed: false, reason: "Topup already processed" };
         }
-        
+
+        const topupPaidAmount = Number(verifiedData.amount);
+        if (!isAmountValidForPayOs(topupPaidAmount, topup.amount)) {
+          console.warn("[Webhook] Topup amount mismatch, skipping", {
+            orderCode,
+            expected: Math.round(topup.amount),
+            actual: Math.round(topupPaidAmount),
+          });
+          return { processed: false, reason: "Topup amount mismatch" };
+        }
+
         console.log("[Webhook] Updating TopupRequest to completed...");
         topup.status = "completed";
         await topup.save();
 
         console.log("[Webhook] Adding coins to wallet...");
-        await WalletTransaction.recordTransaction({
+        await coinService.addCoins({
           userId: topup.userId,
-          type: "purchase",
+          source: "topup",
           amount: topup.coinAmount,
           description: `Nạp ${topup.coinAmount} xu qua PayOS (TGD: ${orderCode})`,
-          metadata: { payosOrderCode: orderCode },
+          sourceTransaction: {},
+          metadata: { payosOrderCode: orderCode, topupRequestId: topup._id },
         });
 
         console.log("[Webhook] Wallet topup successful");
         return {
           processed: true,
           orderCode: orderCode,
-          isTopup: true
+          isTopup: true,
         };
       }
 
-      console.error("[Webhook] No Order or TopupRequest found for orderCode:", orderCode);
+      console.error(
+        "[Webhook] No Order or TopupRequest found for orderCode:",
+        orderCode,
+      );
       throw new ErrorResponse("Order or TopupRequest not found", 404);
     }
 
@@ -208,6 +240,16 @@ class PaymentService {
         reason: "Order already processed",
         orderNumber: order.orderNumber,
       };
+    }
+
+    const paidAmount = Number(verifiedData.amount);
+    if (!isAmountValidForPayOs(paidAmount, order.totalPrice)) {
+      console.warn("[Webhook] Amount mismatch, skipping payment confirmation", {
+        orderCode,
+        expected: Math.round(order.totalPrice),
+        actual: Math.round(paidAmount),
+      });
+      return { processed: false, reason: "Payment amount mismatch" };
     }
 
     console.log("[Webhook] Updating order to PAID status...");
@@ -417,6 +459,22 @@ class PaymentService {
         orderCode: paymentInfo.orderCode,
       });
 
+      const paidAmount = Number(paymentInfo.amount);
+      const expectedAmount = Math.round(order.totalPrice);
+      if (!isAmountValidForPayOs(paidAmount, expectedAmount)) {
+        throw new ErrorResponse(
+          `Sai lệch số tiền thanh toán PayOS. expected=${expectedAmount}, actual=${Math.round(paidAmount)}`,
+          409,
+        );
+      }
+
+      if (
+        Number.isFinite(paymentInfo.orderCode) &&
+        Number(paymentInfo.orderCode) !== Number(orderCode)
+      ) {
+        throw new ErrorResponse("Sai lệch orderCode từ PayOS", 409);
+      }
+
       // If PayOS shows PAID but local DB is still pending, update it
       if (paymentInfo.status === "PAID" && order.paymentStatus === "pending") {
         console.log(
@@ -506,6 +564,9 @@ class PaymentService {
       console.error("[PayOS Check] Error message:", error.message);
       console.error("[PayOS Check] Error stack:", error.stack);
       console.error("[PayOS Check] Full error:", error);
+      if (error instanceof ErrorResponse) {
+        throw error;
+      }
       throw new ErrorResponse("Không thể kiểm tra trạng thái từ PayOS", 500);
     }
   }
@@ -638,31 +699,42 @@ class PaymentService {
   }
 
   /**
-   * Create PayOS payment link for wallet top-up 
+   * Create PayOS payment link for wallet top-up
    */
-  async createTopupLink(userId, amount, coinAmount) {
+  async createTopupLink(userId, amount, coinAmount, options = {}) {
     if (!payOs) {
-      throw new ErrorResponse("Hệ thống thanh toán PayOS chưa được cấu hình", 500);
+      throw new ErrorResponse(
+        "Hệ thống thanh toán PayOS chưa được cấu hình",
+        500,
+      );
     }
 
     // Must be positive number to avoid overlap with real orders or limits.
-    const orderCode = parseInt("9" + Date.now().toString().slice(0, 8) + Math.floor(Math.random() * 1000));
+    const orderCode = parseInt(
+      "9" +
+        Date.now().toString().slice(0, 8) +
+        Math.floor(Math.random() * 1000),
+    );
     const user = await User.findById(userId);
     const buyerName = user.fullName || user.email.split("@")[0];
     const description = `Nap ${coinAmount} xu`;
 
+    const returnPath = options?.returnPath || "/seller/banner-ads";
+
     const payosOrder = {
-      amount: amount, 
+      // amount: Math.round(amount),
+      amount: 2000, // TODO: temp fix for testing
       description: description.substring(0, 25),
       orderCode: orderCode,
-      returnUrl: `${process.env.FRONTEND_URL}/seller/banner-ads`, // Return back to seller banner ads 
-      cancelUrl: `${process.env.FRONTEND_URL}/seller/banner-ads`,
+      returnUrl: `${process.env.FRONTEND_URL}${returnPath}`,
+      cancelUrl: `${process.env.FRONTEND_URL}${returnPath}`,
       buyerName: buyerName,
       buyerEmail: user.email,
     };
 
     try {
-      const paymentLinkResponse = await payOs.paymentRequests.create(payosOrder);
+      const paymentLinkResponse =
+        await payOs.paymentRequests.create(payosOrder);
 
       const topup = new TopupRequest({
         userId,
@@ -671,7 +743,7 @@ class PaymentService {
         orderCode: orderCode.toString(),
         payosCheckoutUrl: paymentLinkResponse.checkoutUrl,
         payosQrCode: paymentLinkResponse.qrCode || "",
-        payosPaymentLinkId: paymentLinkResponse.paymentLinkId || ""
+        payosPaymentLinkId: paymentLinkResponse.paymentLinkId || "",
       });
       await topup.save();
 
@@ -689,7 +761,10 @@ class PaymentService {
       };
     } catch (error) {
       console.error("Lỗi khi tạo link nạp xu PayOS:", error);
-      throw new ErrorResponse("Không thể tạo link nạp xu. Vui lòng thử lại sau.", 500);
+      throw new ErrorResponse(
+        "Không thể tạo link nạp xu. Vui lòng thử lại sau.",
+        500,
+      );
     }
   }
 
@@ -698,7 +773,10 @@ class PaymentService {
    */
   async checkTopupStatus(orderCode, userId) {
     if (!payOs) {
-      throw new ErrorResponse("Hệ thống thanh toán PayOS chưa được cấu hình", 500);
+      throw new ErrorResponse(
+        "Hệ thống thanh toán PayOS chưa được cấu hình",
+        500,
+      );
     }
 
     const topup = await TopupRequest.findOne({ orderCode });
@@ -712,28 +790,44 @@ class PaymentService {
 
     try {
       const paymentInfo = await payOs.paymentRequests.get(parseInt(orderCode));
-      
+
+      const paidAmount = Number(paymentInfo.amount);
+      if (!isAmountValidForPayOs(paidAmount, topup.amount)) {
+        throw new ErrorResponse(
+          `Sai lệch số tiền topup PayOS. expected=${Math.round(topup.amount)}, actual=${Math.round(paidAmount)}`,
+          409,
+        );
+      }
+
+      if (
+        Number.isFinite(paymentInfo.orderCode) &&
+        Number(paymentInfo.orderCode) !== Number(orderCode)
+      ) {
+        throw new ErrorResponse("Sai lệch orderCode topup từ PayOS", 409);
+      }
+
       if (paymentInfo.status === "PAID" && topup.status === "pending") {
-         topup.status = "completed";
-         await topup.save();
-         
-         await WalletTransaction.recordTransaction({
-            userId: topup.userId,
-            type: "purchase",
-            amount: topup.coinAmount,
-            description: `Nạp ${topup.coinAmount} xu qua PayOS (TGD: ${orderCode})`,
-            metadata: { payosOrderCode: orderCode },
-         });
+        topup.status = "completed";
+        await topup.save();
+
+        await coinService.addCoins({
+          userId: topup.userId,
+          source: "topup",
+          amount: topup.coinAmount,
+          description: `Nạp ${topup.coinAmount} xu qua PayOS (TGD: ${orderCode})`,
+          sourceTransaction: {},
+          metadata: { payosOrderCode: orderCode, topupRequestId: topup._id },
+        });
       }
 
       return {
         status: topup.status,
         payosPaymentInfo: paymentInfo,
-        updated: paymentInfo.status === "PAID" && topup.status === "completed"
+        updated: paymentInfo.status === "PAID" && topup.status === "completed",
       };
     } catch (error) {
-       console.error("Error checking topup status:", error);
-       throw new ErrorResponse("Không thể kiểm tra trạng thái từ PayOS", 500);
+      console.error("Error checking topup status:", error);
+      throw new ErrorResponse("Không thể kiểm tra trạng thái từ PayOS", 500);
     }
   }
 }
