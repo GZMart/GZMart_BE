@@ -6,6 +6,60 @@ import LiveSession from "../models/LiveSession.js";
 import Product from "../models/Product.js";
 import Voucher from "../models/Voucher.js";
 import crypto from "crypto";
+import * as livestreamHandoff from "../services/livestreamHandoff.service.js";
+import * as livestreamStatsService from "../services/livestreamStats.service.js";
+
+/** POST /api/livestream/session/:sessionId/handoff — mint one-time link token (scheduled sessions only). */
+export async function createSessionHandoff(req, res, next) {
+  try {
+    const { sessionId } = req.params;
+    if (req.user.role !== "seller") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const session = await LiveSession.findById(sessionId).lean();
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+    if (String(session.shopId) !== String(req.user._id)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    if (session.status !== "scheduled") {
+      return res.status(400).json({
+        message: "Handoff is only available before going live (session must be scheduled).",
+      });
+    }
+    const { token, expiresAt } = livestreamHandoff.createHandoff(sessionId, req.user._id);
+    res.json({ success: true, data: { token, expiresAt } });
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** POST /api/livestream/handoff/exchange — consume token; requires same seller account logged in. */
+export async function exchangeHandoff(req, res, next) {
+  try {
+    const { token } = req.body || {};
+    if (!token || typeof token !== "string") {
+      return res.status(400).json({ message: "token required" });
+    }
+    if (req.user.role !== "seller") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const row = livestreamHandoff.consumeHandoff(token);
+    if (!row) {
+      return res.status(400).json({ message: "Invalid or expired handoff token" });
+    }
+    if (String(row.sellerId) !== String(req.user._id)) {
+      return res.status(403).json({ message: "This link was issued for another account" });
+    }
+    res.json({
+      success: true,
+      data: { sessionId: row.sessionId, sellerId: row.sellerId },
+    });
+  } catch (e) {
+    next(e);
+  }
+}
 
 export async function createSession(req, res, next) {
   try {
@@ -56,6 +110,37 @@ export async function endSession(req, res, next) {
       req.user._id
     );
     res.json(session);
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** GET /api/livestream/session/:sessionId/stats — seller-only revenue & units for this session */
+export async function getSessionStats(req, res, next) {
+  try {
+    if (req.user.role !== "seller") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const { sessionId } = req.params;
+    const data = await livestreamStatsService.getSessionStats(sessionId, req.user._id);
+    res.json({ success: true, data });
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** GET /api/livestream/sessions/history — seller-only paginated ended sessions + revenue summary */
+export async function getSessionsHistory(req, res, next) {
+  try {
+    if (req.user.role !== "seller") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const { page, limit } = req.query;
+    const data = await livestreamStatsService.listEndedSessionsHistory(req.user._id, {
+      page,
+      limit,
+    });
+    res.json({ success: true, data });
   } catch (e) {
     next(e);
   }

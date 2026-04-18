@@ -31,6 +31,8 @@ import {
   getRewardPointWithdrawals,
   getAllRewardPointWithdrawals,
   processRewardPointWithdrawal,
+  getCustomerAgeAnalytics,
+  getCustomerAgeAnalyticsByProduct,
 } from "../controllers/dashboard.controller.js";
 import { protect, authorize } from "../middlewares/auth.middleware.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
@@ -162,7 +164,7 @@ router.get("/growth-comparison", asyncHandler(getGrowthComparison));
  * @route   GET /api/dashboard/profit-loss
  * @desc    Get profit and loss analysis by period
  * @access  Private (Seller, Admin)
- * @query   period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'daily')
+ * @query   period: '7days' | '30days' | '90days' | '12months' | 'yearly' (default: '30days')
  * @returns Array of { _id, revenue, cost, quantity, orders, profit } grouped by period
  */
 router.get("/profit-loss", asyncHandler(getProfitLossAnalysis));
@@ -171,7 +173,7 @@ router.get("/profit-loss", asyncHandler(getProfitLossAnalysis));
  * @route   GET /api/dashboard/expense
  * @desc    Get expense analysis (product cost vs shipping cost)
  * @access  Private (Seller, Admin)
- * @query   period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'monthly')
+ * @query   period: '7days' | '30days' | '90days' | '12months' | 'yearly' (default: '12months')
  * @returns Object with { totalProductCost, totalShippingCost, totalExpense, breakdownByType }
  */
 router.get("/expense", asyncHandler(getExpenseAnalysis));
@@ -180,7 +182,7 @@ router.get("/expense", asyncHandler(getExpenseAnalysis));
  * @route   GET /api/dashboard/top-products-profit
  * @desc    Get top selling products ranked by quantity with profit analysis
  * @access  Private (Seller, Admin)
- * @query   limit: number (default: 10), period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'monthly')
+ * @query   limit: number (default: 10), period: '7days' | '30days' | '90days' | '12months' | 'yearly' (default: '12months')
  * @returns Array of { _id, name, totalQuantity, totalRevenue, cost, profit, profitMargin }
  */
 router.get(
@@ -192,7 +194,7 @@ router.get(
  * @route   GET /api/dashboard/product-by-category
  * @desc    Get product analytics grouped by category (revenue, quantity, profit, margin)
  * @access  Private (Seller, Admin)
- * @query   limit: number (default: 8), period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' (default: 'monthly')
+ * @query   limit: number (default: 8), period: '7days' | '30days' | '90days' | '12months' | 'yearly' (default: '12months')
  * @returns { categories: [], totalRevenue, totalQuantity, totalProfit, period }
  */
 router.get(
@@ -424,5 +426,26 @@ router.get("/admin/reward-point-withdrawals", asyncHandler(getAllRewardPointWith
  * @body    { action: "approve" | "reject", rejectedReason }
  */
 router.put("/admin/reward-point-withdrawals/:transactionId/process", asyncHandler(processRewardPointWithdrawal));
+
+/**
+ * @route   GET /api/dashboard/customer-age-analytics
+ * @desc    Get customer age analytics for shop (overall)
+ * @access  Private (Seller, Admin)
+ * @query   period: '7days' | '30days' | '90days' | '12months' | 'yearly' (default: '12months')
+ * @query   startDate: ISO date string (custom range)
+ * @query   endDate: ISO date string (custom range)
+ */
+router.get("/customer-age-analytics", asyncHandler(getCustomerAgeAnalytics));
+
+/**
+ * @route   GET /api/dashboard/customer-age-analytics-by-product
+ * @desc    Get customer age analytics grouped by product
+ * @access  Private (Seller, Admin)
+ * @query   period: '7days' | '30days' | '90days' | '12months' | 'yearly' (default: '12months')
+ * @query   startDate: ISO date string (custom range)
+ * @query   endDate: ISO date string (custom range)
+ * @query   limit: number (default: 10)
+ */
+router.get("/customer-age-analytics-by-product", asyncHandler(getCustomerAgeAnalyticsByProduct));
 
 export default router;
