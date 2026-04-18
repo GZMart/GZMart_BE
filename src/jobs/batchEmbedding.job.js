@@ -62,7 +62,11 @@ async function runBatchEmbedding() {
 
     for (const product of products) {
       try {
-        const text = [product.name, product.brand].filter(Boolean).join(" | ");
+        const text = [
+          product.name,
+          (await Category.findById(product.categoryId).select("name").lean())?.name || "",
+          product.brand || "",
+        ].filter(Boolean).join(" | ");
         if (!text.trim()) {
           console.warn(`[BatchEmbed] Empty text for product ${product._id}, skipping`);
           failCount++;
