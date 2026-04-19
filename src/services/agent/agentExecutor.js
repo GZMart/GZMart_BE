@@ -4,6 +4,7 @@ import { sanitizePromptInput } from "../../utils/promptSanitizer.js";
 
 // Import all tools to trigger registerTool() calls
 import "./tools/productSearch.js";
+import "./tools/outfitBundle.js";
 import "./tools/dealVoucherInfo.js";
 import "./tools/categoryBrowse.js";
 import "./tools/reviewAnalysis.js";
@@ -76,7 +77,9 @@ ${combinedContext}
 2. Mỗi sản phẩm PHẢI kèm tag [[product:ID]] trên dòng riêng. ID lấy từ [ID:...] trong dữ liệu.
 3. KHÔNG viết lại tên, giá, rating — hệ thống tự hiển thị card. Chỉ viết 1 câu về điểm nổi bật.
 4. Nếu có deal/voucher, nhắc ngắn gọn.
-5. Nếu không tìm thấy, nói thẳng.`;
+5. Nếu không tìm thấy, nói thẳng.
+6. Nếu dữ liệu là "GỢI Ý SET ĐỒ", nhóm gợi ý theo từng loại (áo, quần, giày...) và mỗi sản phẩm vẫn cần [[product:ID]].
+7. Không trả lời kiến thức ngoài GZMart (thời tiết, tin tức, bài tập, chính trị...). Nếu người dùng hỏi lệch chủ đề mua sắm, từ chối ngắn và mời họ hỏi về sản phẩm trên GZMart.`;
   } else if (role === "seller") {
     prompt += `
 1. Trình bày số liệu rõ ràng, dùng emoji để dễ đọc.

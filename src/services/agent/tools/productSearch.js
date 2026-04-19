@@ -8,16 +8,21 @@ import User from "../../../models/User.js";
 import embeddingService from "../../embedding.service.js";
 import { registerTool } from "../tools.js";
 import { escapeRegex, extractSearchTerms } from "../../../utils/productSearchQuery.js";
+import { normalizeBuyerQuery } from "../../../utils/buyerQueryNormalizer.js";
 
 const TOP_K = 10;
 
-async function execute({ query, limit = TOP_K, categoryId = null }) {
-  const queryEmbedding = await embeddingService.getEmbedding(query);
+/**
+ * Pipeline tìm sản phẩm cho agent (dùng chung outfit + productSearch).
+ */
+export async function runProductSearch({ query, limit = TOP_K, categoryId = null }) {
+  const { normalized } = normalizeBuyerQuery(query);
+  const effectiveQuery = normalized || query;
 
-  // ─── Stage 1: Text filter — fast, precise, no cross-category bleed ────
-  // Build candidate pool from name/brand/tags using OR per keyword so natural
-  // Vietnamese ("tôi cần tìm quần áo") still matches products with "quần" or "áo".
-  const terms = extractSearchTerms(query);
+  const queryEmbedding = await embeddingService.getEmbedding(effectiveQuery);
+
+  // ─── Stage 1: Text filter — OR per keyword (natural Vietnamese)
+  const terms = extractSearchTerms(effectiveQuery);
   const orConditions = [];
   for (const term of terms) {
     const rx = escapeRegex(term);
@@ -42,9 +47,8 @@ async function execute({ query, limit = TOP_K, categoryId = null }) {
 
   const candidateIds = textCandidates.map((p) => p._id);
 
-  // ─── Stage 2: Vector rank — re-rank candidates by semantic similarity ─
+  // ─── Stage 2: Vector rank
   let products = [];
-  let vectorSearchHadResults = false;
 
   if (candidateIds.length > 0) {
     try {
@@ -81,18 +85,30 @@ async function execute({ query, limit = TOP_K, categoryId = null }) {
         { $limit: limit },
       ]);
       products = rawResults;
-      vectorSearchHadResults = rawResults.length > 0;
     } catch (err) {
       console.warn("[productSearch] Vector search failed, falling back to text:", err.message);
     }
   }
 
-  // ─── Fallback: if vector returned nothing, use pure text results ───────
   if (products.length === 0 && textCandidates.length > 0) {
     products = textCandidates.slice(0, limit);
   }
 
   if (products.length === 0) {
+    return { context: "Không tìm thấy sản phẩm phù hợp.", products: [] };
+  }
+
+  return finalizeProductAgentContext(
+    products,
+    `=== SẢN PHẨM TÌM ĐƯỢC (${products.length} kết quả) ===`,
+  );
+}
+
+/**
+ * Gắn deal/voucher/review và format context cho LLM (dùng chung outfit).
+ */
+export async function finalizeProductAgentContext(products, headerLine) {
+  if (!products?.length) {
     return { context: "Không tìm thấy sản phẩm phù hợp.", products: [] };
   }
 
@@ -134,8 +150,6 @@ async function execute({ query, limit = TOP_K, categoryId = null }) {
   sellers.forEach((s) => { sellerMap[s._id.toString()] = s.shopName || s.fullName || "Shop"; });
   const dealMap = {};
   deals.forEach((d) => { const pid = d.productId.toString(); if (!dealMap[pid]) dealMap[pid] = []; dealMap[pid].push(d); });
-  const reviewMap = {};
-  reviews.forEach((r) => { reviewMap[r._id.toString()] = r; });
 
   const productLines = products.map((p) => {
     const pid = p._id.toString();
@@ -180,7 +194,7 @@ async function execute({ query, limit = TOP_K, categoryId = null }) {
     return line;
   });
 
-  const context = `=== SẢN PHẨM TÌM ĐƯỢC (${products.length} kết quả) ===\n${productLines.join("\n\n")}`;
+  const context = `${headerLine}\n${productLines.join("\n\n")}`;
   return { context, products };
 }
 
@@ -197,5 +211,5 @@ registerTool("productSearch", {
     "rẻ", "đắt", "budget", "dưới", "trên",
     "hot", "bán chạy", "best seller", "mới",
   ],
-  execute,
+  execute: (params) => runProductSearch(params),
 });

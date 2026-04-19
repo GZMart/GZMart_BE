@@ -352,6 +352,11 @@ const SHOPPING_KEYWORDS = [
   "chào", "hello", "hi", "hey", "xin chào", "alo",
   "cảm ơn", "thanks", "thank", "cám ơn",
   "hỏi", "giúp", "hỗ trợ", "support",
+  "bộ đồ", "thời trang",
+];
+
+const OFF_TOPIC_STRONG = [
+  "thời tiết", "weather", "bitcoin", "cờ bạc", "hack", "virus",
 ];
 
 const CHAT_MANAGEMENT_KEYWORDS = [
@@ -362,7 +367,9 @@ const CHAT_MANAGEMENT_KEYWORDS = [
 function isShoppingRelated(message) {
   const lower = message.toLowerCase();
   if (CHAT_MANAGEMENT_KEYWORDS.some((kw) => lower.includes(kw))) return true;
-  return SHOPPING_KEYWORDS.some((kw) => lower.includes(kw));
+  if (SHOPPING_KEYWORDS.some((kw) => lower.includes(kw))) return true;
+  if (OFF_TOPIC_STRONG.some((kw) => lower.includes(kw))) return false;
+  return false;
 }
 
 async function chat({ message, conversationHistory = [], role = "buyer", userId, sellerId }) {
