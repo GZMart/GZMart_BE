@@ -40,4 +40,26 @@ describe("productMatchesGenderIntent", () => {
     expect(out).toHaveLength(1);
     expect(out[0].name).toContain("nam");
   });
+
+  test("loại theo tên category (Thời trang nữ) dù tên SP trung tính", () => {
+    const p = { name: "Áo sơ mi basic", tags: "", categoryId: "507f1f77bcf86cd799439011" };
+    expect(
+      productMatchesGenderIntent(p, "male", "Thời trang nữ"),
+    ).toBe(false);
+  });
+
+  test("filterProductsByGenderIntent dùng map categoryId → name", () => {
+    const cid = "507f1f77bcf86cd799439012";
+    const list = [
+      { name: "SP 1", tags: "", categoryId: cid },
+      { name: "SP 2", tags: "", categoryId: "507f1f77bcf86cd799439099" },
+    ];
+    const map = {
+      [cid]: "Quần jean nam",
+      "507f1f77bcf86cd799439099": "Váy maxi",
+    };
+    const out = filterProductsByGenderIntent(list, "female", map);
+    expect(out.map((x) => x.name)).toContain("SP 2");
+    expect(out.map((x) => x.name)).not.toContain("SP 1");
+  });
 });

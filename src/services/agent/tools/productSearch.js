@@ -17,6 +17,19 @@ import {
 
 const TOP_K = 10;
 
+/** Load Category.name theo categoryId trên danh sách sản phẩm (lọc giới + context). */
+async function loadCategoryIdToNameMap(products) {
+  const raw = [...new Set(products.map((p) => p.categoryId).filter(Boolean))];
+  if (!raw.length) return {};
+  const ids = raw.map((id) =>
+    typeof id === "string" ? new mongoose.Types.ObjectId(id) : id,
+  );
+  const rows = await Category.find({ _id: { $in: ids } }).select("name").lean();
+  const map = {};
+  for (const c of rows) map[c._id.toString()] = c.name || "";
+  return map;
+}
+
 /**
  * Pipeline tìm sản phẩm cho agent (dùng chung outfit + productSearch).
  */
@@ -103,8 +116,10 @@ export async function runProductSearch({ query, limit = TOP_K, categoryId = null
     products = textCandidates.slice(0, limit);
   }
 
+  const categoryIdToName = await loadCategoryIdToNameMap(products);
+
   const countBeforeGender = products.length;
-  products = filterProductsByGenderIntent(products, genderIntent);
+  products = filterProductsByGenderIntent(products, genderIntent, categoryIdToName);
   if (countBeforeGender > 0 && products.length === 0 && genderIntent) {
     return {
       context:

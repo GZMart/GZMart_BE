@@ -1,4 +1,16 @@
 /**
+ * Tên danh mục mang tính “khu vực nữ” — lọc khi user hỏi đồ nam.
+ * (Kết hợp với tên SP; có unisex thì không loại.)
+ */
+const CATEGORY_FEMALE_SIGNAL =
+  /(thời trang nữ|đồ nữ|phụ nữ|thiếu nữ|cho nữ|váy|đầm|bikini|nữ\b|mỹ phẩm nữ|túi nữ|giày cao gót)/i;
+
+const CATEGORY_MALE_SIGNAL =
+  /(thời trang nam|đồ nam|nam giới|cho nam|đàn ông|balo nam|túi nam)/i;
+
+const CATEGORY_UNISEX_SIGNAL = /(unisex|nam nữ|nam & nữ|cả nam và nữ|đôi nam nữ)/i;
+
+/**
  * Suy ra giới từ câu tiếng Việt (không có field gender trên Product — lọc theo text name/tags).
  * @returns {"male"|"female"|null}
  */
@@ -38,27 +50,60 @@ const FEMALE_TEXT_REJECT_MALE =
 const MALE_TEXT_REJECT_FEMALE =
   /(\bNAM\b|NAM[\s\|\-\/]|\(NAM\)|Đồ nam|đồ nam|Cho nam|cho nam|Thời trang nam|nam giới)/i;
 
-/**
- * Lọc mảng sản phẩm đã lấy từ DB (hàng rào sau vector/text).
- */
-export function filterProductsByGenderIntent(products, intent) {
-  if (!intent || !products?.length) return products;
-  return products.filter((p) => productMatchesGenderIntent(p, intent));
+function categoryConflictsMaleIntent(categoryName) {
+  const c = String(categoryName || "").trim();
+  if (!c) return false;
+  if (CATEGORY_UNISEX_SIGNAL.test(c)) return false;
+  if (CATEGORY_FEMALE_SIGNAL.test(c)) return true;
+  /** Danh mục kết thúc bằng "nữ" (vd. Áo thun nữ) */
+  if (/(^|[\s\-/])nữ$/i.test(c)) return true;
+  return false;
 }
 
-export function productMatchesGenderIntent(product, intent) {
+function categoryConflictsFemaleIntent(categoryName) {
+  const c = String(categoryName || "").trim();
+  if (!c) return false;
+  if (CATEGORY_UNISEX_SIGNAL.test(c)) return false;
+  if (CATEGORY_MALE_SIGNAL.test(c)) return true;
+  /** Danh mục kết thúc bằng "nam" (vd. Quần jean nam) — coi là khu nam */
+  if (/(^|[\s\-/])nam$/i.test(c)) return true;
+  return false;
+}
+
+/**
+ * Lọc mảng sản phẩm đã lấy từ DB (hàng rào sau vector/text).
+ * @param {Record<string, string>} [categoryIdToName] — map categoryId (string) → Category.name
+ */
+export function filterProductsByGenderIntent(products, intent, categoryIdToName = {}) {
+  if (!intent || !products?.length) return products;
+  return products.filter((p) => {
+    const cid = p.categoryId != null ? String(p.categoryId) : "";
+    const catName = cid && categoryIdToName[cid] != null ? categoryIdToName[cid] : "";
+    return productMatchesGenderIntent(p, intent, catName);
+  });
+}
+
+/**
+ * @param {string} [categoryName] — tên danh mục (Category.name), đã resolve từ categoryId
+ */
+export function productMatchesGenderIntent(product, intent, categoryName = "") {
   const name = String(product?.name || "");
   const tags = typeof product?.tags === "string" ? product.tags : "";
-  const blob = `${name} ${tags}`;
+  const cat = String(categoryName || "").trim();
+  const catLower = cat.toLowerCase();
 
   if (intent === "male") {
+    if (categoryConflictsMaleIntent(catLower)) return false;
     if (FEMALE_TEXT_REJECT_MALE.test(name) || FEMALE_TEXT_REJECT_MALE.test(tags)) return false;
+    if (FEMALE_TEXT_REJECT_MALE.test(cat)) return false;
     if (/(^|[\s,;])(nữ)(\s|$|[.,!?])/i.test(name) && !/(nam|unisex)/i.test(name)) return false;
     return true;
   }
 
   if (intent === "female") {
+    if (categoryConflictsFemaleIntent(catLower)) return false;
     if (MALE_TEXT_REJECT_FEMALE.test(name) || MALE_TEXT_REJECT_FEMALE.test(tags)) return false;
+    if (MALE_TEXT_REJECT_FEMALE.test(cat)) return false;
     if (/(^|[\s,;])(nam)(\s|$|[.,!?])/i.test(name) && !/(nữ|unisex)/i.test(name)) return false;
     return true;
   }
