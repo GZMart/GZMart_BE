@@ -36,7 +36,8 @@ export const createOrder = asyncHandler(async (req, res) => {
  * @access  Private
  */
 export const getSellerOrders = asyncHandler(async (req, res) => {
-  const { page, limit, status, sortBy } = req.query;
+  const { page, limit, status, sortBy, hasPreOrder, preOrderSlaBreached } =
+    req.query;
 
   const result = await orderSellerService.getSellerOrders(
     {
@@ -44,6 +45,8 @@ export const getSellerOrders = asyncHandler(async (req, res) => {
       limit: Number(limit) || 10,
       status,
       sortBy: sortBy || "createdAt",
+      hasPreOrder,
+      preOrderSlaBreached,
     },
     req.user._id,
   );

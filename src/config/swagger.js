@@ -254,6 +254,39 @@ const options = {
               type: "string",
               format: "date-time",
             },
+            preOrderSlaBreached: {
+              type: "boolean",
+              description:
+                "True if any line is pre-order past estimatedShipBy while order not yet shipped (buyer/seller enriched responses).",
+            },
+          },
+        },
+        OrderItem: {
+          type: "object",
+          description: "Line item on an order; pre-order fields are snapshot at checkout.",
+          properties: {
+            _id: { type: "string" },
+            orderId: { type: "string" },
+            productId: { type: "string" },
+            modelId: { type: "string" },
+            sku: { type: "string" },
+            quantity: { type: "number" },
+            price: { type: "number" },
+            subtotal: { type: "number" },
+            isPreOrder: {
+              type: "boolean",
+              description: "Snapshot: preOrderDaysSnapshot > 0 at purchase",
+            },
+            preOrderDaysSnapshot: {
+              type: "number",
+              description: "Product.preOrderDays at purchase",
+            },
+            estimatedShipBy: {
+              type: "string",
+              format: "date-time",
+              nullable: true,
+              description: "Calendar SLA deadline from policy (order anchor + snapshot days)",
+            },
           },
         },
       },

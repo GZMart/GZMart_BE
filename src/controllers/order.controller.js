@@ -24,6 +24,11 @@ import {
 import mongoose from "mongoose";
 import { isPayOsConfigured } from "../config/payos.config.js";
 import { getSocketIO } from "../utils/socketIO.js";
+import {
+  buildPreOrderFieldsFromProduct,
+  orderHasPreOrderSlaBreach,
+  isPreOrderProduct,
+} from "../utils/preOrderSla.js";
 
 function emitLivestreamSessionStatsTick(liveSessionId) {
   if (!liveSessionId) {
@@ -433,7 +438,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   if (liveItems && liveItems.length > 0) {
     for (const liveItem of liveItems) {
       const product = await Product.findById(liveItem.productId)
-        .select("name models sellerId images tiers")
+        .select("name models sellerId images tiers preOrderDays")
         .lean();
       if (!product) {
         return next(
@@ -493,7 +498,10 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           ),
         );
       }
-      if (targetModel.stock < liveItem.quantity) {
+      if (
+        !isPreOrderProduct(product) &&
+        targetModel.stock < liveItem.quantity
+      ) {
         return next(
           new ErrorResponse(
             `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
@@ -676,19 +684,21 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       );
     }
 
-    const { available, currentStock } = await checkStock(
-      product._id,
-      model.sku,
-      item.quantity,
-      model.stock,
-    );
-    if (!available) {
-      return next(
-        new ErrorResponse(
-          `Insufficient stock for ${product.name}. Available: ${currentStock}`,
-          400,
-        ),
+    if (!isPreOrderProduct(product)) {
+      const { available, currentStock } = await checkStock(
+        product._id,
+        model.sku,
+        item.quantity,
+        model.stock,
       );
+      if (!available) {
+        return next(
+          new ErrorResponse(
+            `Insufficient stock for ${product.name}. Available: ${currentStock}`,
+            400,
+          ),
+        );
+      }
     }
 
     // Check pricing: Flash Sale > Shop Program > Original
@@ -923,6 +933,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       { session },
     );
     const createdOrder = order[0];
+    const preOrderAnchor = createdOrder.createdAt || new Date();
 
     // Deduct GZCoin first (expiring soon packets are consumed first)
     const coinDeduction = await deductCoinsForOrder({
@@ -950,6 +961,10 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       finalPrice,
       isShopProgram,
     } of validItems) {
+      const preOrderSnap = buildPreOrderFieldsFromProduct(
+        product.preOrderDays,
+        preOrderAnchor,
+      );
       // Create Order Item
       const orderItem = await OrderItem.create(
         [
@@ -968,6 +983,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
             originalPrice: model.price,
             isFlashSale: flashSaleInfo.isFlashSale,
             isShopProgram,
+            ...preOrderSnap,
           },
         ],
         { session },
@@ -980,7 +996,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     for (const liveItem of liveItems || []) {
       // Re-fetch product and model within transaction for consistency
       const product = await Product.findById(liveItem.productId)
-        .select("name models sellerId images tiers")
+        .select("name models sellerId images tiers preOrderDays")
         .lean()
         .session(session);
 
@@ -1035,7 +1051,10 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           400,
         );
       }
-      if (targetModel.stock < liveItem.quantity) {
+      if (
+        !isPreOrderProduct(product) &&
+        targetModel.stock < liveItem.quantity
+      ) {
         throw new ErrorResponse(
           `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
           400,
@@ -1043,6 +1062,10 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       }
 
       const effectivePrice = liveItem.price ?? targetModel.price ?? 0;
+      const preOrderSnapLive = buildPreOrderFieldsFromProduct(
+        product.preOrderDays,
+        preOrderAnchor,
+      );
 
       // Create OrderItem document
       const orderItem = await OrderItem.create(
@@ -1078,6 +1101,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
             name: product.name,
             isFlashSale: false,
             isShopProgram: false,
+            ...preOrderSnapLive,
           },
         ],
         { session },
@@ -1209,9 +1233,11 @@ export const getMyOrders = asyncHandler(async (req, res) => {
         },
       });
 
+      const plainItems = items.map((i) => (i.toObject ? i.toObject() : i));
       return {
         ...order.toObject(),
-        items,
+        items: plainItems,
+        preOrderSlaBreached: orderHasPreOrderSlaBreach(order.status, plainItems),
       };
     }),
   );
@@ -1404,11 +1430,13 @@ export const getOrderById = asyncHandler(async (req, res, next) => {
     });
     console.log(`[DEBUG] Items found: ${items.length}`);
 
+    const plainItems = items.map((i) => (i.toObject ? i.toObject() : i));
     res.status(200).json({
       success: true,
       data: {
         ...order.toObject(),
-        items,
+        items: plainItems,
+        preOrderSlaBreached: orderHasPreOrderSlaBreach(order.status, plainItems),
       },
     });
   } catch (err) {

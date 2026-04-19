@@ -2,11 +2,23 @@ import mongoose from "mongoose";
 import Order from "../models/Order.js";
 import OrderItem from "../models/OrderItem.js";
 import Product from "../models/Product.js";
+import InventoryItem from "../models/InventoryItem.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import ghnService from "./ghn.service.js";
 import User from "../models/User.js";
 import { simulateGHNWebhook } from "../utils/simulateGHNWebhook.js";
 import * as orderTrackingService from "./orderTracking.service.js";
+import {
+  buildPreOrderFieldsFromProduct,
+  orderHasPreOrderSlaBreach,
+  PREORDER_SLA_BREACH_SUPPRESSED_STATUSES,
+} from "../utils/preOrderSla.js";
+
+function truthyQueryFlag(value) {
+  if (value == null || value === "") return false;
+  const s = String(value).toLowerCase();
+  return s === "1" || s === "true" || s === "yes";
+}
 
 /**
  * Create a new order
@@ -71,8 +83,15 @@ export const createOrder = async (orderData) => {
   // Create order items if provided
   if (items && items.length > 0) {
     const orderItems = await Promise.all(
-      items.map((item) =>
-        OrderItem.create({
+      items.map(async (item) => {
+        const product = await Product.findById(item.productId)
+          .select("preOrderDays")
+          .lean();
+        const preSnap = buildPreOrderFieldsFromProduct(
+          product?.preOrderDays,
+          order.createdAt,
+        );
+        return OrderItem.create({
           orderId: order._id,
           productId: item.productId,
           modelId: item.modelId,
@@ -83,8 +102,9 @@ export const createOrder = async (orderData) => {
           subtotal: item.subtotal || item.quantity * item.price,
           originalPrice: item.originalPrice,
           isFlashSale: item.isFlashSale || false,
-        }),
-      ),
+          ...preSnap,
+        });
+      }),
     );
 
     order.items = orderItems.map((item) => item._id);
@@ -102,7 +122,14 @@ export const createOrder = async (orderData) => {
  * Returns orders that contain products from the seller
  */
 export const getSellerOrders = async (filters = {}, sellerId) => {
-  const { page = 1, limit = 10, status, sortBy = "createdAt" } = filters;
+  const {
+    page = 1,
+    limit = 10,
+    status,
+    sortBy = "createdAt",
+    hasPreOrder,
+    preOrderSlaBreached,
+  } = filters;
   const skip = (page - 1) * limit;
 
   if (!sellerId) {
@@ -123,13 +150,34 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
     };
   }
 
-  // Find OrderItems containing seller's products
-  const orderItems = await OrderItem.find({
+  let orderIds = await OrderItem.distinct("orderId", {
     productId: { $in: sellerProductIds },
-  }).select("orderId");
-  const orderIds = [
-    ...new Set(orderItems.map((item) => item.orderId.toString())),
-  ].map((id) => new mongoose.Types.ObjectId(id));
+  });
+
+  if (truthyQueryFlag(hasPreOrder)) {
+    const withPre = await OrderItem.distinct("orderId", {
+      productId: { $in: sellerProductIds },
+      isPreOrder: true,
+    });
+    const allow = new Set(withPre.map((id) => String(id)));
+    orderIds = orderIds.filter((id) => allow.has(String(id)));
+  }
+
+  if (truthyQueryFlag(preOrderSlaBreached)) {
+    const lateLineOrderIds = await OrderItem.distinct("orderId", {
+      productId: { $in: sellerProductIds },
+      isPreOrder: true,
+      estimatedShipBy: { $lt: new Date() },
+    });
+    const breachedDocs = await Order.find({
+      _id: { $in: lateLineOrderIds },
+      status: { $nin: PREORDER_SLA_BREACH_SUPPRESSED_STATUSES },
+    })
+      .select("_id")
+      .lean();
+    const breached = new Set(breachedDocs.map((o) => String(o._id)));
+    orderIds = orderIds.filter((id) => breached.has(String(id)));
+  }
 
   if (orderIds.length === 0) {
     return {
@@ -171,31 +219,7 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
 
   const total = await Order.countDocuments(filterQuery);
 
-  // Enrich items with selected model only
-  const enrichedOrders = orders.map((order) => ({
-    ...order.toObject(),
-    items: order.items.map((item) => {
-      const selectedModel = item.productId.models?.find(
-        (m) => m._id.toString() === item.modelId.toString(),
-      );
-      const tierDetails = enrichTierDetails(
-        item,
-        selectedModel,
-        item.productId.tiers,
-      );
-
-      return {
-        ...item.toObject(),
-        tierDetails,
-        productId: {
-          ...item.productId.toObject(),
-          selectedModel,
-          models: undefined,
-          tiers: undefined,
-        },
-      };
-    }),
-  }));
+  const enrichedOrders = orders.map((order) => enrichSellerOrderResponse(order));
 
   return {
     total,
@@ -295,31 +319,7 @@ export const getOrdersByStatus = async (status, pagination = {}, sellerId) => {
     { $group: { _id: "$status", count: { $sum: 1 } } },
   ]);
 
-  // Enrich items with selected model only
-  const enrichedOrders = orders.map((order) => ({
-    ...order.toObject(),
-    items: order.items.map((item) => {
-      const selectedModel = item.productId.models?.find(
-        (m) => m._id.toString() === item.modelId.toString(),
-      );
-      const tierDetails = enrichTierDetails(
-        item,
-        selectedModel,
-        item.productId.tiers,
-      );
-
-      return {
-        ...item.toObject(),
-        tierDetails,
-        productId: {
-          ...item.productId.toObject(),
-          selectedModel,
-          models: undefined,
-          tiers: undefined,
-        },
-      };
-    }),
-  }));
+  const enrichedOrders = orders.map((order) => enrichSellerOrderResponse(order));
 
   return {
     total,
@@ -374,33 +374,7 @@ export const getOrderDetail = async (orderId) => {
     throw new ErrorResponse("Order not found", 404);
   }
 
-  // Enrich items with selected model only
-  const enrichedOrder = {
-    ...order.toObject(),
-    items: order.items.map((item) => {
-      const selectedModel = item.productId.models?.find(
-        (m) => m._id.toString() === item.modelId.toString(),
-      );
-      const tierDetails = enrichTierDetails(
-        item,
-        selectedModel,
-        item.productId.tiers,
-      );
-
-      return {
-        ...item.toObject(),
-        tierDetails,
-        productId: {
-          ...item.productId.toObject(),
-          selectedModel,
-          models: undefined,
-          tiers: undefined,
-        },
-      };
-    }),
-  };
-
-  return enrichedOrder;
+  return enrichSellerOrderResponse(order);
 };
 
 /**
@@ -446,6 +420,71 @@ export const updateOrderStatus = async (orderId, updateData, userData) => {
 
   // Store old status for history
   const oldStatus = order.status;
+
+  // Đặt trước: lúc seller xác nhận (pending → confirmed/processing) phải đủ tồn thực để giao
+  if (
+    (newStatus === "confirmed" || newStatus === "processing") &&
+    oldStatus === "pending"
+  ) {
+    await order.populate({
+      path: "items",
+      populate: { path: "productId", select: "name models" },
+    });
+
+    const shortages = [];
+    for (const item of order.items || []) {
+      if (!item.isPreOrder) {
+        continue;
+      }
+      const product = item.productId;
+      if (!product?.models?.length) {
+        shortages.push({
+          label: item.sku || String(item._id),
+          need: item.quantity,
+          have: 0,
+        });
+        continue;
+      }
+      const model =
+        typeof product.models.id === "function"
+          ? product.models.id(item.modelId)
+          : null;
+      const modelFallback =
+        model ||
+        product.models.find(
+          (m) => m._id.toString() === item.modelId.toString(),
+        );
+      const sku = String(modelFallback?.sku || item.sku || "").trim();
+      const inv = await InventoryItem.findOne({
+        productId: product._id,
+        sku,
+      }).lean();
+      const reserved = Number(inv?.reservedQuantity || 0);
+      const qtyInv = Number(inv?.quantity ?? NaN);
+      const haveFromInv =
+        Number.isFinite(qtyInv) ? Math.max(0, qtyInv - reserved) : NaN;
+      const haveFromModel = Number(modelFallback?.stock || 0);
+      const have = Number.isFinite(haveFromInv) ? haveFromInv : haveFromModel;
+      const need = Number(item.quantity) || 0;
+      if (have < need) {
+        shortages.push({
+          label: `${product.name} (${sku || "SKU"})`,
+          need,
+          have,
+        });
+      }
+    }
+
+    if (shortages.length > 0) {
+      const detail = shortages
+        .map((s) => `${s.label}: cần ${s.need}, tồn khả dụng ${s.have}`)
+        .join("; ");
+      throw new ErrorResponse(
+        `Không thể xác nhận đơn — chưa đủ hàng cho sản phẩm đặt trước. ${detail}`,
+        400,
+      );
+    }
+  }
 
   // Update status
   order.status = newStatus;
@@ -594,33 +633,7 @@ export const updateOrderStatus = async (orderId, updateData, userData) => {
     })
     .populate("statusHistory.changedBy", "fullName email role");
 
-  // Enrich items with selected model only
-  const enrichedOrder = {
-    ...updatedOrder.toObject(),
-    items: updatedOrder.items.map((item) => {
-      const selectedModel = item.productId.models?.find(
-        (m) => m._id.toString() === item.modelId.toString(),
-      );
-      const tierDetails = enrichTierDetails(
-        item,
-        selectedModel,
-        item.productId.tiers,
-      );
-
-      return {
-        ...item.toObject(),
-        tierDetails,
-        productId: {
-          ...item.productId.toObject(),
-          selectedModel,
-          models: undefined,
-          tiers: undefined,
-        },
-      };
-    }),
-  };
-
-  return enrichedOrder;
+  return enrichSellerOrderResponse(updatedOrder);
 };
 
 /**
@@ -676,33 +689,7 @@ export const cancelOrder = async (orderId, cancellationReason) => {
       },
     });
 
-  // Enrich items with selected model only
-  const enrichedOrder = {
-    ...updatedOrder.toObject(),
-    items: updatedOrder.items.map((item) => {
-      const selectedModel = item.productId.models?.find(
-        (m) => m._id.toString() === item.modelId.toString(),
-      );
-      const tierDetails = enrichTierDetails(
-        item,
-        selectedModel,
-        item.productId.tiers,
-      );
-
-      return {
-        ...item.toObject(),
-        tierDetails,
-        productId: {
-          ...item.productId.toObject(),
-          selectedModel,
-          models: undefined,
-          tiers: undefined,
-        },
-      };
-    }),
-  };
-
-  return enrichedOrder;
+  return enrichSellerOrderResponse(updatedOrder);
 };
 
 /**
@@ -856,4 +843,35 @@ function enrichTierDetails(item, selectedModel, tiers) {
   });
 
   return tierDetails;
+}
+
+/** Chuẩn hoá payload đơn cho seller: tierDetails + cờ vi phạm SLA pre-order */
+function enrichSellerOrderResponse(order) {
+  const base = order.toObject();
+  const items = (order.items || []).map((item) => {
+    const raw = item.toObject ? item.toObject() : { ...item };
+    const pop = item.productId;
+    if (!pop) {
+      return { ...raw, tierDetails: raw.tierSelections || {} };
+    }
+    const selectedModel = pop.models?.find(
+      (m) => m._id.toString() === item.modelId.toString(),
+    );
+    const tierDetails = enrichTierDetails(item, selectedModel, pop.tiers);
+    return {
+      ...raw,
+      tierDetails,
+      productId: {
+        ...pop.toObject(),
+        selectedModel,
+        models: undefined,
+        tiers: undefined,
+      },
+    };
+  });
+  return {
+    ...base,
+    preOrderSlaBreached: orderHasPreOrderSlaBreach(base.status, items),
+    items,
+  };
 }
