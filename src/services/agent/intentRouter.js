@@ -12,6 +12,12 @@ const ROLE_DEFAULT_TOOLS = {
   admin: ["platformStats"],
 };
 
+/** Ưu tiên trước scored keywords — khớp outfit/set đồ */
+const OUTFIT_HINTS = [
+  "set đồ", "set do", "outfit", "phối đồ", "phoi do", "cả bộ", "ca bo",
+  "một bộ", "mot bo", "đồ bộ", "do bo", "combo đồ",
+];
+
 function classifyIntent(message, role = "buyer") {
   const lower = message.toLowerCase().trim();
   const availableTools = getToolsForRole(role);
@@ -19,6 +25,10 @@ function classifyIntent(message, role = "buyer") {
   const greetings = ROLE_GREETING_KEYWORDS[role] || [];
   if (greetings.some((g) => lower === g || lower === g + " ạ" || lower === g + " nhé")) {
     return { tools: [], isGreeting: true };
+  }
+
+  if (role === "buyer" && OUTFIT_HINTS.some((h) => lower.includes(h))) {
+    return { tools: ["outfitBundle"], isOutfit: true };
   }
 
   const scored = availableTools.map((tool) => {
