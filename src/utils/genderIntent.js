@@ -42,13 +42,27 @@ export function extractGenderIntent(raw) {
   return null;
 }
 
-/** Tên/tag có dấu hiệu rõ là đồ nữ — loại khi user hỏi đồ nam */
+/**
+ * Đồ nữ / từ khóa nữ trong tên SP — loại khi user hỏi đồ nam.
+ * Lưu ý: KHÔNG dùng \\b quanh chữ Việt (NỮ, NAM) — engine JS/Mongo hay không khớp → SP nữ vẫn lọt.
+ */
 const FEMALE_TEXT_REJECT_MALE =
-  /(\bNỮ\b|NỮ[\s\|\-\/]|\(NỮ\)|Đồ nữ|đồ nữ|Cho nữ|cho nữ|Thời trang nữ|thiếu nữ|phụ nữ|Túi xách nữ|váy |đầm |bikini |đầm\/|váy\/)/i;
+  /(NỮ|Đồ nữ|đồ nữ|Cho nữ|cho nữ|Thời trang nữ|thiếu nữ|phụ nữ|Túi xách nữ|váy |đầm |bikini|đầm\/|váy\/)/i;
 
-/** Đồ nam rõ — loại khi user hỏi đồ nữ */
+/** Đồ nam rõ — loại khi user hỏi đồ nữ (không dùng /NAM/ đơn lẻ — dễ khớp nhầm chữ trong từ khác). */
 const MALE_TEXT_REJECT_FEMALE =
-  /(\bNAM\b|NAM[\s\|\-\/]|\(NAM\)|Đồ nam|đồ nam|Cho nam|cho nam|Thời trang nam|nam giới)/i;
+  /(Đồ nam|đồ nam|Cho nam|cho nam|Thời trang nam|nam giới|áo nam|quần nam|giày nam|balo nam|túi nam)/i;
+
+/**
+ * Túi xách / clutch kiểu nữ — tên không ghi nam/unisex/balo thì không gán cho set đồ nam.
+ * (Tránh "Túi Xách Mini ... Đeo Vai" lọt khi chỉ dựa vào từ "túi".)
+ */
+function looksLikeWomensBagWithoutMaleMarker(name) {
+  const n = String(name || "");
+  if (!/(túi xách|túi mini|ly hợp|đeo vai|cầm tay mini)/i.test(n)) return false;
+  if (/(nam|unisex|balo|đeo chéo nam|for men|mens)/i.test(n)) return false;
+  return true;
+}
 
 function categoryConflictsMaleIntent(categoryName) {
   const c = String(categoryName || "").trim();
@@ -96,6 +110,7 @@ export function productMatchesGenderIntent(product, intent, categoryName = "") {
     if (categoryConflictsMaleIntent(catLower)) return false;
     if (FEMALE_TEXT_REJECT_MALE.test(name) || FEMALE_TEXT_REJECT_MALE.test(tags)) return false;
     if (FEMALE_TEXT_REJECT_MALE.test(cat)) return false;
+    if (looksLikeWomensBagWithoutMaleMarker(name)) return false;
     if (/(^|[\s,;])(nữ)(\s|$|[.,!?])/i.test(name) && !/(nam|unisex)/i.test(name)) return false;
     return true;
   }
@@ -113,9 +128,27 @@ export function productMatchesGenderIntent(product, intent, categoryName = "") {
 
 /**
  * Điều kiện Mongo thêm vào Product.find (chỉ name — tags xử lý sau bằng filterProductsByGenderIntent).
+ * Dùng $and + $not đơn giản (NỮ, đồ nữ…) vì $regex với \\b không tin cậy trên tiếng Việt.
  */
 export function buildGenderMongoClause(intent) {
-  if (intent === "male") return { name: { $not: FEMALE_TEXT_REJECT_MALE } };
-  if (intent === "female") return { name: { $not: MALE_TEXT_REJECT_FEMALE } };
+  if (intent === "male") {
+    return {
+      $and: [
+        { name: { $not: /NỮ/i } },
+        { name: { $not: /đồ nữ|thời trang nữ|cho nữ|thiếu nữ|phụ nữ/i } },
+      ],
+    };
+  }
+  if (intent === "female") {
+    return {
+      $and: [
+        {
+          name: {
+            $not: /đồ nam|thời trang nam|cho nam|nam giới|áo nam|quần nam|giày nam|balo nam|túi nam/i,
+          },
+        },
+      ],
+    };
+  }
   return {};
 }

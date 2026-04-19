@@ -21,8 +21,19 @@ describe("extractGenderIntent", () => {
 });
 
 describe("productMatchesGenderIntent", () => {
-  test("loại áo có NỮ khi intent male", () => {
-    const p = { name: "Áo khoác chống nắng NỮ SunStop", tags: "" };
+  test("loại áo có NỮ khi intent male (NỮ không cần \\b)", () => {
+    const p = {
+      name: "Áo khoác chống nắng NỮ SunStop Master chống tia UV dáng dài",
+      tags: "",
+    };
+    expect(productMatchesGenderIntent(p, "male")).toBe(false);
+  });
+
+  test("loại túi xách mini đeo vai khi intent male (không có nam/unisex)", () => {
+    const p = {
+      name: "Túi Xách Mini Thời Trang Ly Hợp Đeo Vai",
+      tags: "",
+    };
     expect(productMatchesGenderIntent(p, "male")).toBe(false);
   });
 
