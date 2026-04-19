@@ -18,6 +18,14 @@ describe("extractGenderIntent", () => {
   test("không chọn khi trái ngược cả hai", () => {
     expect(extractGenderIntent("đồ nam và nữ")).toBe(null);
   });
+
+  test("bắt nam giữa câu (outfit + slot: đi chơi nam quần)", () => {
+    expect(extractGenderIntent("đi chơi nam quần")).toBe("male");
+  });
+
+  test("Việt Nam không kích hoạt nam", () => {
+    expect(extractGenderIntent("ship từ việt nam")).toBe(null);
+  });
 });
 
 describe("productMatchesGenderIntent", () => {
@@ -32,6 +40,14 @@ describe("productMatchesGenderIntent", () => {
   test("loại túi xách mini đeo vai khi intent male (không có nam/unisex)", () => {
     const p = {
       name: "Túi Xách Mini Thời Trang Ly Hợp Đeo Vai",
+      tags: "",
+    };
+    expect(productMatchesGenderIntent(p, "male")).toBe(false);
+  });
+
+  test("loại quần có chữ nữ trong tên khi intent male", () => {
+    const p = {
+      name: "Quần jean bò ống suông rộng nữ xuông jeans cạp cao phong cách style Hàn Quốc",
       tags: "",
     };
     expect(productMatchesGenderIntent(p, "male")).toBe(false);

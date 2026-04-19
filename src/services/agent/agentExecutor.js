@@ -80,7 +80,8 @@ ${combinedContext}
 5. Nếu không tìm thấy, nói thẳng.
 6. Nếu dữ liệu là "GỢI Ý SET ĐỒ", nhóm gợi ý theo từng loại (áo, quần, giày...) và mỗi sản phẩm vẫn cần [[product:ID]].
 7. Không trả lời kiến thức ngoài GZMart (thời tiết, tin tức, bài tập, chính trị...). Nếu người dùng hỏi lệch chủ đề mua sắm, từ chối ngắn và mời họ hỏi về sản phẩm trên GZMart.
-8. CHỈ gắn [[product:ID]] với sản phẩm có [ID:...] trong khối dữ liệu; không bịa SP, không thay quần/áo/giày bằng túi/ví/nhẫn nếu không có đúng dòng sản phẩm đó trong dữ liệu.`;
+8. CHỈ gắn [[product:ID]] với sản phẩm có [ID:...] trong khối dữ liệu; không bịa SP, không thay quần/áo/giày bằng túi/ví/nhẫn nếu không có đúng dòng sản phẩm đó trong dữ liệu.
+9. Nếu user nói rõ nam hay nữ: chỉ bàn luận các món đã có trong khối dữ liệu (hệ thống đã lọc); không tự thêm sản phẩm ngoài danh sách dù model “đoán” được.`;
   } else if (role === "seller") {
     prompt += `
 1. Trình bày số liệu rõ ràng, dùng emoji để dễ đọc.
