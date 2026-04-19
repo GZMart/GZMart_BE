@@ -301,16 +301,21 @@ class PaymentService {
       },
     );
 
-    // CRITICAL FIX: Deduct inventory, vouchers, and flash sales AFTER payment confirmed
-    console.log(
-      "[Webhook] Deducting resources (inventory/vouchers/flash sales)...",
-    );
-    try {
-      await deductOrderResourcesFromOrder(order);
-      console.log("[Webhook] Resources deducted successfully");
-    } catch (deductError) {
-      console.error("[Webhook] Error deducting resources:", deductError);
-      // Don't fail the webhook, but log the error for manual intervention
+    if (!order.resourcesDeducted) {
+      console.log(
+        "[Webhook] Deducting resources (inventory/vouchers/flash sales)...",
+      );
+      try {
+        await deductOrderResourcesFromOrder(order);
+        console.log("[Webhook] Resources deducted successfully");
+      } catch (deductError) {
+        console.error("[Webhook] Error deducting resources:", deductError);
+        // Don't fail the webhook, but log the error for manual intervention
+      }
+    } else {
+      console.log(
+        "[Webhook] Resources already reserved at checkout, skipping deduction",
+      );
     }
 
     console.log("[Webhook] Clearing cart...");
@@ -517,15 +522,20 @@ class PaymentService {
           },
         );
 
-        // CRITICAL FIX: Deduct resources after payment confirmed
-        console.log("[PayOS Check] Deducting resources...");
-        try {
-          await deductOrderResourcesFromOrder(order);
-          console.log("[PayOS Check] Resources deducted successfully");
-        } catch (deductError) {
-          console.error(
-            "[PayOS Check] Error deducting resources:",
-            deductError,
+        if (!order.resourcesDeducted) {
+          console.log("[PayOS Check] Deducting resources...");
+          try {
+            await deductOrderResourcesFromOrder(order);
+            console.log("[PayOS Check] Resources deducted successfully");
+          } catch (deductError) {
+            console.error(
+              "[PayOS Check] Error deducting resources:",
+              deductError,
+            );
+          }
+        } else {
+          console.log(
+            "[PayOS Check] Resources already reserved at checkout, skipping deduction",
           );
         }
 
