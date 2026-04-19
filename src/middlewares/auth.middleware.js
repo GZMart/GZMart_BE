@@ -58,7 +58,7 @@ export const protect = async (req, res, next) => {
 
       const userId = decoded.id || decoded.userId;
       // Get user from token
-      const user = await User.findById(decoded.id);
+      const user = await User.findById(userId);
 
       // console.log('User found from token:', user ? `${user._id} (${user.email})` : 'No user found');
 
@@ -79,11 +79,21 @@ export const protect = async (req, res, next) => {
       }
 
       // Check if user is banned
-      if (!user.status) {
+      if (!user.status || !user.isActive) {
         console.log("User is banned:", user._id);
         return next(
           new ErrorResponse(
             "Your account has been deactivated. Please contact support for assistance.",
+            403,
+          ),
+        );
+      }
+
+      const tempBanUntil = user?.moderation?.tempBanUntil;
+      if (tempBanUntil && new Date(tempBanUntil) > new Date()) {
+        return next(
+          new ErrorResponse(
+            "Your account is temporarily locked due to policy violations. Please try again in 2 minutes.",
             403,
           ),
         );
@@ -143,14 +153,19 @@ export const optionalAuth = async (req, res, next) => {
       }
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id);
-      // Trong protect
-      console.log("Decoded token:", decoded);
-      console.log("User found:", user);
+      const userId = decoded.id || decoded.userId;
+      const user = await User.findById(userId);
 
-      // Trong requireRoles hoặc authorize
+      const tempBanUntil = user?.moderation?.tempBanUntil;
+      const isTempBanned = tempBanUntil && new Date(tempBanUntil) > new Date();
 
-      if (user && user.isVerified && user.status) {
+      if (
+        user &&
+        user.isVerified &&
+        user.status &&
+        user.isActive &&
+        !isTempBanned
+      ) {
         req.user = user;
       } else {
         req.user = null;

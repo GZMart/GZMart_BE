@@ -17,6 +17,44 @@ const REPORT_STATUSES = {
   APPEALED: "appealed",
 };
 
+const REPORT_TYPES = {
+  ORDER: "order",
+  PRODUCT: "product",
+  SELLER: "seller",
+  SYSTEM_BUG: "system_bug",
+};
+
+const REPORT_CATEGORIES_BY_TYPE = {
+  [REPORT_TYPES.PRODUCT]: [
+    "counterfeit",
+    "wrong_description",
+    "quality_issue",
+    "damaged_item",
+    "prohibited_item",
+  ],
+  [REPORT_TYPES.ORDER]: [
+    "missing_item",
+    "wrong_item",
+    "delivery_delay",
+    "order_not_received",
+    "refund_problem",
+  ],
+  [REPORT_TYPES.SELLER]: [
+    "abusive_behavior",
+    "fraud_suspected",
+    "spam_scam",
+    "policy_violation",
+    "unresponsive_support",
+  ],
+  [REPORT_TYPES.SYSTEM_BUG]: [
+    "checkout_bug",
+    "ui_display_bug",
+    "performance_issue",
+    "notification_bug",
+    "other_system_bug",
+  ],
+};
+
 const ALLOWED_TRANSITIONS = {
   [REPORT_STATUSES.PENDING]: [
     REPORT_STATUSES.WAITING_FOR_SELLER,
@@ -62,6 +100,21 @@ const generateReportNumber = () => {
   return `RPT-${Date.now()}-${suffix}`;
 };
 
+const validateCategoryForType = (type, category) => {
+  const categoryValue = String(category || "").trim();
+  const allowed = REPORT_CATEGORIES_BY_TYPE[type] || [];
+
+  if (!categoryValue) {
+    throw new ErrorResponse("category is required", 400);
+  }
+
+  if (!allowed.includes(categoryValue)) {
+    throw new ErrorResponse(`Invalid category for report type ${type}`, 400);
+  }
+
+  return categoryValue;
+};
+
 const ensureTransitionAllowed = (currentStatus, nextStatus) => {
   if (currentStatus === nextStatus) {
     return;
@@ -94,8 +147,13 @@ const simulateRefund = async ({ report, order, adminId, reason }) => {
   };
 };
 
-const resolveReportSellerIds = async ({ type, productId, orderId }) => {
-  if (type === "product") {
+const resolveReportSellerIds = async ({
+  type,
+  productId,
+  orderId,
+  sellerId,
+}) => {
+  if (type === REPORT_TYPES.PRODUCT) {
     const product = await Product.findById(productId).select("sellerId");
     if (!product) {
       throw new ErrorResponse("Product not found", 404);
@@ -103,19 +161,40 @@ const resolveReportSellerIds = async ({ type, productId, orderId }) => {
     return [product.sellerId].filter(Boolean);
   }
 
-  const orderItems = await OrderItem.find({ orderId })
-    .populate("productId", "sellerId")
-    .lean();
+  if (type === REPORT_TYPES.ORDER) {
+    const orderItems = await OrderItem.find({ orderId })
+      .populate("productId", "sellerId")
+      .lean();
 
-  const sellerIds = new Set();
-  orderItems.forEach((item) => {
-    const sellerId = item.productId?.sellerId;
-    if (sellerId) {
-      sellerIds.add(sellerId.toString());
+    const sellerIds = new Set();
+    orderItems.forEach((item) => {
+      const sellerIdFromItem = item.productId?.sellerId;
+      if (sellerIdFromItem) {
+        sellerIds.add(sellerIdFromItem.toString());
+      }
+    });
+
+    return [...sellerIds];
+  }
+
+  if (type === REPORT_TYPES.SELLER) {
+    if (!sellerId) {
+      throw new ErrorResponse("sellerId is required for seller reports", 400);
     }
-  });
 
-  return [...sellerIds];
+    const seller = await User.findById(sellerId).select("_id role");
+    if (!seller) {
+      throw new ErrorResponse("Seller not found", 404);
+    }
+
+    if (seller.role !== "seller") {
+      throw new ErrorResponse("Target user is not a seller", 400);
+    }
+
+    return [seller._id.toString()];
+  }
+
+  return [];
 };
 
 const createEvidenceRecords = async (
@@ -250,11 +329,12 @@ export const createBuyerReport = async (buyerId, payload) => {
       category,
       orderId,
       productId,
+      sellerId,
       evidenceUrls,
       priority,
     } = payload;
 
-    if (!["order", "product"].includes(type)) {
+    if (!Object.values(REPORT_TYPES).includes(type)) {
       throw new ErrorResponse("Invalid report type", 400);
     }
 
@@ -262,13 +342,19 @@ export const createBuyerReport = async (buyerId, payload) => {
       throw new ErrorResponse("Title and description are required", 400);
     }
 
-    if (type === "order" && !orderId) {
+    if (type === REPORT_TYPES.ORDER && !orderId) {
       throw new ErrorResponse("orderId is required for order reports", 400);
     }
 
-    if (type === "product" && !productId) {
+    if (type === REPORT_TYPES.PRODUCT && !productId) {
       throw new ErrorResponse("productId is required for product reports", 400);
     }
+
+    if (type === REPORT_TYPES.SELLER && !sellerId) {
+      throw new ErrorResponse("sellerId is required for seller reports", 400);
+    }
+
+    const normalizedCategory = validateCategoryForType(type, category);
 
     const [order, product] = await Promise.all([
       orderId ? Order.findById(orderId).session(session) : null,
@@ -287,10 +373,11 @@ export const createBuyerReport = async (buyerId, payload) => {
       type,
       productId,
       orderId,
+      sellerId,
     });
 
     const orderItemIds =
-      type === "order"
+      type === REPORT_TYPES.ORDER
         ? (
             await OrderItem.find({ orderId }).select("_id").session(session)
           ).map((item) => item._id)
@@ -305,7 +392,7 @@ export const createBuyerReport = async (buyerId, payload) => {
           priority: priority || "normal",
           title,
           description,
-          category: category || "general",
+          category: normalizedCategory,
           buyerId,
           sellerIds,
           orderId: orderId || null,
@@ -336,7 +423,7 @@ export const createBuyerReport = async (buyerId, payload) => {
         metadata: {
           type,
           title,
-          category: category || "general",
+          category: normalizedCategory,
           sellerIds,
         },
       },
@@ -344,7 +431,7 @@ export const createBuyerReport = async (buyerId, payload) => {
     );
 
     await hideProductIfNeeded({
-      productId: type === "product" ? productId : null,
+      productId: type === REPORT_TYPES.PRODUCT ? productId : null,
       reportId: report._id,
       actorId: buyerId,
       session,

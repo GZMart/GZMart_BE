@@ -271,11 +271,21 @@ export const login = async (req, res, next) => {
       );
     }
 
-    if (!user.status) {
+    if (!user.status || !user.isActive) {
       return next(
         new ErrorResponse(
           "Your account has been deactivated. Please contact support for assistance.",
           401,
+        ),
+      );
+    }
+
+    const tempBanUntil = user?.moderation?.tempBanUntil;
+    if (tempBanUntil && new Date(tempBanUntil) > new Date()) {
+      return next(
+        new ErrorResponse(
+          "Your account is temporarily locked due to policy violations. Please try again in 2 minutes.",
+          403,
         ),
       );
     }

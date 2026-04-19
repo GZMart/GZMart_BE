@@ -53,6 +53,40 @@ export async function startSession(sessionId, shopId, userId) {
   return { session, token };
 }
 
+/**
+ * Re-issue a LiveKit host JWT for a session that is already `live` (e.g. seller refreshed the page).
+ * Does not change status or startedAt.
+ */
+export async function mintHostTokenForLiveSession(sessionId, shopId, userId) {
+  const session = await LiveSession.findOne({
+    _id: sessionId,
+    shopId,
+    status: "live",
+  });
+  if (!session) {
+    throw new Error("Session not found or not live");
+  }
+
+  const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    identity: `host_${userId}`,
+    name: "Host",
+    metadata: JSON.stringify({ role: "host", sessionId: session._id.toString() }),
+  });
+  at.addGrant({
+    roomJoin: true,
+    room: session.liveKitRoomName,
+    canPublish: true,
+    canPublishData: true,
+    canSubscribe: true,
+  });
+
+  const token = await at.toJwt();
+  session.liveKitToken = token;
+  await session.save({ validateBeforeSave: false });
+
+  return { session, token };
+}
+
 export async function getViewerToken(sessionId, userId, displayName = "Viewer") {
   const session = await LiveSession.findById(sessionId).select("liveKitRoomName status");
   if (!session || session.status !== "live") throw new Error("Live session not available");

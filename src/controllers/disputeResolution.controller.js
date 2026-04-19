@@ -21,6 +21,7 @@ const parseNumber = (value) => {
 export const createReport = asyncHandler(async (req, res) => {
   const report = await disputeService.createBuyerReport(req.user._id, {
     ...req.body,
+    sellerId: req.body.sellerId,
     evidenceUrls: parseArrayQuery(req.body.evidenceUrls),
   });
 
