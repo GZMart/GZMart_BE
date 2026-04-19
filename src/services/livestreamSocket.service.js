@@ -1,6 +1,6 @@
 // src/services/livestreamSocket.service.js
 // Socket.IO handlers for GZMart Live
-// - Viewer count: managed by this service (Redis in-memory) + emitted on join/chat/leave
+// - Viewer count: Redis SET (unique presence ids) or in-memory fallback; emitted on join/leave
 // - Chat: persisted to Redis, then broadcast via Socket.IO to all room members
 // - Role: auto-detected from socket handshake data (seller role set by server middleware)
 
@@ -9,8 +9,6 @@ import {
   addViewerToRoom,
   removeViewerFromRoom,
   storeChatMessage,
-  incrementViewerCount,
-  decrementViewerCount,
   getViewerCount,
 } from './livestreamRedis.service.js';
 
@@ -45,8 +43,12 @@ export function setupLiveStreamHandlers(io, socket) {
       socket.join(`livestream_${sessionId}`);
       socket.data.currentRoom = `livestream_${sessionId}`;
 
-      await addViewerToRoom(sessionId, presenceUserId);
-      const viewerCount = await incrementViewerCount(sessionId);
+      // Sellers stay in the socket room for chat/pin events but are not counted as viewers.
+      const countsAsViewer = socket.data.role !== 'seller';
+      if (countsAsViewer) {
+        await addViewerToRoom(sessionId, presenceUserId);
+      }
+      const viewerCount = await getViewerCount(sessionId);
 
       // Emit current viewer count to the joining user and everyone in the room
       io.to(`livestream_${sessionId}`).emit('livestream_viewer_update', { count: viewerCount });
@@ -118,8 +120,8 @@ export function setupLiveStreamHandlers(io, socket) {
       logger.warn(`[Livestream] Failed to persist chat message: ${err.message}`);
     }
 
-    // Broadcast to EVERYONE in the room including sender
-    // Each client skips the message locally if senderId matches their own userId
+    // Broadcast to EVERYONE in the room including sender.
+    // FE dedupes display for the sender; order-syntax / cart side effects must only run on the send path, not on relay.
     io.to(`livestream_${sessionId}`).emit('livestream_chat_message', { id: messageId, ...message });
     },
   );
@@ -132,8 +134,10 @@ export function setupLiveStreamHandlers(io, socket) {
 
     try {
       socket.leave(`livestream_${sessionId}`);
-      await removeViewerFromRoom(sessionId, presenceId);
-      const viewerCount = await decrementViewerCount(sessionId);
+      if (socket.data.role !== 'seller') {
+        await removeViewerFromRoom(sessionId, presenceId);
+      }
+      const viewerCount = await getViewerCount(sessionId);
 
       // Emit updated viewer count to remaining room members
       io.to(`livestream_${sessionId}`).emit('livestream_viewer_update', { count: Math.max(0, viewerCount) });
@@ -151,8 +155,10 @@ export function setupLiveStreamHandlers(io, socket) {
       const presenceId = socket.data.livePresenceUserId || fallbackSocketUserId;
       try {
         const sessionId = room.replace('livestream_', '');
-        await removeViewerFromRoom(sessionId, presenceId);
-        const viewerCount = await decrementViewerCount(sessionId);
+        if (socket.data.role !== 'seller') {
+          await removeViewerFromRoom(sessionId, presenceId);
+        }
+        const viewerCount = await getViewerCount(sessionId);
         io.to(`livestream_${sessionId}`).emit('livestream_viewer_update', { count: Math.max(0, viewerCount) });
         logger.info(`[Livestream] User ${presenceId} disconnected from session ${sessionId} — count: ${viewerCount}`);
       } catch (err) {

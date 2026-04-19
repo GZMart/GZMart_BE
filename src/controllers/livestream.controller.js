@@ -88,6 +88,23 @@ export async function startSession(req, res, next) {
   }
 }
 
+export async function mintHostToken(req, res, next) {
+  try {
+    if (req.user.role !== "seller") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const { sessionId } = req.params;
+    const { session, token } = await livestreamService.mintHostTokenForLiveSession(
+      sessionId,
+      req.user._id,
+      req.user._id
+    );
+    res.json({ session, token });
+  } catch (e) {
+    next(e);
+  }
+}
+
 export async function getViewerToken(req, res, next) {
   try {
     const { sessionId } = req.params;
@@ -109,6 +126,12 @@ export async function endSession(req, res, next) {
       req.user._id,
       req.user._id
     );
+    const io = getSocketIO();
+    if (io) {
+      io.to(`livestream_${sessionId}`).emit("livestream_session_ended", {
+        sessionId: String(sessionId),
+      });
+    }
     res.json(session);
   } catch (e) {
     next(e);
@@ -619,11 +642,7 @@ export const handleLiveKitWebhook = async (req, res) => {
           logger.warn("[LiveKit Webhook] participant_joined: could not extract sessionId from", { room, participant: participant?.identity });
           break;
         }
-        const viewerCount = await livestreamRedisService.incrementViewerCount(sessionId);
-        try {
-          const io = getSocketIO();
-          if (io) io.to(`livestream_${sessionId}`).emit("livestream_viewer_update", { count: viewerCount });
-        } catch (_) { /* non-fatal — Socket.IO unavailable */ }
+        // Viewer counts come only from Socket.IO livestream_join/leave (Redis SET) — LiveKit would double-count with the same participants.
         logger.info(`[LiveKit Webhook] participant_joined: ${participant?.identity} in ${room} (session ${sessionId})`);
         break;
       }
@@ -636,11 +655,6 @@ export const handleLiveKitWebhook = async (req, res) => {
           logger.warn("[LiveKit Webhook] participant_left: could not extract sessionId from", { room, participant: participant?.identity });
           break;
         }
-        const viewerCount = await livestreamRedisService.decrementViewerCount(sessionId);
-        try {
-          const io = getSocketIO();
-          if (io) io.to(`livestream_${sessionId}`).emit("livestream_viewer_update", { count: Math.max(0, viewerCount) });
-        } catch (_) { /* non-fatal — Socket.IO unavailable */ }
         logger.info(`[LiveKit Webhook] participant_left: ${participant?.identity} in ${room} (session ${sessionId})`);
         break;
       }
