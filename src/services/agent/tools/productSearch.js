@@ -9,6 +9,11 @@ import embeddingService from "../../embedding.service.js";
 import { registerTool } from "../tools.js";
 import { escapeRegex, extractSearchTerms } from "../../../utils/productSearchQuery.js";
 import { normalizeBuyerQuery } from "../../../utils/buyerQueryNormalizer.js";
+import {
+  extractGenderIntent,
+  buildGenderMongoClause,
+  filterProductsByGenderIntent,
+} from "../../../utils/genderIntent.js";
 
 const TOP_K = 10;
 
@@ -18,6 +23,9 @@ const TOP_K = 10;
 export async function runProductSearch({ query, limit = TOP_K, categoryId = null }) {
   const { normalized } = normalizeBuyerQuery(query);
   const effectiveQuery = normalized || query;
+
+  const genderIntent = extractGenderIntent(effectiveQuery);
+  const genderClause = buildGenderMongoClause(genderIntent);
 
   const queryEmbedding = await embeddingService.getEmbedding(effectiveQuery);
 
@@ -37,6 +45,7 @@ export async function runProductSearch({ query, limit = TOP_K, categoryId = null
     ? await Product.find({
         status: "active",
         ...(categoryId ? { categoryId: new mongoose.Types.ObjectId(categoryId) } : {}),
+        ...genderClause,
         $or: orConditions,
       })
         .select("_id name slug categoryId sellerId description attributes originalPrice rating reviewCount sold brand tags models.price models.sku images")
@@ -92,6 +101,16 @@ export async function runProductSearch({ query, limit = TOP_K, categoryId = null
 
   if (products.length === 0 && textCandidates.length > 0) {
     products = textCandidates.slice(0, limit);
+  }
+
+  const countBeforeGender = products.length;
+  products = filterProductsByGenderIntent(products, genderIntent);
+  if (countBeforeGender > 0 && products.length === 0 && genderIntent) {
+    return {
+      context:
+        "Không tìm thấy sản phẩm phù hợp với giới tính (nam/nữ) bạn đang tìm trong kho GZMart. Bạn thử đổi từ khóa hoặc xem danh mục khác.",
+      products: [],
+    };
   }
 
   if (products.length === 0) {

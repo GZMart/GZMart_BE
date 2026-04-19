@@ -1,15 +1,8 @@
 import { registerTool } from "../tools.js";
 import { normalizeBuyerQuery } from "../../../utils/buyerQueryNormalizer.js";
+import { extractGenderIntent } from "../../../utils/genderIntent.js";
 import { coherencePriceFilter } from "../../../utils/priceCoherence.js";
 import { runProductSearch, finalizeProductAgentContext } from "./productSearch.js";
-
-const OUTFIT_SLOTS = [
-  { label: "Áo", hint: "áo" },
-  { label: "Quần", hint: "quần" },
-  { label: "Giày", hint: "giày" },
-  { label: "Mũ", hint: "mũ" },
-  { label: "Túi", hint: "túi" },
-];
 
 const OUTFIT_CUES = [
   "set đồ", "outfit", "phối đồ", "cả bộ", "một bộ", "đồ bộ", "combo đồ",
@@ -24,13 +17,34 @@ function stripOutfitCues(s) {
   return t.replace(/\s+/g, " ").trim();
 }
 
+/** Gợi ý túi: tránh "túi" chung (hay ra túi xách nữ) khi user hỏi đồ nam */
+function bagHintForGender(gender) {
+  if (gender === "male") return "balo nam";
+  if (gender === "female") return "túi xách nữ";
+  return "túi";
+}
+
+function getOutfitSlots(gender) {
+  const bag = bagHintForGender(gender);
+  return [
+    { label: "Áo", hint: "áo" },
+    { label: "Quần", hint: "quần" },
+    { label: "Giày", hint: "giày" },
+    { label: "Mũ", hint: "mũ" },
+    { label: "Túi", hint: bag },
+  ];
+}
+
 async function execute({ query, limit = 2 }) {
   const { normalized } = normalizeBuyerQuery(query);
   let base = stripOutfitCues(normalized);
   if (!base || base.length < 2) base = normalized;
 
+  const genderIntent = extractGenderIntent(normalized);
+  const slots = getOutfitSlots(genderIntent);
+
   const perSlot = await Promise.all(
-    OUTFIT_SLOTS.map(async (slot) => {
+    slots.map(async (slot) => {
       const q = `${base} ${slot.hint}`.trim();
       return runProductSearch({ query: q, limit, categoryId: null });
     }),
@@ -53,7 +67,7 @@ async function execute({ query, limit = 2 }) {
   if (allProducts.length === 0) {
     return {
       context:
-        "Không đủ sản phẩm phù hợp để gợi ý một set đồ đồng giá. Bạn thử nêu ngân sách hoặc phong cách cụ thể hơn.",
+        "Không đủ sản phẩm phù hợp để gợi ý một set đồ đồng giá (có thể do giới tính hoặc từ khóa). Bạn thử nêu rõ ngân sách hoặc kiểu đồ hơn.",
       products: [],
     };
   }
