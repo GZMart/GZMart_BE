@@ -7,6 +7,7 @@ import Review from "../../../models/Review.js";
 import User from "../../../models/User.js";
 import embeddingService from "../../embedding.service.js";
 import { registerTool } from "../tools.js";
+import { escapeRegex, extractSearchTerms } from "../../../utils/productSearchQuery.js";
 
 const TOP_K = 10;
 
@@ -14,21 +15,30 @@ async function execute({ query, limit = TOP_K, categoryId = null }) {
   const queryEmbedding = await embeddingService.getEmbedding(query);
 
   // ─── Stage 1: Text filter — fast, precise, no cross-category bleed ────
-  // Build candidate pool from name/brand match so vector search never
-  // sees unrelated categories (shoes won't appear for a shirt query).
-  const textCandidates = await Product.find({
-    status: "active",
-    ...(categoryId ? { categoryId: new mongoose.Types.ObjectId(categoryId) } : {}),
-    $or: [
-      { name: { $regex: query, $options: "i" } },
-      { brand: { $regex: query, $options: "i" } },
-      { tags: { $regex: query, $options: "i" } },
-    ],
-  })
-    .select("_id name slug categoryId sellerId description attributes originalPrice rating reviewCount sold brand tags models.price models.sku images")
-    .sort({ sold: -1 })
-    .limit(60)
-    .lean();
+  // Build candidate pool from name/brand/tags using OR per keyword so natural
+  // Vietnamese ("tôi cần tìm quần áo") still matches products with "quần" or "áo".
+  const terms = extractSearchTerms(query);
+  const orConditions = [];
+  for (const term of terms) {
+    const rx = escapeRegex(term);
+    orConditions.push(
+      { name: { $regex: rx, $options: "i" } },
+      { brand: { $regex: rx, $options: "i" } },
+      { tags: { $regex: rx, $options: "i" } },
+    );
+  }
+
+  const textCandidates = orConditions.length
+    ? await Product.find({
+        status: "active",
+        ...(categoryId ? { categoryId: new mongoose.Types.ObjectId(categoryId) } : {}),
+        $or: orConditions,
+      })
+        .select("_id name slug categoryId sellerId description attributes originalPrice rating reviewCount sold brand tags models.price models.sku images")
+        .sort({ sold: -1 })
+        .limit(60)
+        .lean()
+    : [];
 
   const candidateIds = textCandidates.map((p) => p._id);
 
