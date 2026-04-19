@@ -353,6 +353,17 @@ const SHOPPING_KEYWORDS = [
   "cảm ơn", "thanks", "thank", "cám ơn",
   "hỏi", "giúp", "hỗ trợ", "support",
   "bộ đồ", "thời trang",
+  // English shopping — agentic RAG vẫn cần cho qua tầng intent; LLM + tool xử lý nội dung
+  "buy", "sell", "purchase", "shopping", "browse", "product", "products", "item", "items",
+  "price", "cheap", "expensive", "discount", "sale", "promo", "coupon",
+  "men", "women", "male", "female", "kids", "mens", "womens",
+  "shirt", "pants", "trousers", "jeans", "coat", "dress", "skirt", "top", "tee", "t-shirt",
+  "shoes", "sneakers", "heels", "slippers", "backpack", "wallet", "belt", "socks",
+  "clothing", "apparel", "fashion", "wear", "wardrobe",
+  "find", "search", "look for", "looking for", "list",
+  "ship", "shipping", "delivery", "pay", "payment", "refund", "return", "warranty",
+  "stock", "available", "size chart", "color", "colour",
+  "do you have", "add to cart", "add to basket", "free shipping",
 ];
 
 const OFF_TOPIC_STRONG = [
@@ -364,11 +375,22 @@ const CHAT_MANAGEMENT_KEYWORDS = [
   "new chat", "chat mới", "xóa chat", "xóa hội thoại",
 ];
 
+/**
+ * Câu chủ yếu tiếng Anh + từ khóa mua sắm — tránh phụ thuộc list từ cố định quá hẹp.
+ */
+function looksLikeEnglishShoppingIntent(lower) {
+  if (!/[a-z]{4,}/i.test(lower)) return false;
+  return /\b(buy|shop|cart|order|orders|product|products|price|pricing|sale|sales|discount|deal|shipping|delivery|checkout|voucher|refund|return|jacket|jeans|shirt|shoes|sneakers|pants|trousers|dress|bag|backpack|wallet|men|mens|women|womens|male|female|unisex|fashion|clothing|apparel|browse|search|find|gzmart|item|items|stock|size)\b/i.test(
+    lower,
+  );
+}
+
 function isShoppingRelated(message) {
   const lower = message.toLowerCase();
   if (CHAT_MANAGEMENT_KEYWORDS.some((kw) => lower.includes(kw))) return true;
   if (SHOPPING_KEYWORDS.some((kw) => lower.includes(kw))) return true;
   if (OFF_TOPIC_STRONG.some((kw) => lower.includes(kw))) return false;
+  if (looksLikeEnglishShoppingIntent(lower)) return true;
   return false;
 }
 

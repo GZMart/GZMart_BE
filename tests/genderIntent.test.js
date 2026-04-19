@@ -23,6 +23,11 @@ describe("extractGenderIntent", () => {
     expect(extractGenderIntent("đi chơi nam quần")).toBe("male");
   });
 
+  test("tiếng Anh: men's / for men", () => {
+    expect(extractGenderIntent("men's casual jacket")).toBe("male");
+    expect(extractGenderIntent("jeans for men")).toBe("male");
+  });
+
   test("Việt Nam không kích hoạt nam", () => {
     expect(extractGenderIntent("ship từ việt nam")).toBe(null);
   });

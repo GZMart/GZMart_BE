@@ -10,13 +10,7 @@ const CATEGORY_MALE_SIGNAL =
 
 const CATEGORY_UNISEX_SIGNAL = /(unisex|nam nữ|nam & nữ|cả nam và nữ|đôi nam nữ)/i;
 
-/**
- * Suy ra giới từ câu tiếng Việt (không có field gender trên Product — lọc theo text name/tags).
- * @returns {"male"|"female"|null}
- */
-/**
- * Chuỗi đã lower — tránh "Việt Nam" kích hoạt nhầm từ khóa "nam".
- */
+/** Chuỗi đã lower — tránh "Việt Nam" kích hoạt nhầm từ khóa "nam". */
 function stripVietnamCountry(s) {
   return String(s).replace(/việt\s+nam|viet\s+nam/gi, " ");
 }
@@ -32,6 +26,8 @@ function hasMaleHint(s) {
   if (/đàn ông|boyfriend|mens\b|men\b/i.test(t)) return true;
   /** "nam" đứng giữa câu (vd. outfit gọi runProductSearch với "đi chơi nam quần") — trước đây chỉ bắt nam ở cuối → mất intent */
   if (/(^|[\s])nam([\s]|$|[.,!?])/i.test(t)) return true;
+  /** Tiếng Anh: men's outfit, for men, male — tránh RAG chỉ tiếng Việt */
+  if (/\bmen's\b|for men\b|for male\b|\bmale\b|(^|\s)boy's(\s|$|[.,!?])/i.test(t)) return true;
   return false;
 }
 
@@ -40,7 +36,8 @@ function hasFemaleHint(s) {
   const t = stripVietnamCountry(s);
   return (
     /(^|\s)(nữ|đồ nữ|thời trang nữ|cho nữ|nữ giới|thiếu nữ)(\s|$|[.,!?])/i.test(t) ||
-    /đầm|váy đầm|váy |bikini|women\b|womens\b|ladies\b/i.test(t)
+    /đầm|váy đầm|váy |bikini|women\b|womens\b|ladies\b/i.test(t) ||
+    /\bwomen's\b|for women\b|for female\b|\bfemale\b|(^|\s)girl's(\s|$|[.,!?])/i.test(t)
   );
 }
 

@@ -8,6 +8,13 @@ export function escapeRegex(s) {
 const DEFAULT_STOPWORDS = new Set([
   "tôi", "cần", "tìm", "kiếm", "muốn", "mua", "cho", "với", "của", "các", "một",
   "và", "hoặc", "ở", "tại", "nhờ", "giúp", "bạn", "ạ", "nhé", "xin",
+  // English — agentic RAG / query song ngữ
+  "the", "a", "an", "i", "me", "my", "we", "you", "he", "she", "they", "it",
+  "and", "or", "but", "if", "for", "with", "from", "this", "that", "these", "those",
+  "what", "which", "who", "how", "when", "where", "why", "can", "could", "would", "should",
+  "have", "has", "had", "been", "are", "was", "were", "is", "am", "be", "to", "of", "in", "on", "at",
+  "please", "help", "want", "need", "like", "just", "some", "get", "give", "show", "me",
+  "looking", "search",
 ]);
 
 /**
