@@ -2,8 +2,10 @@ import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import * as rmaService from "../services/rma.service.js";
 import ReturnRequest from "../models/ReturnRequest.js";
+import Order from "../models/Order.js";
 import WalletTransaction from "../models/WalletTransaction.js";
 import User from "../models/User.js";
+import { escapeRegex, findUserIdsBySearch } from "../utils/adminSearch.util.js";
 
 /**
  * @desc    Check if order is eligible for return/exchange
@@ -464,15 +466,63 @@ export const getTransactionById = asyncHandler(async (req, res, next) => {
  * @access  Private (Admin)
  */
 export const getAllReturnRequests = asyncHandler(async (req, res, next) => {
-  const { status, type, page = 1, limit = 20 } = req.query;
+  const {
+    status,
+    type,
+    page = 1,
+    limit = 20,
+    search,
+    dateFrom,
+    dateTo,
+  } = req.query;
 
-  const query = { isActive: true };
-  if (status) query.status = status;
-  if (type) query.type = type;
+  const and = [{ isActive: true }];
+
+  if (status) {
+    and.push({ status });
+  }
+  if (type) {
+    and.push({ type });
+  }
+  if (dateFrom || dateTo) {
+    const range = {};
+    if (dateFrom) {
+      range.$gte = new Date(dateFrom);
+    }
+    if (dateTo) {
+      const end = new Date(dateTo);
+      end.setHours(23, 59, 59, 999);
+      range.$lte = end;
+    }
+    and.push({ createdAt: range });
+  }
+
+  const q = String(search || "").trim();
+  if (q.length >= 2) {
+    const or = [
+      { requestNumber: { $regex: escapeRegex(q), $options: "i" } },
+    ];
+    const orderMatches = await Order.find({
+      orderNumber: { $regex: escapeRegex(q), $options: "i" },
+    })
+      .select("_id")
+      .limit(80)
+      .lean();
+    if (orderMatches.length) {
+      or.push({ orderId: { $in: orderMatches.map((o) => o._id) } });
+    }
+    const buyerIds = await findUserIdsBySearch(q);
+    if (buyerIds !== null && buyerIds.length > 0) {
+      or.push({ userId: { $in: buyerIds } });
+    }
+    and.push({ $or: or });
+  }
+
+  const query = and.length === 1 ? and[0] : { $and: and };
 
   const returnRequests = await ReturnRequest.find(query)
     .populate("orderId", "orderNumber totalPrice")
-    .populate("userId", "fullName email")
+    .populate("userId", "fullName email phone")
     .populate("items.orderItemId")
     .sort({ createdAt: -1 })
     .skip((page - 1) * limit)

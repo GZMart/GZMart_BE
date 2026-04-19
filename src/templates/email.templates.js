@@ -184,4 +184,24 @@ export const emailTemplates = {
       </div>
     `,
   },
+
+  /** Email thông báo seller: cảnh cáo campaign hoặc campaign bị admin dừng */
+  CAMPAIGN_SELLER_NOTICE: {
+    subject: "Thông báo từ GZMart — Campaign / Flash Sale",
+    getContent: ({ name, heading, bodyHtml }) => `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px;">
+        <div style="border-bottom: 2px solid #B13C36; padding-bottom: 12px; margin-bottom: 20px;">
+          <h1 style="color: #1e293b; margin: 0; font-size: 20px;">${heading}</h1>
+        </div>
+        <p style="color: #334155; margin: 0 0 16px 0;">Xin chào ${name || "Quý seller"},</p>
+        <div style="background: #fff7ed; border-left: 4px solid #ea580c; padding: 16px; border-radius: 6px; color: #431407; font-size: 14px; line-height: 1.6;">
+          ${bodyHtml}
+        </div>
+        <p style="color: #64748b; font-size: 13px; margin: 20px 0 0 0;">
+          Bạn cũng nhận được thông báo này trong mục Thông báo trên trang seller.
+        </p>
+        <p style="color: #94a3b8; font-size: 12px; margin-top: 24px;">Trân trọng,<br>Đội ngũ GZMart</p>
+      </div>
+    `,
+  },
 };

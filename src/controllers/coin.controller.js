@@ -1,6 +1,7 @@
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import coinService from "../services/coin.service.js";
+import User from "../models/User.js";
 
 /**
  * @desc    Get user's coin balance and breakdown
@@ -80,11 +81,30 @@ export const getExpiringCoins = asyncHandler(async (req, res, next) => {
  * @access  Private/Admin
  */
 export const grantCoins = asyncHandler(async (req, res, next) => {
-  const { userId, amount, description, source = "admin_grant" } = req.body;
+  const {
+    userId: bodyUserId,
+    userEmail,
+    amount,
+    description,
+    source = "admin_grant",
+  } = req.body;
+
+  let userId = bodyUserId;
+  if (!userId && userEmail) {
+    const email = String(userEmail).trim().toLowerCase();
+    const user = await User.findOne({ email }).select("_id");
+    if (!user) {
+      return next(new ErrorResponse("Không tìm thấy user với email này", 404));
+    }
+    userId = user._id;
+  }
 
   if (!userId || !amount || !description) {
     return next(
-      new ErrorResponse("Please provide userId, amount, and description", 400),
+      new ErrorResponse(
+        "Cần có email người nhận (userEmail) hoặc userId, amount, description",
+        400,
+      ),
     );
   }
 

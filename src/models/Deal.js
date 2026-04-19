@@ -90,6 +90,21 @@ const dealSchema = new mongoose.Schema(
       default: 0,
       comment: "Higher priority deals show first",
     },
+    /** Khi admin dừng campaign — lưu lý do & audit */
+    adminStopReason: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    adminStoppedAt: {
+      type: Date,
+      default: null,
+    },
+    adminStoppedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
   },
   {
     timestamps: true,

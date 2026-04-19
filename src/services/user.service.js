@@ -1,6 +1,11 @@
 import User from "../models/User.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 
+/** Tránh ReDoS khi ghép chuỗi user vào regex */
+function escapeRegex(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 class UserService {
   /**
    * Get all users with pagination and filtering
@@ -85,6 +90,46 @@ class UserService {
     const updatedUser = await User.findById(userId).select("-password").lean();
 
     return updatedUser;
+  }
+
+  /**
+   * Admin: gợi ý seller khi lọc (tên shop, email, họ tên, SĐT).
+   */
+  async searchSellersForAdmin({ q = "", limit = 20 } = {}) {
+    const max = Math.min(Math.max(Number(limit) || 20, 1), 50);
+    const trimmed = (q || "").trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    const base = { role: "seller" };
+
+    if (/^[a-fA-F0-9]{24}$/.test(trimmed)) {
+      const byId = await User.findOne({ ...base, _id: trimmed })
+        .select("shopName fullName email phone")
+        .lean();
+      if (byId) {
+        return [byId];
+      }
+    }
+
+    if (trimmed.length < 2) {
+      return [];
+    }
+
+    const rx = escapeRegex(trimmed);
+    const or = [
+      { fullName: { $regex: rx, $options: "i" } },
+      { email: { $regex: rx, $options: "i" } },
+      { shopName: { $regex: rx, $options: "i" } },
+      { phone: { $regex: rx, $options: "i" } },
+    ];
+
+    return User.find({ ...base, $or: or })
+      .select("shopName fullName email phone")
+      .sort({ shopName: 1, fullName: 1 })
+      .limit(max)
+      .lean();
   }
 }
 

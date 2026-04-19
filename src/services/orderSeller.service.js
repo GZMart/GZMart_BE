@@ -13,6 +13,10 @@ import {
   orderHasPreOrderSlaBreach,
   PREORDER_SLA_BREACH_SUPPRESSED_STATUSES,
 } from "../utils/preOrderSla.js";
+import {
+  escapeRegex,
+  findUserIdsBySearch,
+} from "../utils/adminSearch.util.js";
 
 function truthyQueryFlag(value) {
   if (value == null || value === "") return false;
@@ -231,6 +235,149 @@ export const getSellerOrders = async (filters = {}, sellerId) => {
 };
 
 /**
+ * Admin: list orders across the marketplace.
+ * Tìm kiếm buyer/seller theo email, SĐT, tên — không dùng ObjectId trên UI.
+ */
+export const getAdminPlatformOrders = async (filters = {}) => {
+  const {
+    page = 1,
+    limit = 10,
+    status,
+    sortBy = "createdAt",
+    orderNumber,
+    buyerSearch,
+    sellerSearch,
+    paymentStatus,
+    paymentMethod,
+    dateFrom,
+    dateTo,
+  } = filters;
+  const skip = (page - 1) * limit;
+
+  const filterQuery = {};
+
+  if (sellerSearch && String(sellerSearch).trim()) {
+    const sellerIds = await findUserIdsBySearch(sellerSearch, {
+      roles: ["seller"],
+    });
+    if (sellerIds === null) {
+      // < 2 ký tự: bỏ qua lọc shop
+    } else if (sellerIds.length === 0) {
+      return {
+        total: 0,
+        page: Number(page),
+        limit: Number(limit),
+        pages: 0,
+        data: [],
+      };
+    } else {
+      const sellerProducts = await Product.find({
+        sellerId: { $in: sellerIds },
+      }).select("_id");
+      const sellerProductIds = sellerProducts.map((p) => p._id);
+      if (sellerProductIds.length === 0) {
+        return {
+          total: 0,
+          page: Number(page),
+          limit: Number(limit),
+          pages: 0,
+          data: [],
+        };
+      }
+      const orderIds = await OrderItem.distinct("orderId", {
+        productId: { $in: sellerProductIds },
+      });
+      filterQuery._id = { $in: orderIds };
+    }
+  }
+
+  if (buyerSearch && String(buyerSearch).trim()) {
+    const buyerIds = await findUserIdsBySearch(buyerSearch);
+    if (buyerIds === null) {
+      // bỏ qua
+    } else if (buyerIds.length === 0) {
+      return {
+        total: 0,
+        page: Number(page),
+        limit: Number(limit),
+        pages: 0,
+        data: [],
+      };
+    } else {
+      filterQuery.userId = { $in: buyerIds };
+    }
+  }
+
+  if (status) {
+    filterQuery.status = status;
+  }
+
+  if (paymentStatus) {
+    filterQuery.paymentStatus = paymentStatus;
+  }
+
+  if (paymentMethod) {
+    filterQuery.paymentMethod = paymentMethod;
+  }
+
+  if (dateFrom || dateTo) {
+    filterQuery.createdAt = {};
+    if (dateFrom) {
+      filterQuery.createdAt.$gte = new Date(dateFrom);
+    }
+    if (dateTo) {
+      const end = new Date(dateTo);
+      end.setHours(23, 59, 59, 999);
+      filterQuery.createdAt.$lte = end;
+    }
+  }
+
+  if (orderNumber && String(orderNumber).trim()) {
+    const q = String(orderNumber).trim();
+    filterQuery.orderNumber = {
+      $regex: escapeRegex(q),
+      $options: "i",
+    };
+  }
+
+  const sortOptions = {
+    createdAt: { createdAt: -1 },
+    "newest-first": { createdAt: -1 },
+    "oldest-first": { createdAt: 1 },
+    "total-high": { totalPrice: -1 },
+    "total-low": { totalPrice: 1 },
+  };
+
+  const orders = await Order.find(filterQuery)
+    .populate("userId", "fullName email phone")
+    .populate({
+      path: "items",
+      populate: {
+        path: "productId",
+        select: "name images originalPrice models tiers sellerId",
+        populate: {
+          path: "sellerId",
+          select: "fullName email phone",
+        },
+      },
+    })
+    .sort(sortOptions[sortBy] || { createdAt: -1 })
+    .skip(skip)
+    .limit(Number(limit));
+
+  const total = await Order.countDocuments(filterQuery);
+  const enrichedOrders = orders.map((order) => enrichSellerOrderResponse(order));
+
+  return {
+    total,
+    page: Number(page),
+    limit: Number(limit),
+    pages: Math.ceil(total / limit) || 0,
+    data: enrichedOrders,
+  };
+};
+
+/**
  * Get orders filtered by specific status
  */
 export const getOrdersByStatus = async (status, pagination = {}, sellerId) => {
@@ -365,7 +512,11 @@ export const getOrderDetail = async (orderId) => {
       path: "items",
       populate: {
         path: "productId",
-        select: "name images originalPrice models tiers",
+        select: "name images originalPrice models tiers sellerId",
+        populate: {
+          path: "sellerId",
+          select: "fullName email phone",
+        },
       },
     })
     .populate("shipperId", "fullName phone");

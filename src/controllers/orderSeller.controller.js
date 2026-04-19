@@ -58,6 +58,46 @@ export const getSellerOrders = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Admin — list all marketplace orders (search / filter)
+ * @route   GET /api/seller/orders/admin/platform-orders
+ * @access  Private (Admin)
+ */
+export const getAdminPlatformOrders = asyncHandler(async (req, res) => {
+  const {
+    page,
+    limit,
+    status,
+    sortBy,
+    orderNumber,
+    buyerSearch,
+    sellerSearch,
+    paymentStatus,
+    paymentMethod,
+    dateFrom,
+    dateTo,
+  } = req.query;
+
+  const result = await orderSellerService.getAdminPlatformOrders({
+    page: Number(page) || 1,
+    limit: Number(limit) || 10,
+    status,
+    sortBy: sortBy || "createdAt",
+    orderNumber,
+    buyerSearch,
+    sellerSearch,
+    paymentStatus,
+    paymentMethod,
+    dateFrom,
+    dateTo,
+  });
+
+  res.status(200).json({
+    success: true,
+    ...result,
+  });
+});
+
+/**
  * @desc    Get orders filtered by specific status
  * @route   GET /api/orders/status/:status
  * @access  Private

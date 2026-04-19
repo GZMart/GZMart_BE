@@ -2,6 +2,7 @@ import express from "express";
 import {
   createOrder,
   getSellerOrders,
+  getAdminPlatformOrders,
   getOrderDetail,
   updateOrderStatus,
   getOrdersByStatus,
@@ -61,6 +62,17 @@ router.post("/", authorize("seller", "admin"), createOrder);
  * @access  Private (Seller/Admin)
  */
 router.get("/", authorize("seller", "admin"), getSellerOrders);
+
+/**
+ * @route   GET /api/seller/orders/admin/platform-orders
+ * @desc    Admin — all marketplace orders (must be before /:orderId)
+ * @access  Private (Admin)
+ */
+router.get(
+  "/admin/platform-orders",
+  authorize("admin"),
+  getAdminPlatformOrders,
+);
 
 /**
  * @route   GET /api/seller/orders/status/:status
