@@ -42,11 +42,17 @@ async function execute({ query, limit = 2 }) {
 
   const genderIntent = extractGenderIntent(normalized);
   const slots = getOutfitSlots(genderIntent);
+  const genderContextQuery = (normalized && normalized.length > 1 ? normalized : query) || "";
 
   const perSlot = await Promise.all(
     slots.map(async (slot) => {
       const q = `${base} ${slot.hint}`.trim();
-      return runProductSearch({ query: q, limit, categoryId: null });
+      return runProductSearch({
+        query: q,
+        limit,
+        categoryId: null,
+        genderContextQuery,
+      });
     }),
   );
 

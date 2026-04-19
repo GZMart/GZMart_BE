@@ -63,6 +63,23 @@ describe("productMatchesGenderIntent", () => {
     expect(productMatchesGenderIntent(p, "male")).toBe(true);
   });
 
+  test("nam người lớn: loại đồ bé trai khi user không hỏi đồ trẻ", () => {
+    const p = {
+      name: "Set Bộ Áo Sơ Mi Quần Yếm Đáng Yêu Cho Bé Trai",
+      tags: "",
+    };
+    expect(productMatchesGenderIntent(p, "male", "", "set đồ nam")).toBe(false);
+    expect(productMatchesGenderIntent(p, "male", "", "đồ bé trai nam")).toBe(true);
+  });
+
+  test("nam: loại áo hai dây / đồ kiểu nữ", () => {
+    const p = {
+      name: "Set Đồ Bộ Lụa Satin Áo Hai Dây Kèm Quần Dài",
+      tags: "",
+    };
+    expect(productMatchesGenderIntent(p, "male", "", "set đồ nam")).toBe(false);
+  });
+
   test("filterProductsByGenderIntent", () => {
     const list = [
       { name: "Quần jean nam", tags: "" },

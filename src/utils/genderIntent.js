@@ -74,6 +74,37 @@ function looksLikeWomensBagWithoutMaleMarker(name) {
   return true;
 }
 
+/** Kiểu đồ thường là nữ — không gán vào “set đồ nam” người lớn */
+const FEMALE_STYLE_REJECT_MALE =
+  /(áo hai dây|áo 2 dây|hai dây|váy ngủ|đầm ngủ|bikini|bralette|cốc ngực|đồ lót nữ|ren nữ)/i;
+
+function userWantsKidsFashion(userQuery) {
+  return /bé|trẻ em|kid|baby|toddler|nhí|em bé|sơ sinh|newborn|cho bé gái|cho bé trai|đồ bé/i.test(
+    String(userQuery || "").toLowerCase(),
+  );
+}
+
+/**
+ * "Set đồ nam" = người lớn: loại đồ trẻ em / kiểu nữ nếu user không hỏi đồ bé.
+ */
+function matchesAdultMaleLineAgainstQuery(name, tags, categoryLower, userQuery) {
+  const blob = `${name} ${tags || ""}`;
+  const u = String(userQuery || "").toLowerCase();
+  const wantsKids = userWantsKidsFashion(u);
+
+  if (FEMALE_STYLE_REJECT_MALE.test(blob)) return false;
+
+  if (!wantsKids) {
+    if (/(bé trai|bé gái|cho bé|trẻ em|em bé|kids?\b|toddler|đồ trẻ|thời trang bé|đồ sơ sinh)/i.test(blob)) {
+      return false;
+    }
+    if (/(^|[\s/])(bé|trẻ em|kid|nhí|sơ sinh)([\s/]|$)/i.test(String(categoryLower || ""))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function categoryConflictsMaleIntent(categoryName) {
   const c = String(categoryName || "").trim();
   if (!c) return false;
@@ -98,25 +129,27 @@ function categoryConflictsFemaleIntent(categoryName) {
  * Lọc mảng sản phẩm đã lấy từ DB (hàng rào sau vector/text).
  * @param {Record<string, string>} [categoryIdToName] — map categoryId (string) → Category.name
  */
-export function filterProductsByGenderIntent(products, intent, categoryIdToName = {}) {
+export function filterProductsByGenderIntent(products, intent, categoryIdToName = {}, userQuery = "") {
   if (!intent || !products?.length) return products;
   return products.filter((p) => {
     const cid = p.categoryId != null ? String(p.categoryId) : "";
     const catName = cid && categoryIdToName[cid] != null ? categoryIdToName[cid] : "";
-    return productMatchesGenderIntent(p, intent, catName);
+    return productMatchesGenderIntent(p, intent, catName, userQuery);
   });
 }
 
 /**
  * @param {string} [categoryName] — tên danh mục (Category.name), đã resolve từ categoryId
+ * @param {string} [userQuery] — câu gốc user (vd. outfit truyền full "set đồ nam") để phân biệt đồ bé vs người lớn
  */
-export function productMatchesGenderIntent(product, intent, categoryName = "") {
+export function productMatchesGenderIntent(product, intent, categoryName = "", userQuery = "") {
   const name = String(product?.name || "");
   const tags = typeof product?.tags === "string" ? product.tags : "";
   const cat = String(categoryName || "").trim();
   const catLower = cat.toLowerCase();
 
   if (intent === "male") {
+    if (!matchesAdultMaleLineAgainstQuery(name, tags, catLower, userQuery)) return false;
     if (categoryConflictsMaleIntent(catLower)) return false;
     if (FEMALE_TEXT_REJECT_MALE.test(name) || FEMALE_TEXT_REJECT_MALE.test(tags)) return false;
     if (FEMALE_TEXT_REJECT_MALE.test(cat)) return false;

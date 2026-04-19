@@ -33,7 +33,12 @@ async function loadCategoryIdToNameMap(products) {
 /**
  * Pipeline tìm sản phẩm cho agent (dùng chung outfit + productSearch).
  */
-export async function runProductSearch({ query, limit = TOP_K, categoryId = null }) {
+export async function runProductSearch({
+  query,
+  limit = TOP_K,
+  categoryId = null,
+  genderContextQuery = null,
+}) {
   const { normalized } = normalizeBuyerQuery(query);
   const effectiveQuery = normalized || query;
 
@@ -119,7 +124,11 @@ export async function runProductSearch({ query, limit = TOP_K, categoryId = null
   const categoryIdToName = await loadCategoryIdToNameMap(products);
 
   const countBeforeGender = products.length;
-  products = filterProductsByGenderIntent(products, genderIntent, categoryIdToName);
+  const genderFilterQuery =
+    genderContextQuery != null && String(genderContextQuery).trim() !== ""
+      ? String(genderContextQuery)
+      : effectiveQuery;
+  products = filterProductsByGenderIntent(products, genderIntent, categoryIdToName, genderFilterQuery);
   if (countBeforeGender > 0 && products.length === 0 && genderIntent) {
     return {
       context:
