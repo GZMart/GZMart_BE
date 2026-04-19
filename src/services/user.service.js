@@ -79,6 +79,7 @@ class UserService {
 
     // Toggle isActive field
     user.isActive = !user.isActive;
+    user.status = user.isActive;
     await user.save();
 
     // Return user without password

@@ -1,6 +1,11 @@
 import reviewService from "../services/review.service.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
+import contentModerationService from "../services/contentModeration.service.js";
+import User from "../models/User.js";
+
+const OFFENSIVE_REVIEW_BAN_THRESHOLD = 3;
+const OFFENSIVE_REVIEW_BAN_DURATION_MS = 2 * 60 * 1000;
 
 /**
  * @desc    Create a review for a product
@@ -31,10 +36,55 @@ export const createReview = asyncHandler(async (req, res, next) => {
     );
   }
 
+  const normalizedContent = content.trim();
+  const moderationResult =
+    await contentModerationService.moderateReviewText(normalizedContent);
+
+  if (moderationResult.isOffensive) {
+    const currentCount = req.user?.moderation?.offensiveReviewCount || 0;
+    const nextCount = currentCount + 1;
+    const tempBanUntil =
+      nextCount >= OFFENSIVE_REVIEW_BAN_THRESHOLD
+        ? new Date(Date.now() + OFFENSIVE_REVIEW_BAN_DURATION_MS)
+        : null;
+
+    await User.findByIdAndUpdate(req.user._id, {
+      $set: {
+        "moderation.offensiveReviewCount": nextCount,
+        "moderation.lastOffensiveReviewAt": new Date(),
+        "moderation.lastOffensiveReviewExcerpt": normalizedContent.slice(
+          0,
+          200,
+        ),
+        ...(tempBanUntil
+          ? {
+              "moderation.tempBanUntil": tempBanUntil,
+            }
+          : {}),
+      },
+    });
+
+    if (nextCount >= OFFENSIVE_REVIEW_BAN_THRESHOLD) {
+      return next(
+        new ErrorResponse(
+          "Your account is temporarily locked for 2 minutes due to repeated offensive reviews.",
+          403,
+        ),
+      );
+    }
+
+    return next(
+      new ErrorResponse(
+        `Your review contains inappropriate language and was rejected. Violation ${nextCount}/${OFFENSIVE_REVIEW_BAN_THRESHOLD}.`,
+        400,
+      ),
+    );
+  }
+
   const reviewData = {
     rating: parseInt(rating),
     title: title || null,
-    content: content.trim(),
+    content: normalizedContent,
     variant: variant || null,
     images: images || [],
   };

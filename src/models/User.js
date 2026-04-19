@@ -171,6 +171,29 @@ const userSchema = new mongoose.Schema(
         cooldownHours: { type: Number, default: 24 }, // 24 hours cooldown before sending another auto-reply
       },
     },
+    moderation: {
+      offensiveReviewCount: {
+        type: Number,
+        default: 0,
+        min: [0, "Offensive review count cannot be negative"],
+      },
+      lastOffensiveReviewAt: {
+        type: Date,
+        default: null,
+      },
+      lastOffensiveReviewExcerpt: {
+        type: String,
+        default: null,
+        maxlength: [
+          200,
+          "Offensive review excerpt cannot exceed 200 characters",
+        ],
+      },
+      tempBanUntil: {
+        type: Date,
+        default: null,
+      },
+    },
     /** Shop decoration config for seller: { blocks: [{ id, type, props }], version: 'desktop'|'mobile' } */
     shopDecoration: {
       type: mongoose.Schema.Types.Mixed,
