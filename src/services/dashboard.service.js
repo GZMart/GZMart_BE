@@ -12,6 +12,7 @@ import {
   SellerWalletTransaction,
 } from "../models/SellerWallet.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
+import { findUserIdsBySearch } from "../utils/adminSearch.util.js";
 
 /**
  * Get overall dashboard analytics
@@ -2910,13 +2911,13 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
 
 /**
  * Lấy danh sách tất cả yêu cầu rút reward_point (admin)
- * @param {Object} filters - { status, sellerId, startDate, endDate, limit, skip }
+ * @param {Object} filters - { status, sellerSearch, startDate, endDate, limit, skip }
  * @returns {Object} - { transactions, total }
  */
 export const getAllRewardPointWithdrawals = async (filters = {}) => {
   const {
     status,
-    sellerId,
+    sellerSearch,
     startDate,
     endDate,
     limit = 20,
@@ -2928,13 +2929,26 @@ export const getAllRewardPointWithdrawals = async (filters = {}) => {
   if (status) {
     query.status = status;
   }
-  if (sellerId) {
-    query.sellerId = new mongoose.Types.ObjectId(sellerId);
+  if (sellerSearch && String(sellerSearch).trim()) {
+    const sellerIds = await findUserIdsBySearch(sellerSearch, {
+      roles: ["seller"],
+    });
+    if (sellerIds === null) {
+      // < 2 ký tự: không lọc seller
+    } else if (sellerIds.length === 0) {
+      return { transactions: [], total: 0 };
+    } else {
+      query.sellerId = { $in: sellerIds };
+    }
   }
   if (startDate || endDate) {
     query.createdAt = {};
     if (startDate) query.createdAt.$gte = new Date(startDate);
-    if (endDate) query.createdAt.$lte = new Date(endDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt.$lte = end;
+    }
   }
 
   const [transactions, total] = await Promise.all([
@@ -2942,8 +2956,8 @@ export const getAllRewardPointWithdrawals = async (filters = {}) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate("sellerId", "name email phone")
-      .populate("reference.adminId", "name email")
+      .populate("sellerId", "fullName email phone")
+      .populate("reference.adminId", "fullName email")
       .lean(),
     SellerWalletTransaction.countDocuments(query),
   ]);

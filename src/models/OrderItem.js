@@ -60,6 +60,20 @@ const orderItemSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    /** Snapshot tại checkout — không đọc lại Product.preOrderDays khi hiển thị đơn cũ */
+    isPreOrder: {
+      type: Boolean,
+      default: false,
+    },
+    preOrderDaysSnapshot: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    estimatedShipBy: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,

@@ -21,6 +21,11 @@ import { clearUserCart } from "../utils/orderInventory.js";
 import mongoose from "mongoose";
 import { isPayOsConfigured } from "../config/payos.config.js";
 import { getSocketIO } from "../utils/socketIO.js";
+import {
+  buildPreOrderFieldsFromProduct,
+  orderHasPreOrderSlaBreach,
+  isPreOrderProduct,
+} from "../utils/preOrderSla.js";
 
 function emitLivestreamSessionStatsTick(liveSessionId) {
   if (!liveSessionId) {
@@ -241,6 +246,13 @@ const deductCoinsForOrder = async ({
     balanceBefore,
     balanceAfter,
   };
+};
+
+// Helper: stock check via InventoryItem (aligns with reserveVariantStock)
+const checkStock = async (productId, sku, qty, modelStock = 0) => {
+  const inventoryItem = await InventoryItem.findOne({ productId, sku }).lean();
+  const currentStock = inventoryItem ? inventoryItem.quantity : modelStock;
+  return { available: currentStock >= qty, currentStock };
 };
 
 // Reserve stock atomically for a specific product variant.
@@ -524,7 +536,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
   if (liveItems && liveItems.length > 0) {
     for (const liveItem of liveItems) {
       const product = await Product.findById(liveItem.productId)
-        .select("name models sellerId images tiers")
+        .select("name models sellerId images tiers preOrderDays")
         .lean();
       if (!product) {
         return next(
@@ -584,6 +596,18 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           ),
         );
       }
+      if (
+        !isPreOrderProduct(product) &&
+        targetModel.stock < liveItem.quantity
+      ) {
+        return next(
+          new ErrorResponse(
+            `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
+            400,
+          ),
+        );
+      }
+
       const clientPrice = Number(liveItem.price);
       const lineUnit =
         Number.isFinite(clientPrice) && clientPrice > 0
@@ -756,6 +780,23 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           400,
         ),
       );
+    }
+
+    if (!isPreOrderProduct(product)) {
+      const { available, currentStock } = await checkStock(
+        product._id,
+        model.sku,
+        item.quantity,
+        model.stock,
+      );
+      if (!available) {
+        return next(
+          new ErrorResponse(
+            `Insufficient stock for ${product.name}. Available: ${currentStock}`,
+            400,
+          ),
+        );
+      }
     }
 
     // Check pricing: Flash Sale > Shop Program > Original
@@ -1045,6 +1086,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       );
 
       createdOrder = order[0];
+      const preOrderAnchor = createdOrder.createdAt || new Date();
 
       const coinDeduction = await deductCoinsForOrder({
         user: userInTx,
@@ -1069,15 +1111,22 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         finalPrice,
         isShopProgram,
       } of validItems) {
-        await reserveVariantStock({
-          session,
-          product,
-          model,
-          quantity: cartItem.quantity,
-          order: createdOrder,
-          userId: req.user._id,
-          itemLabel: `${product.name} (${cartItem.color} / ${cartItem.size})`,
-        });
+        if (!isPreOrderProduct(product)) {
+          await reserveVariantStock({
+            session,
+            product,
+            model,
+            quantity: cartItem.quantity,
+            order: createdOrder,
+            userId: req.user._id,
+            itemLabel: `${product.name} (${cartItem.color} / ${cartItem.size})`,
+          });
+        }
+
+        const preOrderSnap = buildPreOrderFieldsFromProduct(
+          product.preOrderDays,
+          preOrderAnchor,
+        );
 
         const orderItem = await OrderItem.create(
           [
@@ -1096,6 +1145,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
               originalPrice: model.price,
               isFlashSale: flashSaleInfo.isFlashSale,
               isShopProgram,
+              ...preOrderSnap,
             },
           ],
           { session },
@@ -1106,7 +1156,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 
       for (const liveItem of liveItems || []) {
         const product = await Product.findById(liveItem.productId)
-          .select("name models sellerId images tiers")
+          .select("name models sellerId images tiers preOrderDays")
           .lean()
           .session(session);
 
@@ -1165,17 +1215,23 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           );
         }
 
-        await reserveVariantStock({
-          session,
-          product,
-          model: targetModel,
-          quantity: liveItem.quantity,
-          order: createdOrder,
-          userId: req.user._id,
-          itemLabel: `${product.name} (${liveItem.color} / ${liveItem.size})`,
-        });
+        if (!isPreOrderProduct(product)) {
+          await reserveVariantStock({
+            session,
+            product,
+            model: targetModel,
+            quantity: liveItem.quantity,
+            order: createdOrder,
+            userId: req.user._id,
+            itemLabel: `${product.name} (${liveItem.color} / ${liveItem.size})`,
+          });
+        }
 
         const effectivePrice = liveItem.price ?? targetModel.price ?? 0;
+        const preOrderSnapLive = buildPreOrderFieldsFromProduct(
+          product.preOrderDays,
+          preOrderAnchor,
+        );
 
         const orderItem = await OrderItem.create(
           [
@@ -1210,6 +1266,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
               name: product.name,
               isFlashSale: false,
               isShopProgram: false,
+              ...preOrderSnapLive,
             },
           ],
           { session },
@@ -1323,9 +1380,14 @@ export const getMyOrders = asyncHandler(async (req, res) => {
         },
       });
 
+      const plainItems = items.map((i) => (i.toObject ? i.toObject() : i));
       return {
         ...order.toObject(),
-        items,
+        items: plainItems,
+        preOrderSlaBreached: orderHasPreOrderSlaBreach(
+          order.status,
+          plainItems,
+        ),
       };
     }),
   );
@@ -1518,11 +1580,16 @@ export const getOrderById = asyncHandler(async (req, res, next) => {
     });
     console.log(`[DEBUG] Items found: ${items.length}`);
 
+    const plainItems = items.map((i) => (i.toObject ? i.toObject() : i));
     res.status(200).json({
       success: true,
       data: {
         ...order.toObject(),
-        items,
+        items: plainItems,
+        preOrderSlaBreached: orderHasPreOrderSlaBreach(
+          order.status,
+          plainItems,
+        ),
       },
     });
   } catch (err) {

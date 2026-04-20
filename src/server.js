@@ -29,6 +29,7 @@ import campaignRoutes from "./routes/campaign.routes.js";
 import { syncDealStatuses } from "./services/campaign.service.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
+import bulkUploadRoutes from "./routes/bulkUpload.routes.js";
 import voucherRoutes from "./routes/voucher.routes.js";
 import shopProgramRoutes from "./routes/shopProgram.routes.js";
 import shopDecorationRoutes from "./routes/shopDecoration.routes.js";
@@ -53,6 +54,7 @@ import coinRoutes from "./routes/coin.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
 import bannerRoutes from "./routes/banner.routes.js";
 import disputeRoutes from "./routes/disputeResolution.routes.js";
+import platformSettingsRoutes from "./routes/platformSettings.routes.js";
 import financeRoutes from "./routes/finance.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
@@ -219,6 +221,7 @@ app.use("/api/seller/orders", orderSellerRoutes);
 app.use("/api/campaigns", campaignRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/upload", uploadRoutes);
+app.use("/api/bulk-upload", bulkUploadRoutes);
 app.use("/api/vouchers/system", systemVoucherRoutes);
 app.use("/api/voucher-campaigns", voucherCampaignRoutes);
 app.use("/api/vouchers", voucherRoutes);
@@ -243,6 +246,7 @@ app.use("/api/ai", aiRoutes); // Register AI routes
 app.use("/api/finance", financeRoutes); // Register finance routes
 app.use("/api/banners", bannerRoutes); // Register banner ads routes
 app.use("/api/disputes", disputeRoutes);
+app.use("/api/platform-settings", platformSettingsRoutes);
 
 // Error handler
 app.use(errorHandler);

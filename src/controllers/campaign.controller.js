@@ -3,6 +3,7 @@ import { ErrorResponse } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import NotificationService from "../services/notification.service.js";
 import User from "../models/User.js";
+import Product from "../models/Product.js";
 
 // Human-readable labels for deal types (shared with service)
 const TYPE_LABELS = {
@@ -24,7 +25,7 @@ function formatTypeName(type) {
 /**
  * @desc    Create multiple flash-sale deals for one product in a single request
  * @route   POST /api/flash-sales/batch
- * @access  Private (Seller, Admin)
+ * @access  Private (Seller)
  */
 export const createBatchCampaign = asyncHandler(async (req, res) => {
   const { productId, startAt, endAt, variants, type = "flash_sale" } = req.body;
@@ -42,27 +43,30 @@ export const createBatchCampaign = asyncHandler(async (req, res) => {
     );
   }
 
-  const flashSales = await campaignService.createBatchCampaign({
-    ...req.body,
-    sellerId: req.user?._id,
-  });
+  const batchPayload = { ...req.body };
+  if (req.user?.role === "seller") {
+    batchPayload.sellerId = req.user._id;
+  }
+  // Admin: omit sellerId so service assigns product.sellerId (shop owner)
+
+  const flashSales = await campaignService.createBatchCampaign(batchPayload);
 
   const dealTypeName = formatTypeName(type);
 
-  // Notify followers (fire-and-forget)
-  if (req.user?._id) {
-    const seller = await User.findById(
-      req.user._id,
-      "shopName fullName",
-    ).lean();
+  const product = await Product.findById(productId).select("sellerId").lean();
+  const notifySellerId = product?.sellerId || req.user?._id;
+
+  // Notify shop followers (fire-and-forget) — always the product owner's shop
+  if (notifySellerId) {
+    const seller = await User.findById(notifySellerId, "shopName fullName").lean();
     const shopName = seller?.shopName || seller?.fullName || "Shop";
     const startFormatted = new Date(startAt).toLocaleString("vi-VN");
     NotificationService.notifyShopFollowers(
-      req.user._id,
+      notifySellerId,
       `${dealTypeName} mới tại ${shopName}!`,
       `${dealTypeName} bắt đầu lúc ${startFormatted} — Đừng bỏ lỡ ưu đãi hấp dẫn!`,
       "FLASH_SALE",
-      { shopId: req.user._id.toString(), startAt },
+      { shopId: notifySellerId.toString(), startAt },
     );
   }
 
@@ -76,7 +80,7 @@ export const createBatchCampaign = asyncHandler(async (req, res) => {
 /**
  * @desc    Create a new flash sale for a product
  * @route   POST /api/flash-sales
- * @access  Private (Seller, Admin)
+ * @access  Private (Seller)
  */
 export const createCampaign = asyncHandler(async (req, res) => {
   const { productId, salePrice, totalQuantity, startAt, endAt } = req.body;
@@ -97,20 +101,19 @@ export const createCampaign = asyncHandler(async (req, res) => {
 
   const flashSale = await campaignService.createCampaign(req.body);
 
-  // Notify followers (fire-and-forget)
-  if (req.user?._id) {
-    const seller = await User.findById(
-      req.user._id,
-      "shopName fullName",
-    ).lean();
+  const product = await Product.findById(productId).select("sellerId").lean();
+  const notifySellerId = product?.sellerId || req.user?._id;
+
+  if (notifySellerId) {
+    const seller = await User.findById(notifySellerId, "shopName fullName").lean();
     const shopName = seller?.shopName || seller?.fullName || "Shop";
     const startFormatted = new Date(startAt).toLocaleString("vi-VN");
     NotificationService.notifyShopFollowers(
-      req.user._id,
+      notifySellerId,
       `⚡ Flash Sale mới tại ${shopName}!`,
       `Flash Sale bắt đầu lúc ${startFormatted} — Đừng bỏ lỡ ưu đãi hấp dẫn!`,
       "FLASH_SALE",
-      { shopId: req.user._id.toString(), startAt },
+      { shopId: notifySellerId.toString(), startAt },
     );
   }
 
@@ -127,7 +130,7 @@ export const createCampaign = asyncHandler(async (req, res) => {
  * @access  Public
  */
 export const getCampaigns = asyncHandler(async (req, res, next) => {
-  const { page, limit, status, sortBy, type } = req.query;
+  const { page, limit, status, sortBy, type, sellerId } = req.query;
 
   const result = await campaignService.getCampaigns(
     {
@@ -136,6 +139,7 @@ export const getCampaigns = asyncHandler(async (req, res, next) => {
       status,
       sortBy: sortBy || "createdAt",
       type,
+      sellerId: sellerId || undefined,
     },
     req.user,
   );
@@ -240,7 +244,7 @@ export const getCampaignProduct = asyncHandler(async (req, res, next) => {
 /**
  * @desc    Update flash sale
  * @route   PUT /api/flash-sales/:flashSaleId
- * @access  Private (Seller, Admin)
+ * @access  Private (Seller)
  */
 export const updateCampaign = asyncHandler(async (req, res, next) => {
   const allowedFields = ["salePrice", "totalQuantity", "startAt", "endAt"];
@@ -283,6 +287,7 @@ export const updateCampaignProduct = asyncHandler(async (req, res, next) => {
   const product = await campaignService.updateCampaignProduct(
     req.params.campaignId,
     updateData,
+    req.user,
   );
 
   res.status(200).json({
@@ -350,15 +355,34 @@ export const pauseCampaign = asyncHandler(async (req, res, next) => {
  * @access  Private (Seller, Admin)
  */
 export const stopCampaign = asyncHandler(async (req, res, next) => {
-  const campaign = await campaignService.stopCampaign(
-    req.params.campaignId,
-    req.user,
-  );
+  const { reason } = req.body || {};
+  const campaign = await campaignService.stopCampaign(req.params.campaignId, req.user, {
+    reason,
+  });
 
   res.status(200).json({
     success: true,
     message: `Campaign stopped successfully (${campaign.cancelledCount} variant(s))`,
     data: campaign,
+  });
+});
+
+/**
+ * @desc    Admin cảnh cáo seller (notification + email)
+ * @route   POST /api/campaigns/:campaignId/warn
+ * @access  Private (Admin)
+ */
+export const warnSellerAboutCampaign = asyncHandler(async (req, res) => {
+  const { message, title } = req.body || {};
+  const result = await campaignService.warnSellerAboutCampaign(
+    req.params.campaignId,
+    req.user,
+    { message, title },
+  );
+
+  res.status(200).json({
+    success: true,
+    ...result,
   });
 });
 

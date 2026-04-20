@@ -507,6 +507,21 @@ describe("Function D – updateCampaign", () => {
       message: "Campaign not found",
     });
   });
+
+  // FS-TC-23b — campaign đã cancelled (vd. admin stop) không được sửa để kích hoạt lại
+  test("FS-TC-23b – Cập nhật campaign đã cancelled → Error 400", async () => {
+    const cancelledDeal = buildMockDeal({ status: "cancelled" });
+    mockDealFindOne.mockResolvedValue(cancelledDeal);
+
+    await expect(
+      updateCampaign(FLASH_SALE_ID, { salePrice: 99_000 }),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      message:
+        "Campaign đã bị dừng hoặc hủy — không thể chỉnh sửa. Vui lòng tạo campaign mới nếu cần.",
+    });
+    expect(cancelledDeal.save).not.toHaveBeenCalled();
+  });
 });
 
 // =============================================================================
