@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { isPreOrderProduct } from "../utils/preOrderSla.js";
 import Product from "../models/Product.js";
 import InventoryItem from "../models/InventoryItem.js";
 import Category from "../models/Category.js";
@@ -719,7 +720,17 @@ export const updateProduct = async (productId, updateData, sellerId) => {
     const existingSkusForMatch = new Set(
       (await InventoryItem.find({ productId: product._id })).map((inv) => normalizeSku(inv.sku)),
     );
-    updateData.models = updateData.models.map((model, idx) => {
+    // SKUs already taken (DB + explicit SKUs in this payload). Never assign by array index —
+    // order of `models` from the client can differ from `existingModels` after variants are added.
+    const usedSkus = new Set();
+    for (const em of existingModels) {
+      if (em.sku) usedSkus.add(normalizeSku(em.sku));
+    }
+    for (const m of updateData.models) {
+      if (m.sku) usedSkus.add(normalizeSku(m.sku));
+    }
+
+    updateData.models = updateData.models.map((model) => {
       if (model.sku) {
         model.sku = normalizeSku(model.sku);
       } else {
@@ -729,14 +740,24 @@ export const updateProduct = async (productId, updateData, sellerId) => {
         );
         if (existingModel?.sku) {
           model.sku = normalizeSku(existingModel.sku);
-        } else if (existingModels[idx]?.sku) {
-          model.sku = normalizeSku(existingModels[idx].sku);
         } else {
-          model.sku = generateSKU(
-            product.name,
-            updateData.tiers || product.tiers || [],
-            model.tierIndex || [],
-          );
+          const tiersForSku = updateData.tiers || product.tiers || [];
+          let candidate = "";
+          let attempts = 0;
+          do {
+            candidate = generateSKU(
+              product.name,
+              tiersForSku,
+              model.tierIndex || [],
+            );
+            if (!usedSkus.has(candidate)) break;
+            attempts++;
+          } while (attempts < 5);
+          if (usedSkus.has(candidate)) {
+            candidate = `${candidate}-${Date.now().toString().slice(-4)}`;
+          }
+          model.sku = normalizeSku(candidate);
+          usedSkus.add(model.sku);
         }
       }
 
@@ -907,7 +928,7 @@ export const checkStockAvailability = async (
 ) => {
   const product = await Product.findOne(
     { _id: productId, "models._id": modelId },
-    { "models.$": 1 },
+    { "models.$": 1, preOrderDays: 1 },
   );
 
   if (!product || !product.models || product.models.length === 0) {
@@ -918,16 +939,30 @@ export const checkStockAvailability = async (
 
   // Read stock from InventoryItem (single source of truth).
   // Fall back to model.stock cache if no inventory record exists yet.
-  const inventoryItem = await InventoryItem.findOne({ sku: model.sku });
+  const inventoryItem = await InventoryItem.findOne({
+    productId,
+    sku: model.sku,
+  });
   const availableStock = inventoryItem
     ? inventoryItem.availableQuantity
     : model.stock;
 
+  if (isPreOrderProduct(product)) {
+    return {
+      available: true,
+      stock: availableStock,
+      currentStock: availableStock,
+      preOrder: true,
+      price: model.price,
+      source: inventoryItem ? "inventory" : "product_cache",
+    };
+  }
+
   return {
     available: availableStock >= quantity,
     stock: availableStock,
+    currentStock: availableStock,
     price: model.price,
-    // Expose breakdown for debugging
     source: inventoryItem ? "inventory" : "product_cache",
   };
 };

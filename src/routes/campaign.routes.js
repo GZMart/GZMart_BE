@@ -17,6 +17,7 @@ import {
   resumeCampaign,
   getCampaignStats,
   searchCampaignProducts,
+  warnSellerAboutCampaign,
 } from "../controllers/campaign.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import { requireRoles } from "../middlewares/role.middleware.js";
@@ -238,7 +239,7 @@ router.get("/", optionalAuth, asyncHandler(getCampaigns));
 router.post(
   "/",
   protect,
-  requireRoles("seller", "admin"),
+  requireRoles("seller"),
   asyncHandler(createCampaign),
 );
 
@@ -247,8 +248,18 @@ router.post(
 router.post(
   "/batch",
   protect,
-  requireRoles("seller", "admin"),
+  requireRoles("seller"),
   asyncHandler(createBatchCampaign),
+);
+
+/**
+ * Admin cảnh cáo seller về campaign (notification + email)
+ */
+router.post(
+  "/:campaignId/warn",
+  protect,
+  requireRoles("admin"),
+  asyncHandler(warnSellerAboutCampaign),
 );
 
 /**
@@ -594,7 +605,7 @@ router.get("/:campaignId", asyncHandler(getCampaignDetail));
 router.put(
   "/:campaignId",
   protect,
-  requireRoles("seller", "admin"),
+  requireRoles("seller"),
   asyncHandler(updateCampaign),
 );
 

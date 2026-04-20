@@ -1,10 +1,32 @@
+import mongoose from "mongoose";
 import InventoryItem from "../models/InventoryItem.js";
 import InventoryTransaction from "../models/InventoryTransaction.js";
 import Voucher from "../models/Voucher.js";
 import Deal from "../models/Deal.js";
 import Product from "../models/Product.js";
+import OrderItem from "../models/OrderItem.js";
 import Cart from "../models/Cart.js";
 import CartItem from "../models/CartItem.js";
+import { isPreOrderProduct } from "./preOrderSla.js";
+
+/** Chuẩn hoá line items (populate hoặc load theo id) cho rollback / PayOS deduct. */
+async function resolveOrderLineItems(order) {
+  const raw = order.items || [];
+  if (raw.length === 0) return [];
+  const first = raw[0];
+  if (
+    first &&
+    typeof first === "object" &&
+    first.sku != null &&
+    !(first instanceof mongoose.Types.ObjectId)
+  ) {
+    return raw;
+  }
+  const ids = raw.map((x) =>
+    x instanceof mongoose.Types.ObjectId ? x : x._id || x,
+  );
+  return OrderItem.find({ _id: { $in: ids } });
+}
 
 /**
  * Deduct inventory, vouchers, and flash sales for an order
@@ -31,6 +53,25 @@ export const deductOrderResources = async (
 
   // 2. Deduct inventory and update flash sales
   for (const { cartItem, model, product, flashSaleInfo } of validItems) {
+    if (isPreOrderProduct(product)) {
+      try {
+        if (!order || !order.resourcesDeducted) {
+          await Product.findByIdAndUpdate(product._id, {
+            $inc: { sold: cartItem.quantity },
+          });
+          console.log(
+            `[OrderInventory] COD - Pre-order: +sold only ${product._id} +${cartItem.quantity} (no inventory deduct)`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[OrderInventory] Pre-order sold increment failed for ${product._id}:`,
+          err,
+        );
+      }
+      continue;
+    }
+
     // Update flash sale sold quantity if applicable
     if (flashSaleInfo.isFlashSale && flashSaleInfo.flashSaleId) {
       await Deal.findByIdAndUpdate(flashSaleInfo.flashSaleId, {
@@ -148,11 +189,34 @@ export const rollbackOrderResources = async (order) => {
   }
 
   // 2. Restore inventory and rollback flash sales
-  if (!order.items || order.items.length === 0) {
+  const lineItems = await resolveOrderLineItems(order);
+  if (!lineItems || lineItems.length === 0) {
     return;
   }
 
-  for (const item of order.items) {
+  for (const item of lineItems) {
+    if (item.isPreOrder) {
+      try {
+        const prod = await Product.findById(item.productId);
+        if (prod) {
+          prod.sold = Math.max(
+            0,
+            Number(prod.sold || 0) - Number(item.quantity || 0),
+          );
+          await prod.save();
+          console.log(
+            `[OrderInventory] Rollback - Pre-order sold only: ${item.productId} -${item.quantity} → ${prod.sold}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[OrderInventory] Rollback pre-order sold failed for ${item.productId}:`,
+          err,
+        );
+      }
+      continue;
+    }
+
     // Rollback flash sale sold count
     if (item.isFlashSale) {
       // Find the flash sale/deal - note: we don't have flashSaleId stored,
@@ -283,14 +347,32 @@ export const deductOrderResourcesFromOrder = async (order) => {
   }
 
   // 2. Deduct inventory and flash sales for each item
-  if (!order.items || order.items.length === 0) {
+  const lineItems = await resolveOrderLineItems(order);
+  if (!lineItems || lineItems.length === 0) {
     console.warn(
       `[OrderInventory] No items found in order ${order.orderNumber}`,
     );
     return;
   }
 
-  for (const item of order.items) {
+  for (const item of lineItems) {
+    if (item.isPreOrder) {
+      try {
+        await Product.findByIdAndUpdate(item.productId, {
+          $inc: { sold: item.quantity },
+        });
+        console.log(
+          `[OrderInventory] Pre-order (payment): +sold only ${item.productId} +${item.quantity}`,
+        );
+      } catch (err) {
+        console.error(
+          `[OrderInventory] Pre-order sold increment failed for ${item.productId}:`,
+          err,
+        );
+      }
+      continue;
+    }
+
     // Handle flash sale sold count
     if (item.isFlashSale) {
       // Find active flash sale/deal for this product

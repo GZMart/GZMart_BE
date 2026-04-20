@@ -6,6 +6,7 @@ import { asyncHandler } from "../middlewares/async.middleware.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import * as campaignService from "../services/campaign.service.js";
 import { getShopProgramPriceForVariant } from "../services/product.service.js";
+import { isPreOrderProduct } from "../utils/preOrderSla.js";
 
 // Helper to check stock via InventoryItem (source of truth) with fallback to model.stock
 const checkStockAvailability = async (
@@ -14,7 +15,13 @@ const checkStockAvailability = async (
   sku,
   requestedQty,
   modelStock = 0,
+  productDoc = null,
 ) => {
+  if (productDoc && isPreOrderProduct(productDoc)) {
+    const inventoryItem = await InventoryItem.findOne({ productId, sku }).lean();
+    const currentStock = inventoryItem ? inventoryItem.quantity : modelStock;
+    return { available: true, currentStock };
+  }
   const inventoryItem = await InventoryItem.findOne({ productId, sku }).lean();
   const currentStock = inventoryItem ? inventoryItem.quantity : modelStock;
   return { available: currentStock >= requestedQty, currentStock };
@@ -67,7 +74,10 @@ export const getCart = asyncHandler(async (req, res, next) => {
   // Populate items
   await cart.populate({
     path: "items",
-    populate: { path: "productId", select: "name slug tiers models" },
+    populate: {
+      path: "productId",
+      select: "name slug tiers models images preOrderDays",
+    },
   });
 
   const cartItems = cart.items || [];
@@ -89,11 +99,13 @@ export const getCart = asyncHandler(async (req, res, next) => {
         model.sku,
         item.quantity,
         model.stock,
+        product,
       );
     }
 
     total += item.price * item.quantity;
 
+    const preOrder = isPreOrderProduct(product);
     enrichedItems.push({
       ...item.toObject(),
       productId: {
@@ -101,11 +113,12 @@ export const getCart = asyncHandler(async (req, res, next) => {
         name: product.name,
         slug: product.slug,
         images: product.images, // Top level images
+        preOrderDays: product.preOrderDays ?? 0,
         // Remove tiers, models, etc from response
       },
       stockAvailable: stockInfo.currentStock,
       isAvailable: stockInfo.available,
-      exceedsStock: item.quantity > stockInfo.currentStock,
+      exceedsStock: preOrder ? false : item.quantity > stockInfo.currentStock,
     });
   }
 
@@ -195,6 +208,7 @@ export const addToCart = asyncHandler(async (req, res, next) => {
     model.sku,
     newQuantity,
     model.stock,
+    product,
   );
 
   if (!available) {
@@ -293,6 +307,7 @@ export const updateCartItem = asyncHandler(async (req, res, next) => {
     model.sku,
     quantity,
     model.stock,
+    product,
   );
 
   if (!available) {

@@ -7,34 +7,75 @@ import Review from "../../../models/Review.js";
 import User from "../../../models/User.js";
 import embeddingService from "../../embedding.service.js";
 import { registerTool } from "../tools.js";
+import { escapeRegex, extractSearchTerms } from "../../../utils/productSearchQuery.js";
+import { normalizeBuyerQuery } from "../../../utils/buyerQueryNormalizer.js";
+import {
+  extractGenderIntent,
+  buildGenderMongoClause,
+  filterProductsByGenderIntent,
+} from "../../../utils/genderIntent.js";
 
 const TOP_K = 10;
 
-async function execute({ query, limit = TOP_K, categoryId = null }) {
-  const queryEmbedding = await embeddingService.getEmbedding(query);
+/** Load Category.name theo categoryId trên danh sách sản phẩm (lọc giới + context). */
+async function loadCategoryIdToNameMap(products) {
+  const raw = [...new Set(products.map((p) => p.categoryId).filter(Boolean))];
+  if (!raw.length) return {};
+  const ids = raw.map((id) =>
+    typeof id === "string" ? new mongoose.Types.ObjectId(id) : id,
+  );
+  const rows = await Category.find({ _id: { $in: ids } }).select("name").lean();
+  const map = {};
+  for (const c of rows) map[c._id.toString()] = c.name || "";
+  return map;
+}
 
-  // ─── Stage 1: Text filter — fast, precise, no cross-category bleed ────
-  // Build candidate pool from name/brand match so vector search never
-  // sees unrelated categories (shoes won't appear for a shirt query).
-  const textCandidates = await Product.find({
-    status: "active",
-    ...(categoryId ? { categoryId: new mongoose.Types.ObjectId(categoryId) } : {}),
-    $or: [
-      { name: { $regex: query, $options: "i" } },
-      { brand: { $regex: query, $options: "i" } },
-      { tags: { $regex: query, $options: "i" } },
-    ],
-  })
-    .select("_id name slug categoryId sellerId description attributes originalPrice rating reviewCount sold brand tags models.price models.sku images")
-    .sort({ sold: -1 })
-    .limit(60)
-    .lean();
+/**
+ * Pipeline tìm sản phẩm cho agent (dùng chung outfit + productSearch).
+ */
+export async function runProductSearch({
+  query,
+  limit = TOP_K,
+  categoryId = null,
+  genderContextQuery = null,
+}) {
+  const { normalized } = normalizeBuyerQuery(query);
+  const effectiveQuery = normalized || query;
+
+  const genderIntent = extractGenderIntent(effectiveQuery);
+  const genderClause = buildGenderMongoClause(genderIntent);
+
+  const queryEmbedding = await embeddingService.getEmbedding(effectiveQuery);
+
+  // ─── Stage 1: Text filter — OR per keyword (natural Vietnamese)
+  const terms = extractSearchTerms(effectiveQuery);
+  const orConditions = [];
+  for (const term of terms) {
+    const rx = escapeRegex(term);
+    orConditions.push(
+      { name: { $regex: rx, $options: "i" } },
+      { brand: { $regex: rx, $options: "i" } },
+      { tags: { $regex: rx, $options: "i" } },
+    );
+  }
+
+  const textCandidates = orConditions.length
+    ? await Product.find({
+        status: "active",
+        ...(categoryId ? { categoryId: new mongoose.Types.ObjectId(categoryId) } : {}),
+        ...genderClause,
+        $or: orConditions,
+      })
+        .select("_id name slug categoryId sellerId description attributes originalPrice rating reviewCount sold brand tags models.price models.sku images")
+        .sort({ sold: -1 })
+        .limit(60)
+        .lean()
+    : [];
 
   const candidateIds = textCandidates.map((p) => p._id);
 
-  // ─── Stage 2: Vector rank — re-rank candidates by semantic similarity ─
+  // ─── Stage 2: Vector rank
   let products = [];
-  let vectorSearchHadResults = false;
 
   if (candidateIds.length > 0) {
     try {
@@ -71,18 +112,46 @@ async function execute({ query, limit = TOP_K, categoryId = null }) {
         { $limit: limit },
       ]);
       products = rawResults;
-      vectorSearchHadResults = rawResults.length > 0;
     } catch (err) {
       console.warn("[productSearch] Vector search failed, falling back to text:", err.message);
     }
   }
 
-  // ─── Fallback: if vector returned nothing, use pure text results ───────
   if (products.length === 0 && textCandidates.length > 0) {
     products = textCandidates.slice(0, limit);
   }
 
+  const categoryIdToName = await loadCategoryIdToNameMap(products);
+
+  const countBeforeGender = products.length;
+  const genderFilterQuery =
+    genderContextQuery != null && String(genderContextQuery).trim() !== ""
+      ? String(genderContextQuery)
+      : effectiveQuery;
+  products = filterProductsByGenderIntent(products, genderIntent, categoryIdToName, genderFilterQuery);
+  if (countBeforeGender > 0 && products.length === 0 && genderIntent) {
+    return {
+      context:
+        "Không tìm thấy sản phẩm phù hợp với giới tính (nam/nữ) bạn đang tìm trong kho GZMart. Bạn thử đổi từ khóa hoặc xem danh mục khác.",
+      products: [],
+    };
+  }
+
   if (products.length === 0) {
+    return { context: "Không tìm thấy sản phẩm phù hợp.", products: [] };
+  }
+
+  return finalizeProductAgentContext(
+    products,
+    `=== SẢN PHẨM TÌM ĐƯỢC (${products.length} kết quả) ===`,
+  );
+}
+
+/**
+ * Gắn deal/voucher/review và format context cho LLM (dùng chung outfit).
+ */
+export async function finalizeProductAgentContext(products, headerLine) {
+  if (!products?.length) {
     return { context: "Không tìm thấy sản phẩm phù hợp.", products: [] };
   }
 
@@ -124,8 +193,6 @@ async function execute({ query, limit = TOP_K, categoryId = null }) {
   sellers.forEach((s) => { sellerMap[s._id.toString()] = s.shopName || s.fullName || "Shop"; });
   const dealMap = {};
   deals.forEach((d) => { const pid = d.productId.toString(); if (!dealMap[pid]) dealMap[pid] = []; dealMap[pid].push(d); });
-  const reviewMap = {};
-  reviews.forEach((r) => { reviewMap[r._id.toString()] = r; });
 
   const productLines = products.map((p) => {
     const pid = p._id.toString();
@@ -170,7 +237,7 @@ async function execute({ query, limit = TOP_K, categoryId = null }) {
     return line;
   });
 
-  const context = `=== SẢN PHẨM TÌM ĐƯỢC (${products.length} kết quả) ===\n${productLines.join("\n\n")}`;
+  const context = `${headerLine}\n${productLines.join("\n\n")}`;
   return { context, products };
 }
 
@@ -187,5 +254,5 @@ registerTool("productSearch", {
     "rẻ", "đắt", "budget", "dưới", "trên",
     "hot", "bán chạy", "best seller", "mới",
   ],
-  execute,
+  execute: (params) => runProductSearch(params),
 });

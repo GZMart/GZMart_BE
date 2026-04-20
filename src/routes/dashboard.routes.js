@@ -417,7 +417,11 @@ router.get("/reward-point-withdrawals", asyncHandler(getRewardPointWithdrawals))
  * @access  Private (Admin only)
  * @query   status, sellerId, startDate, endDate, limit, skip
  */
-router.get("/admin/reward-point-withdrawals", asyncHandler(getAllRewardPointWithdrawals));
+router.get(
+  "/admin/reward-point-withdrawals",
+  authorize("admin"),
+  asyncHandler(getAllRewardPointWithdrawals),
+);
 
 /**
  * @route   PUT /api/dashboard/admin/reward-point-withdrawals/:transactionId/process
@@ -425,7 +429,11 @@ router.get("/admin/reward-point-withdrawals", asyncHandler(getAllRewardPointWith
  * @access  Private (Admin only)
  * @body    { action: "approve" | "reject", rejectedReason }
  */
-router.put("/admin/reward-point-withdrawals/:transactionId/process", asyncHandler(processRewardPointWithdrawal));
+router.put(
+  "/admin/reward-point-withdrawals/:transactionId/process",
+  authorize("admin"),
+  asyncHandler(processRewardPointWithdrawal),
+);
 
 /**
  * @route   GET /api/dashboard/customer-age-analytics

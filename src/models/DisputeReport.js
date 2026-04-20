@@ -10,7 +10,7 @@ const disputeReportSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["order", "product"],
+      enum: ["order", "product", "seller", "system_bug"],
       required: true,
       index: true,
     },

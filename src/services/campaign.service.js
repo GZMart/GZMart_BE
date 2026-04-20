@@ -1,6 +1,23 @@
 import Deal from "../models/Deal.js";
 import Product from "../models/Product.js";
+import User from "../models/User.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
+import NotificationService from "./notification.service.js";
+import { sendTemplatedEmail } from "../utils/sendEmail.js";
+import { emailTemplates } from "../templates/email.templates.js";
+
+function escapeHtml(s) {
+  if (s == null || s === undefined) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function textToEmailHtml(text) {
+  return escapeHtml(text).replace(/\r\n/g, "\n").split("\n").filter(Boolean).map((line) => `<p style="margin:0 0 8px 0;">${line}</p>`).join("");
+}
 
 // Allowed deal types - maps to Deal model's enum
 const DEAL_TYPES = [
@@ -38,6 +55,7 @@ function mapToCampaignShape(deal) {
   return {
     _id: deal._id,
     type: deal.type || null, // Include deal type
+    sellerId: deal.sellerId,
     productId: deal.productId?.toJSON
       ? deal.productId.toJSON()
       : deal.productId,
@@ -68,6 +86,9 @@ function mapToCampaignShape(deal) {
     timeRemaining: Math.max(0, new Date(deal.endDate).getTime() - Date.now()),
     status: deal.status,
     createdAt: deal.createdAt,
+    adminStopReason: deal.adminStopReason ?? null,
+    adminStoppedAt: deal.adminStoppedAt ?? null,
+    adminStoppedBy: deal.adminStoppedBy ?? null,
   };
 }
 
@@ -303,13 +324,22 @@ export const createBatchCampaign = async (batchData) => {
  * Returns campaigns with aggregated SKU data
  */
 export const getCampaigns = async (filters = {}, user = null) => {
-  const { page = 1, limit = 10, status, sortBy = "createdAt", type } = filters;
+  const {
+    page = 1,
+    limit = 10,
+    status,
+    sortBy = "createdAt",
+    type,
+    sellerId: filterSellerId,
+  } = filters;
   const skip = (page - 1) * limit;
 
   // Base filter for Deal documents
   const filterQuery = type ? { type } : {};
   if (user && user.role === "seller") {
     filterQuery.sellerId = user._id;
+  } else if (user && user.role === "admin" && filterSellerId) {
+    filterQuery.sellerId = filterSellerId;
   }
   if (status) {
     if (status === "upcoming") filterQuery.status = "pending";
@@ -327,11 +357,14 @@ export const getCampaigns = async (filters = {}, user = null) => {
   };
   const sortStage = sortOptions[sortBy] || { createdAt: -1 };
 
-  // Get all deals matching filter (for grouping)
-  const allDeals = await Deal.find(filterQuery)
-    .populate("productId", "name sku originalPrice images models")
-    .sort(sortStage)
-    .lean();
+  let dealsQuery = Deal.find(filterQuery).populate(
+    "productId",
+    "name sku originalPrice images models",
+  );
+  if (user && user.role === "admin") {
+    dealsQuery = dealsQuery.populate("sellerId", "shopName fullName email");
+  }
+  const allDeals = await dealsQuery.sort(sortStage).lean();
 
   // Group deals by productId + title + startDate + endDate to form campaigns
   const campaignMap = {};
@@ -341,6 +374,7 @@ export const getCampaigns = async (filters = {}, user = null) => {
       campaignMap[key] = {
         _id: deal._id,
         productId: deal.productId,
+        sellerId: deal.sellerId,
         campaignTitle: deal.title,
         type: deal.type,
         startAt: deal.startDate,
@@ -544,6 +578,14 @@ export const updateCampaign = async (campaignId, updateData, user = null) => {
     throw new ErrorResponse("Not authorized to update this campaign", 403);
   }
 
+  // Admin stop / hủy — không cho seller (hay bất kỳ ai qua API này) "sửa" để kích hoạt lại
+  if (campaign.status === "cancelled") {
+    throw new ErrorResponse(
+      "Campaign đã bị dừng hoặc hủy — không thể chỉnh sửa. Vui lòng tạo campaign mới nếu cần.",
+      400,
+    );
+  }
+
   const now = new Date();
   const isActive = campaign.startDate <= now && campaign.endDate >= now;
   const isPending = campaign.startDate > now;
@@ -596,7 +638,8 @@ export const updateCampaign = async (campaignId, updateData, user = null) => {
   if (purchaseLimitPerUser !== undefined)
     campaign.purchaseLimitPerUser = Number(purchaseLimitPerUser);
 
-  // Recalculate status based on dates (pre-save hook also does this)
+  // Recalculate status based on dates (pre-save hook also does this).
+  // Campaign cancelled đã bị từ chối ở trên — không thể tới đây với status cancelled.
   const updatedNow = new Date();
   if (campaign.startDate > updatedNow) {
     campaign.status = "pending";
@@ -670,9 +713,15 @@ export const pauseCampaign = async (campaignId, user = null) => {
 
 /**
  * Stop (cancelled) a campaign - sets all variants in the group to "cancelled"
+ * Admin bắt buộc `reason` (tối thiểu 10 ký tự); lưu audit + gửi thông báo & email cho seller.
  */
-export const stopCampaign = async (campaignId, user = null) => {
-  const campaign = await Deal.findOne({ _id: campaignId });
+export const stopCampaign = async (campaignId, user = null, options = {}) => {
+  const { reason } = options;
+
+  const campaign = await Deal.findOne({ _id: campaignId }).populate(
+    "productId",
+    "name sku",
+  );
   if (!campaign) {
     throw new ErrorResponse("Campaign not found", 404);
   }
@@ -681,24 +730,162 @@ export const stopCampaign = async (campaignId, user = null) => {
     throw new ErrorResponse("Not authorized to stop this campaign", 403);
   }
 
+  const isAdmin = user && user.role === "admin";
+  if (isAdmin) {
+    const r = (reason || "").trim();
+    if (!r || r.length < 10) {
+      throw new ErrorResponse(
+        "Lý do dừng campaign là bắt buộc (tối thiểu 10 ký tự) khi thao tác bằng tài khoản quản trị",
+        400,
+      );
+    }
+    if (r.length > 4000) {
+      throw new ErrorResponse("Lý do không được vượt quá 4000 ký tự", 400);
+    }
+  }
+
   if (campaign.status === "expired" || campaign.status === "cancelled") {
     throw new ErrorResponse("Campaign is already ended or cancelled", 400);
   }
 
-  // Stop ALL variants in the same campaign group (same productId + title + startDate + endDate)
   const groupQuery = {
-    productId: campaign.productId,
+    productId: campaign.productId?._id || campaign.productId,
     title: campaign.title,
     startDate: campaign.startDate,
     endDate: campaign.endDate,
     status: { $nin: ["expired", "cancelled"] },
   };
 
-  const result = await Deal.updateMany(groupQuery, { $set: { status: "cancelled" } });
+  let result;
+  if (isAdmin) {
+    const r = (reason || "").trim();
+    result = await Deal.updateMany(groupQuery, {
+      $set: {
+        status: "cancelled",
+        adminStopReason: r,
+        adminStoppedAt: new Date(),
+        adminStoppedBy: user._id,
+      },
+    });
 
-  // Return the first updated deal as representative
+    const sellerId = campaign.sellerId;
+    if (sellerId) {
+      const productName =
+        campaign.productId?.name || "Sản phẩm";
+      const notifTitle = "Campaign Flash Sale đã bị dừng — GZMart";
+      const notifBody = `Quản trị đã dừng campaign liên quan sản phẩm "${productName}".\n\nLý do: ${r}`;
+      try {
+        await NotificationService.createNotification(
+          sellerId,
+          notifTitle,
+          notifBody,
+          "CAMPAIGN_ADMIN",
+          {
+            dealId: campaign._id.toString(),
+            productId: (campaign.productId?._id || campaign.productId)?.toString?.(),
+            action: "admin_stop",
+          },
+        );
+      } catch (e) {
+        /* log ở caller nếu cần */
+      }
+
+      const sellerUser = await User.findById(sellerId).select("email fullName").lean();
+      if (sellerUser?.email && emailTemplates.CAMPAIGN_SELLER_NOTICE) {
+        const bodyHtml = textToEmailHtml(
+          `Sản phẩm: ${productName}\n\nCampaign Flash Sale đã bị dừng bởi quản trị viên.\n\nLý do:\n${r}`,
+        );
+        try {
+          await sendTemplatedEmail({
+            email: sellerUser.email,
+            templateType: "CAMPAIGN_SELLER_NOTICE",
+            templateData: {
+              name: sellerUser.fullName,
+              heading: "Campaign đã bị dừng",
+              bodyHtml,
+            },
+          });
+        } catch (e) {
+          /* email optional */
+        }
+      }
+    }
+  } else {
+    result = await Deal.updateMany(groupQuery, { $set: { status: "cancelled" } });
+  }
+
   const updated = await Deal.findOne({ _id: campaignId });
   return { ...mapToCampaignShape(updated), cancelledCount: result.modifiedCount };
+};
+
+/**
+ * Admin cảnh cáo seller về vi phạm campaign — thông báo in-app + email.
+ */
+export const warnSellerAboutCampaign = async (campaignId, user, options = {}) => {
+  if (!user || user.role !== "admin") {
+    throw new ErrorResponse("Chỉ quản trị viên mới gửi được cảnh cáo", 403);
+  }
+
+  const { message, title } = options;
+  const msg = (message || "").trim();
+  if (!msg || msg.length < 10) {
+    throw new ErrorResponse("Nội dung cảnh cáo phải có ít nhất 10 ký tự", 400);
+  }
+  if (msg.length > 4000) {
+    throw new ErrorResponse("Nội dung không được vượt quá 4000 ký tự", 400);
+  }
+
+  const campaign = await Deal.findOne({ _id: campaignId }).populate(
+    "productId",
+    "name sku",
+  );
+  if (!campaign) {
+    throw new ErrorResponse("Campaign not found", 404);
+  }
+
+  const sellerId = campaign.sellerId;
+  if (!sellerId) {
+    throw new ErrorResponse("Campaign không gắn seller", 400);
+  }
+
+  const productName = campaign.productId?.name || "Sản phẩm";
+  const notifTitle =
+    (title || "").trim() || "Cảnh cáo vi phạm — Campaign Flash Sale";
+  const notifBody = `Sản phẩm: ${productName}\n\n${msg}`;
+
+  await NotificationService.createNotification(
+    sellerId,
+    notifTitle,
+    notifBody,
+    "CAMPAIGN_ADMIN",
+    {
+      dealId: campaign._id.toString(),
+      productId: (campaign.productId?._id || campaign.productId)?.toString?.(),
+      action: "warning",
+    },
+  );
+
+  const sellerUser = await User.findById(sellerId).select("email fullName").lean();
+  if (sellerUser?.email) {
+    const bodyHtml = textToEmailHtml(
+      `Sản phẩm: ${productName}\n\n${msg}`,
+    );
+    try {
+      await sendTemplatedEmail({
+        email: sellerUser.email,
+        templateType: "CAMPAIGN_SELLER_NOTICE",
+        templateData: {
+          name: sellerUser.fullName,
+          heading: notifTitle,
+          bodyHtml,
+        },
+      });
+    } catch (e) {
+      /* email optional */
+    }
+  }
+
+  return { success: true, message: "Đã gửi cảnh cáo tới seller" };
 };
 
 /**
@@ -847,8 +1034,8 @@ export const getCampaignProduct = async (campaignProductId) => {
   return getCampaignDetail(campaignProductId);
 };
 
-export const updateCampaignProduct = async (campaignProductId, updateData) => {
-  return updateCampaign(campaignProductId, updateData);
+export const updateCampaignProduct = async (campaignProductId, updateData, user = null) => {
+  return updateCampaign(campaignProductId, updateData, user);
 };
 
 export const removeProductFromCampaign = async (campaignProductId) => {

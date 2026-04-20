@@ -13,9 +13,9 @@ const chatRateLimiter = new RateLimiterMemory({
 });
 
 const viewerTokenRateLimiter = new RateLimiterMemory({
-  points: 1,        // 1 token request
-  duration: 10,     // per 10 seconds (prevents token-grabbing spam)
-  blockDuration: 5,
+  points: 30,
+  duration: 60,
+  blockDuration: 30,
 });
 
 const handoffMintRateLimiter = new RateLimiterMemory({
@@ -23,6 +23,18 @@ const handoffMintRateLimiter = new RateLimiterMemory({
   duration: 60,
   blockDuration: 30,
 });
+
+/** Client IP for guests (optionalAuth). Honors X-Forwarded-For first hop when present. */
+function viewerTokenClientIp(req) {
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.trim().length > 0) {
+    return xf.split(",")[0].trim();
+  }
+  if (Array.isArray(xf) && xf.length > 0) {
+    return String(xf[0]).trim();
+  }
+  return req.ip || req.socket?.remoteAddress || "unknown";
+}
 
 // Middleware: rate limit viewer token requests
 export async function handoffMintRateLimitMiddleware(req, res, next) {
@@ -40,7 +52,9 @@ export async function handoffMintRateLimitMiddleware(req, res, next) {
 }
 
 export async function viewerTokenRateLimitMiddleware(req, res, next) {
-  const key = req.params.sessionId || req.ip;
+  const sessionId = req.params.sessionId || "unknown";
+  const userPart = req.user?._id?.toString() || `ip:${viewerTokenClientIp(req)}`;
+  const key = `vt:${sessionId}:${userPart}`;
   try {
     await viewerTokenRateLimiter.consume(key);
     next();
@@ -48,7 +62,7 @@ export async function viewerTokenRateLimitMiddleware(req, res, next) {
     if (e instanceof RateLimiterRes) {
       res.status(429).json({ message: "Too many requests. Please wait." });
     } else {
-      console.error('[RateLimit] Unexpected error:', e);
+      console.error("[RateLimit] Unexpected error:", e);
       next(e);
     }
   }
@@ -66,6 +80,7 @@ router.post(
   ctrl.createSessionHandoff,
 );
 router.post("/session/:sessionId/start", protect, ctrl.startSession);
+router.post("/session/:sessionId/host-token", protect, ctrl.mintHostToken);
 router.post("/session/:sessionId/token", optionalAuth, viewerTokenRateLimitMiddleware, ctrl.getViewerToken);
 router.post("/session/:sessionId/end", protect, ctrl.endSession);
 router.get("/session/:sessionId/stats", protect, ctrl.getSessionStats);

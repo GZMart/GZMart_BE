@@ -3,6 +3,7 @@ import {
   getAllUsers,
   getUserById,
   toggleUserStatus,
+  searchSellers,
 } from "../controllers/user.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 import { requireAdmin } from "../middlewares/role.middleware.js";
@@ -27,6 +28,12 @@ router.use(requireAdmin);
  *         description: Success
  */
 router.get("/", asyncHandler(getAllUsers));
+
+/**
+ * Admin: gợi ý seller (tên shop, email, …) — dùng cho lọc campaign, v.v.
+ * NOTE: đặt trước /:id để không bị nuốt bởi param id
+ */
+router.get("/sellers/search", asyncHandler(searchSellers));
 
 /**
  * @swagger

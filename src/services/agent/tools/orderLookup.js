@@ -1,6 +1,7 @@
 import Order from "../../../models/Order.js";
 import OrderItem from "../../../models/OrderItem.js";
 import { registerTool } from "../tools.js";
+import { orderHasPreOrderSlaBreach } from "../../../utils/preOrderSla.js";
 
 async function execute({ userId, orderNumber }) {
   const filter = {};
@@ -27,14 +28,25 @@ async function execute({ userId, orderNumber }) {
   const orderLines = await Promise.all(orders.map(async (o) => {
     const items = await OrderItem.find({ orderId: o._id })
       .populate("productId", "name")
-      .select("productId quantity price")
+      .select(
+        "productId quantity price isPreOrder preOrderDaysSnapshot estimatedShipBy",
+      )
       .lean();
 
-    const itemLines = items.map(
-      (i) => `  - ${i.productId?.name || "SP"} x${i.quantity} — ${i.price.toLocaleString("vi-VN")}₫`
-    );
+    const itemLines = items.map((i) => {
+      const base = `  - ${i.productId?.name || "SP"} x${i.quantity} — ${i.price.toLocaleString("vi-VN")}₫`;
+      if (!i.isPreOrder) return base;
+      const ship =
+        i.estimatedShipBy != null
+          ? new Date(i.estimatedShipBy).toLocaleDateString("vi-VN")
+          : `${i.preOrderDaysSnapshot ?? 0} ngày (snapshot)`;
+      return `${base} [Đặt trước — giao trước ${ship}]`;
+    });
 
-    return `📋 ${o.orderNumber} | ${statusMap[o.status] || o.status} | ${o.totalPrice.toLocaleString("vi-VN")}₫ | ${o.createdAt.toLocaleDateString("vi-VN")}\n${itemLines.join("\n")}`;
+    const breach = orderHasPreOrderSlaBreach(o.status, items);
+    const breachNote = breach ? "\n  ⚠️ Có mặt hàng đặt trước đã quá hạn giao dự kiến." : "";
+
+    return `📋 ${o.orderNumber} | ${statusMap[o.status] || o.status} | ${o.totalPrice.toLocaleString("vi-VN")}₫ | ${o.createdAt.toLocaleDateString("vi-VN")}\n${itemLines.join("\n")}${breachNote}`;
   }));
 
   return { context: `=== ĐƠN HÀNG GẦN NHẤT (${orders.length}) ===\n${orderLines.join("\n\n")}` };

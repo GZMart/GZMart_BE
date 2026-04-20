@@ -61,3 +61,19 @@ export const toggleUserStatus = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Admin: tìm seller (autocomplete) — shop, email, tên, SĐT
+ */
+export const searchSellers = async (req, res, next) => {
+  try {
+    const { q, limit } = req.query;
+    const data = await userService.searchSellersForAdmin({ q, limit });
+    res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};

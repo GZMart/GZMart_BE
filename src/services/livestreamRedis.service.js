@@ -1,8 +1,21 @@
 // src/services/livestreamRedis.service.js
-// In-memory fallback — single-process only (no cross-server sync)
+// Viewer presence: Redis SET (SCARD) when REDIS_URL is set; in-memory Set fallback otherwise.
+// Chat / likes / active stream cache remain in-process unless migrated later.
 
-const viewerSets = new Map();       // sessionId -> Set<userId>
-const viewerCounts = new Map();      // sessionId -> number
+import redis from "./redis.service.js";
+
+const VIEWER_SET_TTL_SEC = 86400; // sliding TTL — refreshed on each join
+
+function viewerRedisKey(sessionId) {
+  return `livestream:${String(sessionId)}:viewers`;
+}
+
+/** @returns {Promise<import('ioredis').default | null>} */
+async function getRedisClient() {
+  return redis.getClient();
+}
+
+const viewerSetsFallback = new Map(); // sessionId -> Set<userId>
 const chatMessages = new Map();      // sessionId -> [{ id, ...message }]
 const activeStreams = new Map();    // sessionId -> sessionData
 const likeCounts = new Map();        // sessionId -> number
@@ -25,66 +38,76 @@ function isExpired(key) {
   return false;
 }
 
-function cleanExpiredViewerSet(sessionId) {
-  const viewers = viewerSets.get(sessionId);
-  if (!viewers) return;
-  for (const [key, exp] of ttlMap.entries()) {
-    if (key.startsWith(`livestream:${sessionId}:presence`) && Date.now() > exp) {
-      ttlMap.delete(key);
-    }
-  }
-}
-
-// --- Viewer Presence ---
+// --- Viewer presence (unique sockets / accounts per session) ---
 export async function addViewerToRoom(sessionId, userId) {
-  if (!viewerSets.has(sessionId)) viewerSets.set(sessionId, new Set());
-  viewerSets.get(sessionId).add(userId);
-  setTTL(`livestream:${sessionId}:presence:${userId}`, 30);
+  const sid = String(sessionId);
+  const uid = String(userId);
+  const client = await getRedisClient();
+  if (client) {
+    const key = viewerRedisKey(sid);
+    try {
+      await client.sadd(key, uid);
+      await client.expire(key, VIEWER_SET_TTL_SEC);
+    } catch (err) {
+      console.warn("[livestreamRedis] SADD viewer error:", err.message);
+    }
+    return;
+  }
+  if (!viewerSetsFallback.has(sid)) viewerSetsFallback.set(sid, new Set());
+  viewerSetsFallback.get(sid).add(uid);
 }
 
 export async function removeViewerFromRoom(sessionId, userId) {
-  const viewers = viewerSets.get(sessionId);
-  if (viewers) viewers.delete(userId);
-  ttlMap.delete(`livestream:${sessionId}:presence:${userId}`);
+  const sid = String(sessionId);
+  const uid = String(userId);
+  const client = await getRedisClient();
+  if (client) {
+    try {
+      await client.srem(viewerRedisKey(sid), uid);
+    } catch (err) {
+      console.warn("[livestreamRedis] SREM viewer error:", err.message);
+    }
+    return;
+  }
+  const viewers = viewerSetsFallback.get(sid);
+  if (viewers) viewers.delete(uid);
 }
 
 export async function getRoomViewers(sessionId) {
-  cleanExpiredViewerSet(sessionId);
-  const viewers = viewerSets.get(sessionId);
+  const sid = String(sessionId);
+  const client = await getRedisClient();
+  if (client) {
+    try {
+      const ids = await client.smembers(viewerRedisKey(sid));
+      return Array.isArray(ids) ? ids : [];
+    } catch (err) {
+      console.warn("[livestreamRedis] SMEMBERS error:", err.message);
+      return [];
+    }
+  }
+  const viewers = viewerSetsFallback.get(sid);
   return viewers ? [...viewers] : [];
 }
 
 export async function getViewerCount(sessionId) {
-  cleanExpiredViewerSet(sessionId);
-  const viewers = viewerSets.get(sessionId);
+  const sid = String(sessionId);
+  const client = await getRedisClient();
+  if (client) {
+    try {
+      const n = await client.scard(viewerRedisKey(sid));
+      return Math.max(0, Number(n) || 0);
+    } catch (err) {
+      console.warn("[livestreamRedis] SCARD error:", err.message);
+      return 0;
+    }
+  }
+  const viewers = viewerSetsFallback.get(sid);
   return viewers ? viewers.size : 0;
 }
 
-// --- Viewer Count (simple counter) ---
-export async function incrementViewerCount(sessionId) {
-  const current = viewerCounts.get(sessionId) || 0;
-  const next = current + 1;
-  viewerCounts.set(sessionId, next);
-  setTTL(`livestream:${sessionId}:count`, 10);
-  return next;
-}
-
-export async function decrementViewerCount(sessionId) {
-  const current = viewerCounts.get(sessionId) || 0;
-  const next = Math.max(0, current - 1);
-  viewerCounts.set(sessionId, next);
-  setTTL(`livestream:${sessionId}:count`, 10);
-  return next;
-}
-
+/** Same as getViewerCount — REST + sockets use one source of truth (Set cardinality). */
 export async function getCachedViewerCount(sessionId) {
-  if (isExpired(`livestream:${sessionId}:count`)) return 0;
-  return viewerCounts.get(sessionId) ?? 0;
-}
-
-export async function setViewerCount(sessionId, count) {
-  viewerCounts.set(sessionId, count);
-  setTTL(`livestream:${sessionId}:count`, 10);
+  return getViewerCount(sessionId);
 }
 
 // --- Chat Message Storage ---
@@ -132,8 +155,18 @@ export async function getCachedActiveStream(sessionId) {
 }
 
 export async function invalidateActiveStream(sessionId) {
-  activeStreams.delete(sessionId);
-  ttlMap.delete(`livestream:${sessionId}:active`);
+  const sid = String(sessionId);
+  activeStreams.delete(sid);
+  ttlMap.delete(`livestream:${sid}:active`);
+  viewerSetsFallback.delete(sid);
+  const client = await getRedisClient();
+  if (client) {
+    try {
+      await client.del(viewerRedisKey(sid));
+    } catch (err) {
+      console.warn("[livestreamRedis] DEL viewers error:", err.message);
+    }
+  }
 }
 
 // --- Refresh presence TTL (called by heartbeat) ---

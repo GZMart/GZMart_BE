@@ -620,14 +620,21 @@ export const getRewardPointWithdrawals = asyncHandler(async (req, res) => {
  * @desc    Lấy danh sách tất cả yêu cầu rút reward_point (Admin)
  * @route   GET /api/dashboard/admin/reward-point-withdrawals
  * @access  Private (Admin only)
- * @query   status, sellerId, startDate, endDate, limit, skip
+ * @query   status, sellerSearch, startDate, endDate, limit, skip
  */
 export const getAllRewardPointWithdrawals = asyncHandler(async (req, res) => {
-  const { status, sellerId, startDate, endDate, limit = 20, skip = 0 } = req.query;
+  const {
+    status,
+    sellerSearch,
+    startDate,
+    endDate,
+    limit = 20,
+    skip = 0,
+  } = req.query;
 
   const result = await dashboardService.getAllRewardPointWithdrawals({
     status,
-    sellerId,
+    sellerSearch,
     startDate,
     endDate,
     limit: parseInt(limit),

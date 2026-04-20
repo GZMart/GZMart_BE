@@ -94,7 +94,10 @@ router.get("/me", asyncHandler(getMySellerApplications));
  *   get:
  *     tags: [Seller Applications]
  *     summary: List all seller applications (admin only)
- *     description: Returns paginated list of seller applications. Supports filtering by status.
+ *     description: |
+ *       Returns paginated list of seller applications. Supports filtering by status.
+ *       Each application may include `aiScreening` (AI-assisted review): status pending|complete|failed|skipped,
+ *       recommendation likely_approve|likely_reject|needs_human, summary, confidence, flags, localChecks.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -145,7 +148,7 @@ router.get(
  *         description: Application ID
  *     responses:
  *       200:
- *         description: Application detail
+ *         description: Application detail (includes `aiScreening` when present)
  *       404:
  *         description: Application not found
  */
