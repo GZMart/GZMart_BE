@@ -27,6 +27,30 @@ const sellerApplicationSchema = new Schema(
       trim: true,
       maxlength: [1000, "Review note cannot exceed 1000 characters"],
     },
+    aiScreening: {
+      status: {
+        type: String,
+        enum: ["pending", "complete", "failed", "skipped"],
+        default: "pending",
+      },
+      provider: { type: String, trim: true },
+      recommendation: {
+        type: String,
+        enum: ["likely_approve", "likely_reject", "needs_human"],
+      },
+      confidence: { type: Number, min: 0, max: 1 },
+      flags: [{ type: String, trim: true }],
+      summary: { type: String, trim: true, maxlength: 2000 },
+      localChecks: [
+        {
+          code: { type: String, trim: true },
+          passed: { type: Boolean },
+          detail: { type: String, trim: true },
+        },
+      ],
+      error: { type: String, trim: true, maxlength: 1000 },
+      evaluatedAt: { type: Date },
+    },
   },
   {
     timestamps: true,

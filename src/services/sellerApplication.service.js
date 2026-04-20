@@ -2,6 +2,7 @@ import SellerApplication from "../models/SellerApplication.js";
 import User from "../models/User.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { ROLES } from "../middlewares/role.middleware.js";
+import { runAiScreeningForApplication } from "./sellerApplicationAi.service.js";
 
 class SellerApplicationService {
   async createApplicationForUser(userId, profileData = {}) {
@@ -40,6 +41,12 @@ class SellerApplicationService {
     const application = await SellerApplication.create({
       user: userId,
       status: "pending",
+    });
+
+    setImmediate(() => {
+      runAiScreeningForApplication(application._id).catch((err) => {
+        console.error("[SellerApplication AI]", err);
+      });
     });
 
     return application;
