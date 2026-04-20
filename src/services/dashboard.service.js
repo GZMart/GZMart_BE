@@ -2918,6 +2918,7 @@ export const getAllRewardPointWithdrawals = async (filters = {}) => {
   const {
     status,
     sellerSearch,
+    sellerId,
     startDate,
     endDate,
     limit = 20,
