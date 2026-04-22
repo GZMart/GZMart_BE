@@ -20,9 +20,10 @@ import {
   getProductsBySeller,
   toggleProductStatus,
 } from "../controllers/product.controller.js";
+import { getPersonalizedRecommendations } from "../controllers/recommendation.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import upload from "../middlewares/upload.middleware.js";
-import { protect } from "../middlewares/auth.middleware.js";
+import { protect, optionalAuth } from "../middlewares/auth.middleware.js";
 import { requireRoles } from "../middlewares/role.middleware.js";
 
 const router = express.Router();
@@ -118,6 +119,18 @@ router.get("/trending", asyncHandler(getTrendingProducts));
  *         description: Success
  */
 router.get("/today-recommendations", asyncHandler(getTodayRecommendations));
+
+/**
+ * @swagger
+ * /api/products/personalized-recommendations:
+ *   get:
+ *     tags: [Products]
+ *     summary: Get AI personalized recommendations
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/personalized-recommendations", optionalAuth, asyncHandler(getPersonalizedRecommendations));
 
 /**
  * @swagger
@@ -379,7 +392,7 @@ router.get(
 // Get products by seller (Public)
 router.get("/seller/:sellerId", asyncHandler(getProductsBySeller));
 
-router.get("/:id", asyncHandler(getProduct));
+router.get("/:id", optionalAuth, asyncHandler(getProduct));
 
 /**
  * @swagger

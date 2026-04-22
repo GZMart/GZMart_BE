@@ -659,7 +659,15 @@ export const convertToRewardPoints = asyncHandler(async (req, res) => {
     let wallet = await SellerWallet.findOne({ sellerId }).session(session);
     if (!wallet) {
       wallet = await SellerWallet.create(
-        [{ sellerId, balance: 0, pendingBalance: 0, totalConvertedToRP: 0 }],
+        [
+          {
+            sellerId,
+            balance: 0,
+            pendingBalance: 0,
+            debtBalance: 0,
+            totalConvertedToRP: 0,
+          },
+        ],
         { session },
       );
       wallet = wallet[0];
@@ -667,7 +675,11 @@ export const convertToRewardPoints = asyncHandler(async (req, res) => {
 
     const walletBalance = Math.max(0, toNumber(wallet.balance));
     const pendingBalance = Math.max(0, toNumber(wallet.pendingBalance));
-    const availableBalance = Math.max(0, walletBalance - pendingBalance);
+    const debtBalance = Math.max(0, toNumber(wallet.debtBalance));
+    const availableBalance = Math.max(
+      0,
+      walletBalance - pendingBalance - debtBalance,
+    );
 
     // Kiểm tra đủ số dư trong cùng transaction
     if (availableBalance < amount) {
@@ -686,7 +698,7 @@ export const convertToRewardPoints = asyncHandler(async (req, res) => {
         _id: wallet._id,
         sellerId,
         pendingBalance,
-        balance: { $gte: amount + pendingBalance },
+        balance: { $gte: amount + pendingBalance + debtBalance },
       },
       {
         $inc: {

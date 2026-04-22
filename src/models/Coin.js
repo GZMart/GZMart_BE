@@ -157,8 +157,15 @@ coinSchema.pre("save", function () {
 
 // Static method: Create coin packet with auto expiration
 coinSchema.statics.createCoinPacket = async function (data) {
-  const { userId, source, amount, description, sourceTransaction, metadata } =
-    data;
+  const {
+    userId,
+    source,
+    amount,
+    description,
+    sourceTransaction,
+    metadata,
+    session = null,
+  } = data;
 
   // Calculate expiration date
   let expiresAt = null;
@@ -173,16 +180,21 @@ coinSchema.statics.createCoinPacket = async function (data) {
     expiresAt.setDate(expiresAt.getDate() + 14);
   }
 
-  const coinPacket = await this.create({
-    userId,
-    source,
-    originalAmount: amount,
-    remainingAmount: amount,
-    expiresAt,
-    description,
-    sourceTransaction: sourceTransaction || {},
-    metadata: metadata || {},
-  });
+  const coinPacket = await this.create(
+    [
+      {
+        userId,
+        source,
+        originalAmount: amount,
+        remainingAmount: amount,
+        expiresAt,
+        description,
+        sourceTransaction: sourceTransaction || {},
+        metadata: metadata || {},
+      },
+    ],
+    session ? { session } : undefined,
+  ).then((docs) => docs[0]);
 
   console.log(
     `[Coin] Created packet: User ${userId} | ${source} | ${amount} coins | Expires: ${expiresAt ? expiresAt.toISOString() : "Never"}`,

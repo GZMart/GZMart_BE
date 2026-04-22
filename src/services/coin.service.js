@@ -14,13 +14,23 @@ import mongoose from "mongoose";
  * @returns {Object} - Created coin packet and updated balance
  */
 export const addCoins = async (data) => {
-  const { userId, source, amount, description, sourceTransaction, metadata } =
-    data;
+  const {
+    userId,
+    source,
+    amount,
+    description,
+    sourceTransaction,
+    metadata,
+    session: externalSession = null,
+  } = data;
 
-  const session = await mongoose.startSession();
+  const session = externalSession || (await mongoose.startSession());
+  const shouldManageSession = !externalSession;
 
   try {
-    session.startTransaction();
+    if (shouldManageSession) {
+      session.startTransaction();
+    }
 
     // Get user
     const user = await User.findById(userId).session(session);
@@ -38,6 +48,7 @@ export const addCoins = async (data) => {
       description,
       sourceTransaction,
       metadata,
+      session,
     });
 
     // Record wallet transaction
@@ -66,8 +77,10 @@ export const addCoins = async (data) => {
     user.reward_point = balanceBefore + amount;
     await user.save({ session });
 
-    await session.commitTransaction();
-    session.endSession();
+    if (shouldManageSession) {
+      await session.commitTransaction();
+      session.endSession();
+    }
 
     console.log(
       `[CoinService] Added ${amount} coins to user ${user.email} | Source: ${source} | Balance: ${balanceBefore} → ${user.reward_point}`,
@@ -83,8 +96,10 @@ export const addCoins = async (data) => {
       },
     };
   } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
+    if (shouldManageSession) {
+      await session.abortTransaction();
+      session.endSession();
+    }
     console.error("[CoinService] Error adding coins:", error);
     throw error;
   }

@@ -1,6 +1,7 @@
 import * as productService from "../services/product.service.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
+import ViewHistory from "../models/ViewHistory.js";
 
 /**
  * @desc    Create a new product
@@ -203,6 +204,15 @@ export const getProductsAdvanced = asyncHandler(async (req, res, next) => {
 export const getProduct = asyncHandler(async (req, res, next) => {
   // Service handles 404 and View Increment
   const product = await productService.getProductById(req.params.id);
+
+  // Background task: log ViewHistory for authenticated users
+  if (req.user && req.user._id) {
+    ViewHistory.findOneAndUpdate(
+      { userId: req.user._id, productId: req.params.id },
+      { $inc: { viewCount: 1 }, $set: { lastViewedAt: new Date() } },
+      { upsert: true }
+    ).catch(err => console.error("Failed to track view history:", err));
+  }
 
   res.status(200).json({
     success: true,
