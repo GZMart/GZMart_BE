@@ -53,7 +53,7 @@ async function isShopFollower(userId, shopId) {
 /**
  * Validate and calculate discount for selected voucher IDs
  * Rules:
- *   - Max 1 shop voucher + 1 product voucher
+ *   - Max 1 shop/private + 1 product + 1 system (system_shipping | system_order | system_vip_daily)
  *   - Each voucher must be active, within time range, usage not exceeded
  *   - Shop voucher: cart must have product from that shop
  *   - Product voucher (specific): cart must have product in appliedProducts
@@ -90,20 +90,46 @@ export const validateAndCalculateVouchers = async (
     };
   }
 
-  // Enforce max 1 shop + 1 product rule
-  // Enforce max 1 shop + 1 product rule
-  // 'private' vouchers are typically shop-level but hidden, treat them as shop vouchers for the limit
+  // Giới hạn số lượng voucher theo loại:
+  //   - Tối đa 1 voucher shop PER SELLER (multi-seller cart: mỗi seller 1 mã)
+  //   - Tối đa 1 product voucher
+  //   - Tối đa 1 system voucher
   const shopVouchers = vouchers.filter(
     (v) => v.type === "shop" || v.type === "private",
   );
   const productVouchers = vouchers.filter((v) => v.type === "product");
+  const systemVouchers = vouchers.filter((v) =>
+    [
+      "system_shipping",
+      "system_order",
+      "system_vip_daily",
+    ].includes(v.type),
+  );
 
-  if (shopVouchers.length > 1) {
-    errors.push("Only 1 shop/private voucher allowed");
-    return { totalDiscount: 0, validVouchers: [], errors };
+  // Group shop vouchers by shopId; each seller allowed max 1
+  const shopVouchersByShop = new Map();
+  for (const v of shopVouchers) {
+    const sid = v.shopId?.toString() || "__no_shop__";
+    if (!shopVouchersByShop.has(sid)) {
+      shopVouchersByShop.set(sid, []);
+    }
+    shopVouchersByShop.get(sid).push(v);
   }
+  for (const [sid, group] of shopVouchersByShop) {
+    if (group.length > 1) {
+      errors.push(`Chỉ được dùng 1 voucher của mỗi shop (shopId: ${sid})`);
+      return { totalDiscount: 0, validVouchers: [], errors };
+    }
+  }
+
   if (productVouchers.length > 1) {
     errors.push("Only 1 product voucher allowed");
+    return { totalDiscount: 0, validVouchers: [], errors };
+  }
+  if (systemVouchers.length > 1) {
+    errors.push(
+      "Chỉ được dùng 1 voucher hệ thống (freeship / giảm đơn / VIP) trên cùng một đơn",
+    );
     return { totalDiscount: 0, validVouchers: [], errors };
   }
 
@@ -160,7 +186,7 @@ export const validateAndCalculateVouchers = async (
     let applicableSubtotal = 0;
 
     if (voucher.type === "shop" || voucher.type === "private") {
-      // Treat private as shop voucher (applicable to all products of the shop)
+      // Shop voucher áp dụng trên phần hàng của seller đó (multi-seller được phép)
       const shopItems = cartItems.filter(
         (item) =>
           item.productId?.sellerId?.toString() === voucher.shopId?.toString(),
@@ -344,7 +370,11 @@ export const validateAndCalculateVouchers = async (
         0,
       );
       // minBasketPrice check và discount calculation được xử lý ở cuối switch
-    } else if (voucher.type === "system_shipping" || voucher.type === "system_order") {
+    } else if (
+      voucher.type === "system_shipping" ||
+      voucher.type === "system_order" ||
+      voucher.type === "system_vip_daily"
+    ) {
       // System/admin voucher — applies to entire cart regardless of shop
       applicableSubtotal = cartItems.reduce(
         (sum, item) => sum + item.price * item.quantity,
