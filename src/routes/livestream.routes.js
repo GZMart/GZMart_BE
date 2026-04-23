@@ -71,6 +71,7 @@ export async function viewerTokenRateLimitMiddleware(req, res, next) {
 const router = Router();
 
 router.get("/sessions/history", protect, ctrl.getSessionsHistory);
+router.get("/sessions/live", ctrl.listPublicLiveSessions);
 router.post("/session", protect, ctrl.createSession);
 router.post("/handoff/exchange", protect, ctrl.exchangeHandoff);
 router.post(
