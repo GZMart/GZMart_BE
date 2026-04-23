@@ -18,7 +18,10 @@ const checkStockAvailability = async (
   productDoc = null,
 ) => {
   if (productDoc && isPreOrderProduct(productDoc)) {
-    const inventoryItem = await InventoryItem.findOne({ productId, sku }).lean();
+    const inventoryItem = await InventoryItem.findOne({
+      productId,
+      sku,
+    }).lean();
     const currentStock = inventoryItem ? inventoryItem.quantity : modelStock;
     return { available: true, currentStock };
   }
@@ -89,7 +92,13 @@ export const getCart = asyncHandler(async (req, res, next) => {
     const product = item.productId;
     if (!product) continue; // Skip if product deleted
 
-    const model = findProductModel(product, item.color, item.size);
+    let model = null;
+    if (item.modelId) {
+      model = product.models?.find((m) => String(m._id) === String(item.modelId));
+    }
+    if (!model) {
+      model = findProductModel(product, item.color, item.size);
+    }
     let stockInfo = { available: false, currentStock: 0 };
 
     if (model) {
@@ -158,13 +167,68 @@ export const addToCart = asyncHandler(async (req, res, next) => {
 
   const hasTiers = Array.isArray(product.tiers) && product.tiers.length > 0;
 
+  // If product has tiers, be forgiving: try to derive color/size from provided modelId
+  // or fallback to the first active model instead of rejecting the request.
   if (hasTiers && (!color || !size)) {
-    return next(
-      new ErrorResponse(
-        "Please provide productId, quantity, color, and size",
-        400,
-      ),
-    );
+    try {
+      const modelId =
+        req.body.modelId || req.body.model || req.body.model_id || null;
+      let resolvedModel = null;
+
+      if (modelId) {
+        resolvedModel = product.models.find(
+          (m) => String(m._id) === String(modelId),
+        );
+      }
+
+      // If no explicit modelId or not found, pick the first active model as best-effort
+      if (!resolvedModel) {
+        resolvedModel =
+          (product.models || []).find((m) => m.isActive) || product.models[0];
+      }
+
+      if (resolvedModel) {
+        // Derive color/size from model.tierIndex + product.tiers
+        const tierIdx = Array.isArray(resolvedModel.tierIndex)
+          ? resolvedModel.tierIndex
+          : [];
+        const tiers = Array.isArray(product.tiers) ? product.tiers : [];
+        let derivedColor = null;
+        let derivedSize = null;
+
+        tiers.forEach((tier, idx) => {
+          const name = String(tier?.name || "").toLowerCase();
+          const optIdx = tierIdx[idx];
+          if (optIdx == null || optIdx < 0) return;
+          const value = tier.options?.[optIdx];
+          if (!value) return;
+          if (
+            name.includes("color") ||
+            name.includes("màu") ||
+            name.includes("mau")
+          ) {
+            derivedColor = derivedColor || value;
+          } else if (
+            name.includes("size") ||
+            name.includes("kích") ||
+            name.includes("kich")
+          ) {
+            derivedSize = derivedSize || value;
+          }
+        });
+
+        color = color || derivedColor || "Default";
+        size = size || derivedSize || "Default";
+      } else {
+        // As a last resort, set sensible defaults so request is not blocked
+        color = color || "Default";
+        size = size || "Default";
+      }
+    } catch (err) {
+      // Non-fatal: ensure defaults
+      color = color || "Default";
+      size = size || "Default";
+    }
   }
 
   if (!hasTiers) {
@@ -190,12 +254,14 @@ export const addToCart = asyncHandler(async (req, res, next) => {
   }
 
   // Check if item exists in cart
-  const existingItem = await CartItem.findOne({
-    cartId: cart._id,
-    productId,
-    color,
-    size,
-  });
+  const query = { cartId: cart._id, productId };
+  if (model._id) {
+    query.modelId = model._id;
+  } else {
+    query.color = color;
+    query.size = size;
+  }
+  const existingItem = await CartItem.findOne(query);
 
   const newQuantity = existingItem
     ? existingItem.quantity + quantity
@@ -243,11 +309,13 @@ export const addToCart = asyncHandler(async (req, res, next) => {
     existingItem.quantity = newQuantity;
     existingItem.price = cartPrice;
     existingItem.image = model.image || product.images[0];
+    if (!existingItem.modelId) existingItem.modelId = model._id;
     await existingItem.save();
   } else {
     await CartItem.create({
       cartId: cart._id,
       productId,
+      modelId: model._id,
       quantity,
       size,
       color,

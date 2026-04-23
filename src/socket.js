@@ -30,6 +30,37 @@ export default function setupSocketHandlers(io) {
       logger.info(`Socket ${socket.id} joined admin room for inventory alerts`);
     });
 
+    socket.on("join_room", ({ room } = {}) => {
+      if (!room || typeof room !== "string") {
+        return;
+      }
+      socket.join(room);
+      logger.info(`Socket ${socket.id} joined room: ${room}`);
+    });
+
+    socket.on("leave_room", ({ room } = {}) => {
+      if (!room || typeof room !== "string") {
+        return;
+      }
+      socket.leave(room);
+      logger.info(`Socket ${socket.id} left room: ${room}`);
+    });
+
+    socket.on("rma:delivery-sync", (payload = {}) => {
+      const room = payload.room || payload.returnRequestId;
+
+      if (!room || typeof room !== "string") {
+        io.emit("rma:delivery-sync", payload);
+        return;
+      }
+
+      io.to(room).emit("rma:delivery-sync", payload);
+      if (!room.startsWith("rma_")) {
+        io.to(`rma_${room}`).emit("rma:delivery-sync", payload);
+      }
+      io.emit("rma:delivery-sync", payload);
+    });
+
     // Nhận và phát tin nhắn mới
     socket.on("send_message", async (message) => {
       // message: { conversationId, sender, receiver, content, type?, productInfo? }

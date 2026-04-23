@@ -204,6 +204,13 @@ const returnRequestSchema = new mongoose.Schema(
         {
           code: String,
           title: String,
+          startedAt: Date,
+          durationSeconds: {
+            type: Number,
+            default: null,
+            min: 1,
+          },
+          autoCompleteAt: Date,
           completed: {
             type: Boolean,
             default: false,

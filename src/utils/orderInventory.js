@@ -171,6 +171,11 @@ export const deductOrderResources = async (
  * @returns {Promise<void>}
  */
 export const rollbackOrderResources = async (order) => {
+  const creatorId =
+    (typeof order?.userId === "object" && order?.userId?._id
+      ? order.userId._id
+      : order?.userId) || null;
+
   // Only rollback if resources were already deducted
   // Check if order has a flag indicating resources were deducted
   if (!order.resourcesDeducted) {
@@ -271,18 +276,25 @@ export const rollbackOrderResources = async (order) => {
       }
 
       // Create rollback transaction log
-      await InventoryTransaction.create({
-        productId: item.productId,
-        modelId: item.modelId,
-        sku: item.sku,
-        type: "in",
-        quantity: item.quantity,
-        stockBefore: currentStock,
-        stockAfter: currentStock + item.quantity,
-        referenceType: "order_rollback",
-        referenceId: order._id,
-        note: `Rollback for cancelled order ${order.orderNumber}`,
-      });
+      if (creatorId) {
+        await InventoryTransaction.create({
+          productId: item.productId,
+          modelId: item.modelId,
+          sku: item.sku,
+          type: "in",
+          quantity: item.quantity,
+          stockBefore: currentStock,
+          stockAfter: currentStock + item.quantity,
+          referenceType: "adjustment",
+          referenceId: order._id,
+          createdBy: creatorId,
+          note: `Rollback for cancelled order ${order.orderNumber}`,
+        });
+      } else {
+        console.warn(
+          `[OrderInventory] Rollback - missing creatorId for transaction log of order ${order.orderNumber}`,
+        );
+      }
 
       // Decrement Product.sold to reflect rollback
       try {

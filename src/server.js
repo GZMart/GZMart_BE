@@ -59,6 +59,7 @@ import financeRoutes from "./routes/finance.routes.js";
 import { initShopStatisticJobs } from "./jobs/shopStatisticJob.js";
 import { startOrderCleanupJob } from "./jobs/orderCleanupJob.js";
 import { startRmaAutoApprovalJob } from "./jobs/rmaAutoApprovalJob.js";
+import { startRmaLogisticsSyncJob } from "./jobs/rmaLogisticsSync.job.js";
 import { startExchangeRateJob } from "./jobs/exchangeRateJob.js";
 import exchangeRateRoutes from "./routes/exchangeRate.routes.js";
 import { startCoinJobs } from "./jobs/coinExpirationJob.js";
@@ -324,6 +325,7 @@ server.listen(PORT, HOST, () => {
   initShopStatisticJobs();
   startOrderCleanupJob();
   startRmaAutoApprovalJob();
+  startRmaLogisticsSyncJob();
   startExchangeRateJob();
   startCoinJobs();
   initProductSoldReconcileJob();
@@ -333,10 +335,17 @@ server.listen(PORT, HOST, () => {
   // [Phase 3 - 5.2] Batch embedding cron — registered at import time
   runBatchEmbedding();
   // Banner Ads status sync: APPROVED→RUNNING, RUNNING→COMPLETED (every 5 minutes)
-  bannerService.syncBannerStatuses().catch((err) => logger.error("syncBannerStatuses (boot):", err));
-  setInterval(() => {
-    bannerService.syncBannerStatuses().catch((err) => logger.error("syncBannerStatuses (interval):", err));
-  }, 5 * 60 * 1000);
+  bannerService
+    .syncBannerStatuses()
+    .catch((err) => logger.error("syncBannerStatuses (boot):", err));
+  setInterval(
+    () => {
+      bannerService
+        .syncBannerStatuses()
+        .catch((err) => logger.error("syncBannerStatuses (interval):", err));
+    },
+    5 * 60 * 1000,
+  );
 });
 
 // Sync flash-sale / deal statuses on boot then every 60 s

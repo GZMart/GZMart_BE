@@ -59,13 +59,29 @@ class PaymentService {
       );
     }
 
-    if (order.paymentStatus === "paid") {
-      throw new ErrorResponse("Đơn hàng đã được thanh toán", 400);
+    const groupQuery = order.checkoutGroupId
+      ? {
+          checkoutGroupId: order.checkoutGroupId,
+          userId,
+        }
+      : {
+          _id: order._id,
+          userId,
+        };
+
+    const groupOrders = await Order.find(groupQuery);
+    const payableOrders = groupOrders.filter(
+      (o) => o.paymentStatus === "pending" && o.status !== "cancelled",
+    );
+
+    if (payableOrders.length === 0) {
+      throw new ErrorResponse("Không còn đơn hàng cần thanh toán", 400);
     }
 
-    if (order.status === "cancelled") {
-      throw new ErrorResponse("Đơn hàng đã bị hủy", 400);
-    }
+    const totalAmountDue = payableOrders.reduce(
+      (sum, item) => sum + Number(item.totalPrice || 0),
+      0,
+    );
 
     const orderCode = parseInt(
       Date.now().toString() + Math.floor(Math.random() * 1000),
@@ -73,7 +89,9 @@ class PaymentService {
 
     const user = await User.findById(userId);
     const buyerName = user.fullName || user.email.split("@")[0];
-    const description = `GZMart #${order.orderNumber}`;
+    const description = order.checkoutGroupId
+      ? `GZMart ${order.checkoutGroupId}`
+      : `GZMart #${order.orderNumber}`;
 
     const payosOrder = {
       // amount: Math.round(order.totalPrice),
@@ -90,22 +108,26 @@ class PaymentService {
       const paymentLinkResponse =
         await payOs.paymentRequests.create(payosOrder);
 
-      order.payosOrderCode = orderCode.toString();
-      order.payosPaymentLinkId = paymentLinkResponse.paymentLinkId || "";
-      order.payosCheckoutUrl = paymentLinkResponse.checkoutUrl;
-      order.payosQrCode = paymentLinkResponse.qrCode || "";
-      order.payosAccountNumber = paymentLinkResponse.accountNumber || "";
-      order.payosAccountName = paymentLinkResponse.accountName || "";
-      order.payosBin = paymentLinkResponse.bin || "";
-      order.payosDesc = paymentLinkResponse.description || description;
-      order.paymentMethod = "payos";
-
-      await order.save();
+      for (const item of payableOrders) {
+        item.payosOrderCode = orderCode.toString();
+        item.payosPaymentLinkId = paymentLinkResponse.paymentLinkId || "";
+        item.payosCheckoutUrl = paymentLinkResponse.checkoutUrl;
+        item.payosQrCode = paymentLinkResponse.qrCode || "";
+        item.payosAccountNumber = paymentLinkResponse.accountNumber || "";
+        item.payosAccountName = paymentLinkResponse.accountName || "";
+        item.payosBin = paymentLinkResponse.bin || "";
+        item.payosDesc = paymentLinkResponse.description || description;
+        item.paymentMethod = "payos";
+        await item.save();
+      }
 
       return {
         orderId: order._id,
         orderNumber: order.orderNumber,
+        checkoutGroupId: order.checkoutGroupId || null,
+        orderIds: payableOrders.map((o) => o._id),
         orderCode: orderCode,
+        amountDue: totalAmountDue,
         checkoutUrl: paymentLinkResponse.checkoutUrl,
         qrData: {
           accountNumber: paymentLinkResponse.accountNumber,
@@ -171,9 +193,10 @@ class PaymentService {
     const orderCode = verifiedData.orderCode.toString();
     console.log("[Webhook] OrderCode from PayOS:", orderCode);
 
-    const order = await Order.findOne({ payosOrderCode: orderCode }).populate(
+    const orders = await Order.find({ payosOrderCode: orderCode }).populate(
       "items",
     );
+    const order = orders[0] || null;
 
     if (!order) {
       console.log(
@@ -227,13 +250,11 @@ class PaymentService {
       throw new ErrorResponse("Order or TopupRequest not found", 404);
     }
 
-    console.log("[Webhook] Order found:", {
-      orderId: order._id,
-      orderNumber: order.orderNumber,
-      currentPaymentStatus: order.paymentStatus,
-    });
+    const pendingOrders = orders.filter(
+      (o) => o.paymentStatus === "pending" && o.status !== "cancelled",
+    );
 
-    if (order.paymentStatus !== "pending") {
+    if (pendingOrders.length === 0) {
       console.log("[Webhook] Order already processed, skipping");
       return {
         processed: false,
@@ -242,80 +263,85 @@ class PaymentService {
       };
     }
 
+    const groupExpectedAmount = pendingOrders.reduce(
+      (sum, item) => sum + Number(item.totalPrice || 0),
+      0,
+    );
     const paidAmount = Number(verifiedData.amount);
-    if (!isAmountValidForPayOs(paidAmount, order.totalPrice)) {
+    if (!isAmountValidForPayOs(paidAmount, groupExpectedAmount)) {
       console.warn("[Webhook] Amount mismatch, skipping payment confirmation", {
         orderCode,
-        expected: Math.round(order.totalPrice),
+        expected: Math.round(groupExpectedAmount),
         actual: Math.round(paidAmount),
       });
       return { processed: false, reason: "Payment amount mismatch" };
     }
 
-    console.log("[Webhook] Updating order to PAID status...");
-    order.paymentStatus = "paid";
-    order.paymentDate = new Date();
-    order.payosTransactionDateTime =
-      verifiedData.transactionDateTime || new Date().toISOString();
-    order.payosReference = verifiedData.reference || "";
-    order.payosCode = verifiedData.code || "";
-    order.payosDesc = verifiedData.desc || "";
+    for (const pendingOrder of pendingOrders) {
+      pendingOrder.paymentStatus = "paid";
+      pendingOrder.paymentDate = new Date();
+      pendingOrder.payosTransactionDateTime =
+        verifiedData.transactionDateTime || new Date().toISOString();
+      pendingOrder.payosReference = verifiedData.reference || "";
+      pendingOrder.payosCode = verifiedData.code || "";
+      pendingOrder.payosDesc = verifiedData.desc || "";
 
-    if (verifiedData.counterAccountBankId) {
-      order.payosCounterAccountBankId = verifiedData.counterAccountBankId;
-    }
-    if (verifiedData.counterAccountBankName) {
-      order.payosCounterAccountBankName = verifiedData.counterAccountBankName;
-    }
-    if (verifiedData.counterAccountName) {
-      order.payosCounterAccountName = verifiedData.counterAccountName;
-    }
-    if (verifiedData.counterAccountNumber) {
-      order.payosCounterAccountNumber = verifiedData.counterAccountNumber;
-    }
-
-    order.status = "pending";
-
-    order.statusHistory.push({
-      status: "pending",
-      changedBy: order.userId,
-      changedByRole: "system",
-      changedAt: new Date(),
-      reason: "Thanh toán thành công qua PayOS",
-      notes: `PayOS OrderCode: ${orderCode}. Chờ seller xử lý đơn hàng.`,
-    });
-
-    await order.save();
-    console.log("[Webhook] Order saved successfully");
-
-    orderTrackingService.notifyBuyerStatusChange(
-      order._id.toString(),
-      "pending",
-      {
-        orderNumber: order.orderNumber,
-        buyerId: order.userId,
-        sellerId: order.sellerId,
-        updatedAt: new Date(),
-        notes:
-          "Thanh toán PayOS thành công, đơn ở trạng thái pending chờ seller xử lý",
-      },
-    );
-
-    if (!order.resourcesDeducted) {
-      console.log(
-        "[Webhook] Deducting resources (inventory/vouchers/flash sales)...",
-      );
-      try {
-        await deductOrderResourcesFromOrder(order);
-        console.log("[Webhook] Resources deducted successfully");
-      } catch (deductError) {
-        console.error("[Webhook] Error deducting resources:", deductError);
-        // Don't fail the webhook, but log the error for manual intervention
+      if (verifiedData.counterAccountBankId) {
+        pendingOrder.payosCounterAccountBankId =
+          verifiedData.counterAccountBankId;
       }
-    } else {
-      console.log(
-        "[Webhook] Resources already reserved at checkout, skipping deduction",
+      if (verifiedData.counterAccountBankName) {
+        pendingOrder.payosCounterAccountBankName =
+          verifiedData.counterAccountBankName;
+      }
+      if (verifiedData.counterAccountName) {
+        pendingOrder.payosCounterAccountName = verifiedData.counterAccountName;
+      }
+      if (verifiedData.counterAccountNumber) {
+        pendingOrder.payosCounterAccountNumber =
+          verifiedData.counterAccountNumber;
+      }
+
+      pendingOrder.status = "pending";
+      pendingOrder.statusHistory.push({
+        status: "pending",
+        changedBy: pendingOrder.userId,
+        changedByRole: "system",
+        changedAt: new Date(),
+        reason: "Thanh toán thành công qua PayOS",
+        notes: `PayOS OrderCode: ${orderCode}. Chờ seller xử lý đơn hàng.`,
+      });
+
+      await pendingOrder.save();
+
+      orderTrackingService.notifyBuyerStatusChange(
+        pendingOrder._id.toString(),
+        "pending",
+        {
+          orderNumber: pendingOrder.orderNumber,
+          buyerId: pendingOrder.userId,
+          sellerId: pendingOrder.sellerId,
+          updatedAt: new Date(),
+          notes:
+            "Thanh toán PayOS thành công, đơn ở trạng thái pending chờ seller xử lý",
+        },
       );
+
+      if (!pendingOrder.resourcesDeducted) {
+        console.log(
+          "[Webhook] Deducting resources (inventory/vouchers/flash sales)...",
+        );
+        try {
+          await deductOrderResourcesFromOrder(pendingOrder);
+          console.log("[Webhook] Resources deducted successfully");
+        } catch (deductError) {
+          console.error("[Webhook] Error deducting resources:", deductError);
+        }
+      } else {
+        console.log(
+          "[Webhook] Resources already reserved at checkout, skipping deduction",
+        );
+      }
     }
 
     console.log("[Webhook] Clearing cart...");
@@ -328,11 +354,15 @@ class PaymentService {
     }
 
     console.log("[Webhook] Sending confirmation email...");
-    await this.sendOrderConfirmationEmail(order);
+    for (const pendingOrder of pendingOrders) {
+      await this.sendOrderConfirmationEmail(pendingOrder);
+    }
 
     const result = {
       processed: true,
       orderNumber: order.orderNumber,
+      checkoutGroupId: order.checkoutGroupId || null,
+      orderCount: pendingOrders.length,
       orderCode: orderCode,
     };
 
@@ -355,12 +385,43 @@ class PaymentService {
       throw new ErrorResponse("Bạn không có quyền truy cập đơn hàng này", 403);
     }
 
+    const groupQuery = order.checkoutGroupId
+      ? { checkoutGroupId: order.checkoutGroupId, userId }
+      : { _id: order._id, userId };
+
+    const groupOrders = await Order.find(groupQuery).sort({ createdAt: 1 });
+
+    const totalPrice = groupOrders.reduce(
+      (sum, item) => sum + Number(item.totalPrice || 0),
+      0,
+    );
+    const paidCount = groupOrders.filter(
+      (o) => o.paymentStatus === "paid",
+    ).length;
+
     return {
       orderNumber: order.orderNumber,
-      paymentStatus: order.paymentStatus,
+      checkoutGroupId: order.checkoutGroupId || null,
+      paymentStatus:
+        paidCount === groupOrders.length
+          ? "paid"
+          : paidCount > 0
+            ? "partial"
+            : "pending",
       orderStatus: order.status,
-      totalPrice: order.totalPrice,
-      paymentDate: order.paymentDate,
+      totalPrice,
+      paymentDate:
+        groupOrders
+          .map((o) => o.paymentDate)
+          .filter(Boolean)
+          .sort()[0] || null,
+      orders: groupOrders.map((o) => ({
+        id: o._id,
+        orderNumber: o.orderNumber,
+        paymentStatus: o.paymentStatus,
+        status: o.status,
+        totalPrice: o.totalPrice,
+      })),
     };
   }
 
@@ -380,38 +441,49 @@ class PaymentService {
       throw new ErrorResponse("Bạn không có quyền hủy đơn hàng này", 403);
     }
 
-    if (order.paymentStatus !== "pending") {
+    const groupQuery = order.checkoutGroupId
+      ? { checkoutGroupId: order.checkoutGroupId, userId }
+      : { _id: order._id, userId };
+    const groupOrders = await Order.find(groupQuery).populate("items");
+
+    const cancellableOrders = groupOrders.filter(
+      (item) => item.paymentStatus === "pending" && item.status !== "cancelled",
+    );
+    if (cancellableOrders.length === 0) {
       throw new ErrorResponse("Không thể hủy đơn hàng đã thanh toán", 400);
     }
 
-    // CRITICAL FIX: Rollback resources if they were already deducted (shouldn't happen for PayOS, but safety check)
-    if (order.resourcesDeducted) {
-      console.log(
-        `[Payment] Rolling back resources for cancelled order ${order.orderNumber}`,
-      );
-      const { rollbackOrderResources } =
-        await import("../utils/orderInventory.js");
-      await rollbackOrderResources(order);
+    for (const item of cancellableOrders) {
+      if (item.resourcesDeducted) {
+        console.log(
+          `[Payment] Rolling back resources for cancelled order ${item.orderNumber}`,
+        );
+        const { rollbackOrderResources } =
+          await import("../utils/orderInventory.js");
+        await rollbackOrderResources(item);
+      }
+
+      item.status = "cancelled";
+      item.paymentStatus = "failed";
+      item.cancelledAt = new Date();
+      item.cancellationReason = "Người dùng hủy thanh toán";
+
+      item.statusHistory.push({
+        status: "cancelled",
+        changedBy: userId,
+        changedByRole: "buyer",
+        changedAt: new Date(),
+        reason: "Người dùng hủy thanh toán PayOS",
+      });
+
+      await item.save();
     }
-
-    order.status = "cancelled";
-    order.paymentStatus = "failed";
-    order.cancelledAt = new Date();
-    order.cancellationReason = "Người dùng hủy thanh toán";
-
-    order.statusHistory.push({
-      status: "cancelled",
-      changedBy: userId,
-      changedByRole: "buyer",
-      changedAt: new Date(),
-      reason: "Người dùng hủy thanh toán PayOS",
-    });
-
-    await order.save();
 
     return {
       orderNumber: order.orderNumber,
-      status: order.status,
+      checkoutGroupId: order.checkoutGroupId || null,
+      status: "cancelled",
+      orderCount: cancellableOrders.length,
     };
   }
 
@@ -452,6 +524,11 @@ class PaymentService {
       throw new ErrorResponse("Bạn không có quyền truy cập đơn hàng này", 403);
     }
 
+    const groupQuery = order.checkoutGroupId
+      ? { checkoutGroupId: order.checkoutGroupId, userId }
+      : { _id: order._id, userId };
+    const groupOrders = await Order.find(groupQuery).populate("items");
+
     try {
       console.log(
         "[PayOS Check] Calling PayOS API with orderCode:",
@@ -464,8 +541,13 @@ class PaymentService {
         orderCode: paymentInfo.orderCode,
       });
 
+      const expectedGroupAmount = groupOrders
+        .filter(
+          (o) => o.paymentStatus === "pending" && o.status !== "cancelled",
+        )
+        .reduce((sum, o) => sum + Number(o.totalPrice || 0), 0);
       const paidAmount = Number(paymentInfo.amount);
-      const expectedAmount = Math.round(order.totalPrice);
+      const expectedAmount = Math.round(expectedGroupAmount);
       if (!isAmountValidForPayOs(paidAmount, expectedAmount)) {
         throw new ErrorResponse(
           `Sai lệch số tiền thanh toán PayOS. expected=${expectedAmount}, actual=${Math.round(paidAmount)}`,
@@ -480,63 +562,63 @@ class PaymentService {
         throw new ErrorResponse("Sai lệch orderCode từ PayOS", 409);
       }
 
-      // If PayOS shows PAID but local DB is still pending, update it
-      if (paymentInfo.status === "PAID" && order.paymentStatus === "pending") {
+      // If PayOS shows PAID but local DB is still pending, update all pending orders in group
+      const pendingOrders = groupOrders.filter(
+        (o) => o.paymentStatus === "pending" && o.status !== "cancelled",
+      );
+      if (paymentInfo.status === "PAID" && pendingOrders.length > 0) {
         console.log(
-          "[PayOS Check] Payment status mismatch detected! Updating order...",
-        );
-        console.log("[PayOS Check] Before update:", {
-          paymentStatus: order.paymentStatus,
-          status: order.status,
-        });
-
-        order.paymentStatus = "paid";
-        order.paymentDate = new Date();
-        order.status = "pending";
-
-        order.statusHistory.push({
-          status: "pending",
-          changedBy: order.userId,
-          changedByRole: "system",
-          changedAt: new Date(),
-          reason: "Thanh toán thành công qua PayOS (manual check)",
-          notes: `PayOS OrderCode: ${orderCode}. Chờ seller xử lý đơn hàng.`,
-        });
-
-        await order.save();
-        console.log("[PayOS Check] Order updated successfully!");
-        console.log("[PayOS Check] After update:", {
-          paymentStatus: order.paymentStatus,
-          status: order.status,
-        });
-
-        orderTrackingService.notifyBuyerStatusChange(
-          order._id.toString(),
-          "pending",
-          {
-            orderNumber: order.orderNumber,
-            buyerId: order.userId,
-            sellerId: order.sellerId,
-            updatedAt: new Date(),
-            notes: "Thanh toán PayOS xác nhận qua manual check, đơn ở pending",
-          },
+          "[PayOS Check] Payment status mismatch detected! Updating order group...",
         );
 
-        if (!order.resourcesDeducted) {
-          console.log("[PayOS Check] Deducting resources...");
-          try {
-            await deductOrderResourcesFromOrder(order);
-            console.log("[PayOS Check] Resources deducted successfully");
-          } catch (deductError) {
-            console.error(
-              "[PayOS Check] Error deducting resources:",
-              deductError,
+        for (const pendingOrder of pendingOrders) {
+          pendingOrder.paymentStatus = "paid";
+          pendingOrder.paymentDate = new Date();
+          pendingOrder.status = "pending";
+
+          pendingOrder.statusHistory.push({
+            status: "pending",
+            changedBy: pendingOrder.userId,
+            changedByRole: "system",
+            changedAt: new Date(),
+            reason: "Thanh toán thành công qua PayOS (manual check)",
+            notes: `PayOS OrderCode: ${orderCode}. Chờ seller xử lý đơn hàng.`,
+          });
+
+          await pendingOrder.save();
+
+          orderTrackingService.notifyBuyerStatusChange(
+            pendingOrder._id.toString(),
+            "pending",
+            {
+              orderNumber: pendingOrder.orderNumber,
+              buyerId: pendingOrder.userId,
+              sellerId: pendingOrder.sellerId,
+              updatedAt: new Date(),
+              notes:
+                "Thanh toán PayOS xác nhận qua manual check, đơn ở pending",
+            },
+          );
+
+          if (!pendingOrder.resourcesDeducted) {
+            console.log("[PayOS Check] Deducting resources...");
+            try {
+              await deductOrderResourcesFromOrder(pendingOrder);
+              console.log("[PayOS Check] Resources deducted successfully");
+            } catch (deductError) {
+              console.error(
+                "[PayOS Check] Error deducting resources:",
+                deductError,
+              );
+            }
+          } else {
+            console.log(
+              "[PayOS Check] Resources already reserved at checkout, skipping deduction",
             );
           }
-        } else {
-          console.log(
-            "[PayOS Check] Resources already reserved at checkout, skipping deduction",
-          );
+
+          console.log("[PayOS Check] Sending confirmation email...");
+          await this.sendOrderConfirmationEmail(pendingOrder);
         }
 
         console.log("[PayOS Check] Clearing cart for userId:", order.userId);
@@ -545,25 +627,24 @@ class PaymentService {
           console.log("[PayOS Check] Cart cleared successfully");
         } catch (cartError) {
           console.error("[PayOS Check] Error clearing cart:", cartError);
-          // Non-critical - cart can be cleared later by user
         }
-
-        console.log("[PayOS Check] Sending confirmation email...");
-        await this.sendOrderConfirmationEmail(order);
-        console.log("[PayOS Check] Email sent successfully");
       } else {
         console.log("[PayOS Check] No update needed:", {
           payosStatus: paymentInfo.status,
-          localStatus: order.paymentStatus,
+          localStatus: groupOrders.map((o) => o.paymentStatus),
         });
       }
 
       const result = {
         orderNumber: order.orderNumber,
-        localPaymentStatus: order.paymentStatus,
+        checkoutGroupId: order.checkoutGroupId || null,
+        localPaymentStatus: groupOrders.every((o) => o.paymentStatus === "paid")
+          ? "paid"
+          : groupOrders.some((o) => o.paymentStatus === "paid")
+            ? "partial"
+            : "pending",
         payosPaymentInfo: paymentInfo,
-        updated:
-          paymentInfo.status === "PAID" && order.paymentStatus === "paid",
+        updated: paymentInfo.status === "PAID",
       };
 
       console.log("[PayOS Check] Result:", result);

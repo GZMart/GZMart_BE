@@ -130,6 +130,7 @@ sellerWalletTransactionSchema.statics.recordTransaction = async function (
           sellerId: data.sellerId,
           balance: 0,
           pendingBalance: 0,
+          debtBalance: 0,
           totalEarning: 0,
           totalPayout: 0,
         },
@@ -217,6 +218,7 @@ sellerWalletTransactionSchema.statics.getSellerWallet = async function (
       sellerId,
       balance: 0,
       pendingBalance: 0,
+      debtBalance: 0,
       pendingWithdrawal: 0,
       totalEarning: 0,
       totalPayout: 0,
@@ -301,7 +303,10 @@ sellerWalletTransactionSchema.statics.createRewardPointWithdrawalRequest =
         throw new Error("Wallet not found");
       }
 
-      const availableBalance = wallet.balance - (wallet.pendingBalance || 0);
+      const availableBalance =
+        wallet.balance -
+        (wallet.pendingBalance || 0) -
+        (wallet.debtBalance || 0);
       if (availableBalance < data.amount) {
         throw new Error(
           `Số dư khả dụng không đủ. Khả dụng: ${availableBalance.toLocaleString()} VND, Yêu cầu: ${data.amount.toLocaleString()} VND`,
@@ -506,6 +511,12 @@ const sellerWalletSchema = new mongoose.Schema(
       min: 0,
     },
 
+    debtBalance: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     // Tổng thu nhập từ trước đến nay
     totalEarning: {
       type: Number,
@@ -540,9 +551,12 @@ const sellerWalletSchema = new mongoose.Schema(
   },
 );
 
-// Virtual: Số dư thực = balance - pendingBalance
+// Virtual: Số dư thực = balance - pendingBalance - debtBalance
 sellerWalletSchema.virtual("availableBalance").get(function () {
-  return Math.max(0, this.balance - this.pendingBalance);
+  return Math.max(
+    0,
+    this.balance - this.pendingBalance - (this.debtBalance || 0),
+  );
 });
 
 // Virtual: Tổng số dư (balance + pending)

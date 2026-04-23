@@ -133,7 +133,11 @@ export const getRevenueStats = async (sellerId) => {
  * @param {string} period - '7days' | '30days' | '90days' | '12months' | 'yearly'
  * @param {object|null} customRange - { startDate, endDate } ISO strings for custom range
  */
-export const getRevenueOverTime = async (sellerId, period = "30days", customRange = null) => {
+export const getRevenueOverTime = async (
+  sellerId,
+  period = "30days",
+  customRange = null,
+) => {
   const now = new Date();
   let startDate;
   let endDate = new Date(now);
@@ -144,9 +148,13 @@ export const getRevenueOverTime = async (sellerId, period = "30days", customRang
     endDate = new Date(customRange.endDate);
     const rangeDays = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
     if (rangeDays <= 31) {
-      dateFormat = { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } };
+      dateFormat = {
+        $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+      };
     } else if (rangeDays <= 366) {
-      dateFormat = { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } };
+      dateFormat = {
+        $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+      };
     } else {
       dateFormat = { $dateToString: { format: "%Y-%m", date: "$createdAt" } };
     }
@@ -188,7 +196,7 @@ export const getRevenueOverTime = async (sellerId, period = "30days", customRang
     {
       $match: {
         createdAt: { $gte: startDate, $lte: endDate },
-        status: { $in: ['completed', 'delivered'] },
+        status: { $in: ["completed", "delivered"] },
       },
     },
     {
@@ -628,7 +636,11 @@ const ROLLING_COMPARISON_PERIODS = new Set([
  * @param {string} period - '7days' | '30days' | '90days' | '12months' | 'yearly'
  * @param {object|null} customRange - { startDate, endDate } ISO strings for custom range
  */
-export const getComparisonStats = async (sellerId, period = "30days", customRange = null) => {
+export const getComparisonStats = async (
+  sellerId,
+  period = "30days",
+  customRange = null,
+) => {
   const now = new Date();
   let currentStart;
   let currentEnd;
@@ -1013,7 +1025,11 @@ export const getProfitLossAnalysis = async (sellerId, period = "30days") => {
  * @param {String} sellerId
  * @param {String} period - '7days' | '30days' | '90days' | '12months' | 'yearly'
  */
-export const getExpenseAnalysis = async (sellerId, period = "12months", customRange = null) => {
+export const getExpenseAnalysis = async (
+  sellerId,
+  period = "12months",
+  customRange = null,
+) => {
   const now = new Date();
   let startDate;
   let endDate = now;
@@ -1054,7 +1070,10 @@ export const getExpenseAnalysis = async (sellerId, period = "12months", customRa
         status: { $in: ["COMPLETED", "Completed"] },
         $or: [
           { completedAt: { $gte: startDate, $lte: endDate } },
-          { completedAt: null, receivedDate: { $gte: startDate, $lte: endDate } },
+          {
+            completedAt: null,
+            receivedDate: { $gte: startDate, $lte: endDate },
+          },
         ],
       },
     },
@@ -1201,7 +1220,11 @@ export const getExpenseAnalysis = async (sellerId, period = "12months", customRa
  * @param {String} period - '7days' | '30days' | '90days' | '12months' | 'yearly'
  * @param {Number} limit - max number of categories to return
  */
-export const getProductAnalyticsByCategory = async (sellerId, period = "12months", limit = 8) => {
+export const getProductAnalyticsByCategory = async (
+  sellerId,
+  period = "12months",
+  limit = 8,
+) => {
   const now = new Date();
   let startDate;
   let endDate = now;
@@ -1380,7 +1403,11 @@ export const getProductAnalyticsByCategory = async (sellerId, period = "12months
  * @param {Number} limit - max number of products to return
  * @param {String} period - '7days' | '30days' | '90days' | '12months' | 'yearly'
  */
-export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, period = "12months") => {
+export const getTopSellingProductsWithProfit = async (
+  sellerId,
+  limit = 10,
+  period = "12months",
+) => {
   const now = new Date();
   let startDate;
   let endDate = now;
@@ -1544,6 +1571,28 @@ export const getTopSellingProductsWithProfit = async (sellerId, limit = 10, peri
 
 // ============= ADMIN DASHBOARD SERVICES =============
 
+const getNetOrderRevenueExpr = () => ({
+  $max: [
+    0,
+    {
+      $subtract: [
+        {
+          $ifNull: [
+            "$payableBeforeCoin",
+            {
+              $add: [
+                { $ifNull: ["$totalPrice", 0] },
+                { $ifNull: ["$coinUsedAmount", 0] },
+              ],
+            },
+          ],
+        },
+        { $ifNull: ["$refundAmount", 0] },
+      ],
+    },
+  ],
+});
+
 /**
  * Get overview statistics for admin dashboard
  * Returns total revenue, orders, users, products with trends
@@ -1573,23 +1622,35 @@ export const getOverviewStats = async () => {
   ] = await Promise.all([
     // Total revenue (all time)
     Order.aggregate([
-      { $match: { paymentStatus: "paid" } },
-      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+      {
+        $match: {
+          status: { $nin: ["cancelled", "refunded"] },
+          paymentStatus: { $ne: "refunded" },
+        },
+      },
+      { $group: { _id: null, total: { $sum: getNetOrderRevenueExpr() } } },
     ]),
     // Last month revenue
     Order.aggregate([
-      { $match: { paymentStatus: "paid", createdAt: { $gte: lastMonth } } },
-      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+      {
+        $match: {
+          createdAt: { $gte: lastMonth },
+          status: { $nin: ["cancelled", "refunded"] },
+          paymentStatus: { $ne: "refunded" },
+        },
+      },
+      { $group: { _id: null, total: { $sum: getNetOrderRevenueExpr() } } },
     ]),
     // Previous month revenue (for trend calculation)
     Order.aggregate([
       {
         $match: {
-          paymentStatus: "paid",
           createdAt: { $gte: twoMonthsAgo, $lt: lastMonth },
+          status: { $nin: ["cancelled", "refunded"] },
+          paymentStatus: { $ne: "refunded" },
         },
       },
-      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+      { $group: { _id: null, total: { $sum: getNetOrderRevenueExpr() } } },
     ]),
     // Total orders
     Order.countDocuments(),
@@ -1701,6 +1762,7 @@ export const getTopProducts = async (limit = 5) => {
     },
     {
       $project: {
+        productId: "$product._id",
         name: "$product.name",
         category: "$category.name",
         sold: 1,
@@ -1720,15 +1782,16 @@ export const getRecentOrders = async (limit = 5) => {
   const recentOrders = await Order.find()
     .sort({ createdAt: -1 })
     .limit(limit)
-    .populate("userId", "name email")
-    .select("orderNumber totalAmount orderStatus createdAt userId")
+    .populate("userId", "name fullName email")
+    .select("orderNumber totalPrice status createdAt userId")
     .lean();
 
   return recentOrders.map((order) => ({
+    _id: order._id,
     orderId: order.orderNumber || `#ORD-${order._id.toString().slice(-8)}`,
-    customer: order.userId?.name || "Unknown",
-    total: order.totalAmount,
-    status: order.orderStatus,
+    customer: order.userId?.fullName || order.userId?.name || "Unknown",
+    total: order.totalPrice || 0,
+    status: order.status || "unknown",
     date: order.createdAt.toISOString().split("T")[0],
   }));
 };
@@ -1785,70 +1848,184 @@ export const getCategorySales = async () => {
   }));
 };
 
-/**
- * Get revenue data by period (monthly or yearly)
- */
-export const getRevenueData = async (period = "monthly") => {
-  const now = new Date();
-  let startDate;
-  let dateFormat;
-  let periodLabels;
+const getIsoWeekInfo = (date) => {
+  const utcDate = new Date(
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
+  );
+  const dayNum = utcDate.getUTCDay() || 7;
+  utcDate.setUTCDate(utcDate.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(utcDate.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(((utcDate - yearStart) / 86400000 + 1) / 7);
 
-  if (period === "monthly") {
-    // Last 12 months
-    startDate = new Date(now);
+  return {
+    year: utcDate.getUTCFullYear(),
+    week: weekNo,
+  };
+};
+
+const getPeriodConfig = (inputPeriod = "monthly") => {
+  const period = ["weekly", "monthly", "quarterly", "yearly"].includes(
+    inputPeriod,
+  )
+    ? inputPeriod
+    : "monthly";
+
+  const now = new Date();
+
+  if (period === "weekly") {
+    const startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 7 * 11);
+    startDate.setHours(0, 0, 0, 0);
+
+    const labels = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 7 * i);
+      const { year, week } = getIsoWeekInfo(d);
+      const startOfWeek = new Date(d);
+      const day = startOfWeek.getDay();
+      const diffToMonday = day === 0 ? -6 : 1 - day;
+      startOfWeek.setDate(startOfWeek.getDate() + diffToMonday);
+      startOfWeek.setHours(0, 0, 0, 0);
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(endOfWeek.getDate() + 6);
+      labels.push({
+        key: `${year}-W${String(week).padStart(2, "0")}`,
+        label: `${startOfWeek.toLocaleDateString("en-GB", {
+          day: "2-digit",
+          month: "short",
+        })} - ${endOfWeek.toLocaleDateString("en-GB", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        })}`,
+      });
+    }
+
+    return {
+      period,
+      startDate,
+      groupStage: {
+        year: { $isoWeekYear: "$createdAt" },
+        week: { $isoWeek: "$createdAt" },
+      },
+      keyFromGroupId: (groupId) =>
+        `${groupId.year}-W${String(groupId.week).padStart(2, "0")}`,
+      labels,
+    };
+  }
+
+  if (period === "quarterly") {
+    const startDate = new Date(now);
     startDate.setMonth(startDate.getMonth() - 11);
     startDate.setDate(1);
-    dateFormat = { $dateToString: { format: "%Y-%m", date: "$createdAt" } };
 
-    // Generate labels for last 12 months
-    periodLabels = [];
+    const labels = [];
+    const seen = new Set();
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now);
       d.setMonth(d.getMonth() - i);
-      const label = d.toLocaleString("en-US", { month: "short" });
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      periodLabels.push({ key, label });
+      const quarter = Math.floor(d.getMonth() / 3) + 1;
+      const key = `${d.getFullYear()}-Q${quarter}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        labels.push({ key, label: `Q${quarter} ${d.getFullYear()}` });
+      }
     }
-  } else {
-    // Last 5 years
-    startDate = new Date(now);
+
+    return {
+      period,
+      startDate,
+      groupStage: {
+        year: { $year: "$createdAt" },
+        quarter: { $ceil: { $divide: [{ $month: "$createdAt" }, 3] } },
+      },
+      keyFromGroupId: (groupId) => `${groupId.year}-Q${groupId.quarter}`,
+      labels,
+    };
+  }
+
+  if (period === "yearly") {
+    const startDate = new Date(now);
     startDate.setFullYear(startDate.getFullYear() - 4);
     startDate.setMonth(0, 1);
-    dateFormat = { $dateToString: { format: "%Y", date: "$createdAt" } };
 
-    // Generate labels for last 5 years
-    periodLabels = [];
+    const labels = [];
     for (let i = 4; i >= 0; i--) {
       const year = now.getFullYear() - i;
-      periodLabels.push({ key: String(year), label: String(year) });
+      labels.push({ key: String(year), label: String(year) });
     }
+
+    return {
+      period,
+      startDate,
+      groupStage: {
+        year: { $year: "$createdAt" },
+      },
+      keyFromGroupId: (groupId) => String(groupId.year),
+      labels,
+    };
   }
+
+  const startDate = new Date(now);
+  startDate.setMonth(startDate.getMonth() - 11);
+  startDate.setDate(1);
+
+  const labels = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now);
+    d.setMonth(d.getMonth() - i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    labels.push({
+      key,
+      label: d.toLocaleString("en-US", { month: "short", year: "numeric" }),
+    });
+  }
+
+  return {
+    period,
+    startDate,
+    groupStage: {
+      year: { $year: "$createdAt" },
+      month: { $month: "$createdAt" },
+    },
+    keyFromGroupId: (groupId) =>
+      `${groupId.year}-${String(groupId.month).padStart(2, "0")}`,
+    labels,
+  };
+};
+
+/**
+ * Get revenue data by period (weekly, monthly, quarterly, yearly)
+ */
+export const getRevenueData = async (period = "monthly") => {
+  const config = getPeriodConfig(period);
 
   const revenueData = await Order.aggregate([
     {
       $match: {
-        createdAt: { $gte: startDate },
-        paymentStatus: "paid",
+        createdAt: { $gte: config.startDate },
+        status: { $nin: ["cancelled", "refunded"] },
+        paymentStatus: { $ne: "refunded" },
       },
     },
     {
       $group: {
-        _id: dateFormat,
-        revenue: { $sum: "$totalAmount" },
+        _id: config.groupStage,
+        revenue: { $sum: getNetOrderRevenueExpr() },
         orders: { $sum: 1 },
       },
     },
     {
-      $sort: { _id: 1 },
+      $sort: { "_id.year": 1, "_id.month": 1, "_id.week": 1, "_id.quarter": 1 },
     },
   ]);
 
-  // Create map for easy lookup
-  const dataMap = new Map(revenueData.map((item) => [item._id, item]));
+  const dataMap = new Map(
+    revenueData.map((item) => [config.keyFromGroupId(item._id), item]),
+  );
 
-  // Fill in missing periods with zeros
-  return periodLabels.map(({ key, label }) => ({
+  return config.labels.map(({ key, label }) => ({
     period: label,
     revenue: dataMap.get(key)?.revenue || 0,
     orders: dataMap.get(key)?.orders || 0,
@@ -1856,72 +2033,91 @@ export const getRevenueData = async (period = "monthly") => {
 };
 
 /**
- * Get user growth data by period (monthly or yearly)
+ * Get user growth data by period (weekly, monthly, quarterly, yearly)
  */
 export const getUserGrowth = async (period = "monthly") => {
-  const now = new Date();
-  let startDate;
-  let dateFormat;
-  let periodLabels;
-
-  if (period === "monthly") {
-    // Last 12 months
-    startDate = new Date(now);
-    startDate.setMonth(startDate.getMonth() - 11);
-    startDate.setDate(1);
-    dateFormat = { $dateToString: { format: "%Y-%m", date: "$createdAt" } };
-
-    periodLabels = [];
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(now);
-      d.setMonth(d.getMonth() - i);
-      const label = d.toLocaleString("en-US", { month: "short" });
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      periodLabels.push({ key, label });
-    }
-  } else {
-    // Last 5 years
-    startDate = new Date(now);
-    startDate.setFullYear(startDate.getFullYear() - 4);
-    startDate.setMonth(0, 1);
-    dateFormat = { $dateToString: { format: "%Y", date: "$createdAt" } };
-
-    periodLabels = [];
-    for (let i = 4; i >= 0; i--) {
-      const year = now.getFullYear() - i;
-      periodLabels.push({ key: String(year), label: String(year) });
-    }
-  }
+  const config = getPeriodConfig(period);
 
   const userGrowth = await User.aggregate([
     {
       $match: {
-        createdAt: { $gte: startDate },
+        createdAt: { $gte: config.startDate },
       },
     },
     {
       $group: {
-        _id: dateFormat,
+        _id: config.groupStage,
         users: { $sum: 1 },
       },
     },
     {
-      $sort: { _id: 1 },
+      $sort: { "_id.year": 1, "_id.month": 1, "_id.week": 1, "_id.quarter": 1 },
     },
   ]);
 
-  // Create map for easy lookup
-  const dataMap = new Map(userGrowth.map((item) => [item._id, item]));
+  const dataMap = new Map(
+    userGrowth.map((item) => [config.keyFromGroupId(item._id), item]),
+  );
 
-  // Fill in missing periods with zeros and accumulate
   let cumulative = 0;
-  return periodLabels.map(({ key, label }) => {
+  return config.labels.map(({ key, label }) => {
     cumulative += dataMap.get(key)?.users || 0;
     return {
       period: label,
       users: cumulative,
     };
   });
+};
+
+/**
+ * Get low stock items across marketplace (admin)
+ */
+export const getAdminLowStockItems = async (threshold = 20, limit = 30) => {
+  const lowStockItems = await Product.aggregate([
+    {
+      $unwind: "$models",
+    },
+    {
+      $match: {
+        "models.isActive": true,
+        "models.stock": { $gt: 0, $lt: threshold },
+      },
+    },
+    {
+      $lookup: {
+        from: "users",
+        localField: "sellerId",
+        foreignField: "_id",
+        as: "seller",
+      },
+    },
+    {
+      $unwind: { path: "$seller", preserveNullAndEmptyArrays: true },
+    },
+    {
+      $project: {
+        _id: 0,
+        productId: "$_id",
+        productName: "$name",
+        modelId: "$models._id",
+        modelSku: "$models.sku",
+        imageUrl: {
+          $ifNull: ["$models.image", { $arrayElemAt: ["$images", 0] }],
+        },
+        stock: "$models.stock",
+        threshold: { $literal: threshold },
+        sellerName: "$seller.fullName",
+      },
+    },
+    {
+      $sort: { stock: 1, productName: 1 },
+    },
+    {
+      $limit: limit,
+    },
+  ]);
+
+  return lowStockItems;
 };
 
 /**
@@ -2195,7 +2391,9 @@ export const getSellerBalance = async (sellerId) => {
   // Trừ số đã convert sang RP và số đã payout để balance chính xác
   const convertedToRP = walletInfo.totalConvertedToRP || 0;
   const totalPayout = walletInfo.totalPayout || 0;
-  const netAvailableBalance = availableBalance - convertedToRP - totalPayout;
+  const debtBalance = walletInfo.debtBalance || 0;
+  const netAvailableBalance =
+    availableBalance - convertedToRP - totalPayout - debtBalance;
   // Raw balance chưa trừ convert (dùng khi cần tính toán)
   const rawBalance = Math.round(availableBalance + convertedToRP);
 
@@ -2207,6 +2405,7 @@ export const getSellerBalance = async (sellerId) => {
     totalEarning: Math.round(totalEarning),
     totalRefund: Math.round(totalRefund),
     totalPayout: Math.round(totalPayout),
+    debtBalance: Math.round(debtBalance),
     totalOrders,
     completedOrders,
     pendingOrders,
@@ -2445,13 +2644,17 @@ export const getRewardPointWithdrawals = async (
  * @param {Object} customRange - Optional { startDate, endDate }
  * @returns {Object} - { ageGroups, totalCustomers, totalRevenue, period, hasBirthdayData }
  */
-export const getCustomerAgeAnalytics = async (sellerId, period = '12months', customRange = null) => {
+export const getCustomerAgeAnalytics = async (
+  sellerId,
+  period = "12months",
+  customRange = null,
+) => {
   if (!sellerId) {
-    throw new ErrorResponse('Seller ID is required', 400);
+    throw new ErrorResponse("Seller ID is required", 400);
   }
 
   // Get seller's products
-  const sellerProducts = await Product.find({ sellerId }).select('_id');
+  const sellerProducts = await Product.find({ sellerId }).select("_id");
   const sellerProductIds = sellerProducts.map((p) => p._id);
 
   if (sellerProductIds.length === 0) {
@@ -2476,19 +2679,31 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
     endDate = new Date(customRange.endDate);
   } else {
     switch (period) {
-      case '7days':
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+      case "7days":
+        startDate = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() - 6,
+        );
         break;
-      case '30days':
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
+      case "30days":
+        startDate = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() - 29,
+        );
         break;
-      case '90days':
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 89);
+      case "90days":
+        startDate = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() - 89,
+        );
         break;
-      case '12months':
+      case "12months":
         startDate = new Date(now.getFullYear(), now.getMonth() - 11, 1);
         break;
-      case 'yearly':
+      case "yearly":
         startDate = new Date(now.getFullYear() - 1, 0, 1);
         endDate = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59);
         break;
@@ -2499,13 +2714,13 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
 
   // Age groups definition
   const AGE_GROUPS = [
-    { label: 'Under 18', minAge: 0, maxAge: 17 },
-    { label: '18-24', minAge: 18, maxAge: 24 },
-    { label: '25-34', minAge: 25, maxAge: 34 },
-    { label: '35-44', minAge: 35, maxAge: 44 },
-    { label: '45-54', minAge: 45, maxAge: 54 },
-    { label: '55-64', minAge: 55, maxAge: 64 },
-    { label: '65+', minAge: 65, maxAge: 150 },
+    { label: "Under 18", minAge: 0, maxAge: 17 },
+    { label: "18-24", minAge: 18, maxAge: 24 },
+    { label: "25-34", minAge: 25, maxAge: 34 },
+    { label: "35-44", minAge: 35, maxAge: 44 },
+    { label: "45-54", minAge: 45, maxAge: 54 },
+    { label: "55-64", minAge: 55, maxAge: 64 },
+    { label: "65+", minAge: 65, maxAge: 150 },
   ];
 
   // Aggregation pipeline: join orders → orderitems → filter by seller → join user
@@ -2513,41 +2728,43 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
     {
       $match: {
         createdAt: { $gte: startDate, $lte: endDate },
-        status: { $in: ['completed', 'delivered'] },
+        status: { $in: ["completed", "delivered"] },
       },
     },
     {
       $lookup: {
-        from: 'orderitems',
-        localField: '_id',
-        foreignField: 'orderId',
-        as: 'items',
+        from: "orderitems",
+        localField: "_id",
+        foreignField: "orderId",
+        as: "items",
       },
     },
-    { $unwind: '$items' },
+    { $unwind: "$items" },
     {
       $match: {
-        'items.productId': { $in: sellerProductIds },
+        "items.productId": { $in: sellerProductIds },
       },
     },
     {
       $lookup: {
-        from: 'users',
-        localField: 'userId',
-        foreignField: '_id',
-        as: 'user',
+        from: "users",
+        localField: "userId",
+        foreignField: "_id",
+        as: "user",
       },
     },
-    { $unwind: '$user' },
+    { $unwind: "$user" },
     {
       $addFields: {
         buyerAge: {
           $cond: {
-            if: { $and: ['$user.dateOfBirth', { $ne: ['$user.dateOfBirth', null] }] },
+            if: {
+              $and: ["$user.dateOfBirth", { $ne: ["$user.dateOfBirth", null] }],
+            },
             then: {
               $floor: {
                 $divide: [
-                  { $subtract: [new Date(), '$user.dateOfBirth'] },
+                  { $subtract: [new Date(), "$user.dateOfBirth"] },
                   365.25 * 24 * 60 * 60 * 1000,
                 ],
               },
@@ -2563,32 +2780,72 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
           ageGroup: {
             $switch: {
               branches: [
-                { case: { $eq: ['$buyerAge', null] }, then: 'Unknown' },
-                { case: { $lt: ['$buyerAge', 18] }, then: 'Under 18' },
-                { case: { $and: [{ $gte: ['$buyerAge', 18] }, { $lte: ['$buyerAge', 24] }] }, then: '18-24' },
-                { case: { $and: [{ $gte: ['$buyerAge', 25] }, { $lte: ['$buyerAge', 34] }] }, then: '25-34' },
-                { case: { $and: [{ $gte: ['$buyerAge', 35] }, { $lte: ['$buyerAge', 44] }] }, then: '35-44' },
-                { case: { $and: [{ $gte: ['$buyerAge', 45] }, { $lte: ['$buyerAge', 54] }] }, then: '45-54' },
-                { case: { $and: [{ $gte: ['$buyerAge', 55] }, { $lte: ['$buyerAge', 64] }] }, then: '55-64' },
-                { case: { $gte: ['$buyerAge', 65] }, then: '65+' },
+                { case: { $eq: ["$buyerAge", null] }, then: "Unknown" },
+                { case: { $lt: ["$buyerAge", 18] }, then: "Under 18" },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 18] },
+                      { $lte: ["$buyerAge", 24] },
+                    ],
+                  },
+                  then: "18-24",
+                },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 25] },
+                      { $lte: ["$buyerAge", 34] },
+                    ],
+                  },
+                  then: "25-34",
+                },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 35] },
+                      { $lte: ["$buyerAge", 44] },
+                    ],
+                  },
+                  then: "35-44",
+                },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 45] },
+                      { $lte: ["$buyerAge", 54] },
+                    ],
+                  },
+                  then: "45-54",
+                },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 55] },
+                      { $lte: ["$buyerAge", 64] },
+                    ],
+                  },
+                  then: "55-64",
+                },
+                { case: { $gte: ["$buyerAge", 65] }, then: "65+" },
               ],
-              default: 'Unknown',
+              default: "Unknown",
             },
           },
-          buyerId: '$userId',
-          orderId: '$_id',
+          buyerId: "$userId",
+          orderId: "$_id",
         },
-        orderTotal: { $sum: '$items.subtotal' },
-        itemQty: { $sum: '$items.quantity' },
+        orderTotal: { $sum: "$items.subtotal" },
+        itemQty: { $sum: "$items.quantity" },
       },
     },
     {
       $group: {
-        _id: '$_id.ageGroup',
-        uniqueBuyers: { $addToSet: '$_id.buyerId' },
+        _id: "$_id.ageGroup",
+        uniqueBuyers: { $addToSet: "$_id.buyerId" },
         orderCount: { $sum: 1 },
-        totalRevenue: { $sum: '$orderTotal' },
-        totalQuantity: { $sum: '$itemQty' },
+        totalRevenue: { $sum: "$orderTotal" },
+        totalQuantity: { $sum: "$itemQty" },
       },
     },
   ];
@@ -2598,9 +2855,23 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
   // Merge with age group template to ensure all groups exist
   const ageGroupMap = {};
   AGE_GROUPS.forEach((g) => {
-    ageGroupMap[g.label] = { label: g.label, customers: 0, orders: 0, revenue: 0, quantity: 0, percent: 0 };
+    ageGroupMap[g.label] = {
+      label: g.label,
+      customers: 0,
+      orders: 0,
+      revenue: 0,
+      quantity: 0,
+      percent: 0,
+    };
   });
-  ageGroupMap['Unknown'] = { label: 'Unknown', customers: 0, orders: 0, revenue: 0, quantity: 0, percent: 0 };
+  ageGroupMap["Unknown"] = {
+    label: "Unknown",
+    customers: 0,
+    orders: 0,
+    revenue: 0,
+    quantity: 0,
+    percent: 0,
+  };
 
   let totalRevenue = 0;
   let totalCustomers = 0;
@@ -2608,13 +2879,13 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
   let hasBirthdayData = false;
 
   results.forEach((r) => {
-    const label = r._id || 'Unknown';
+    const label = r._id || "Unknown";
     const customers = r.uniqueBuyers ? r.uniqueBuyers.length : 0;
     const revenue = r.totalRevenue || 0;
     totalRevenue += revenue;
     totalCustomers += customers;
     totalOrders += r.orderCount || 0;
-    if (label !== 'Unknown') hasBirthdayData = true;
+    if (label !== "Unknown") hasBirthdayData = true;
 
     if (ageGroupMap[label]) {
       ageGroupMap[label].customers = customers;
@@ -2625,14 +2896,16 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
   });
 
   // Calculate percentages — base on total revenue of groups WITH customer data only (exclude Unknown)
-  const ageGroups = Object.values(ageGroupMap).filter((g) => g.customers > 0 || g.label === 'Unknown');
+  const ageGroups = Object.values(ageGroupMap).filter(
+    (g) => g.customers > 0 || g.label === "Unknown",
+  );
   const knownRevenueTotal = ageGroups.reduce((sum, g) => {
-    if (g.label !== 'Unknown') return sum + g.revenue;
+    if (g.label !== "Unknown") return sum + g.revenue;
     return sum;
   }, 0);
   if (knownRevenueTotal > 0) {
     ageGroups.forEach((g) => {
-      if (g.label !== 'Unknown') {
+      if (g.label !== "Unknown") {
         g.percent = Math.round((g.revenue / knownRevenueTotal) * 1000) / 10;
       }
     });
@@ -2640,8 +2913,8 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
 
   // Sort: known ages first, then by customer count desc
   const sortedGroups = ageGroups.sort((a, b) => {
-    if (a.label === 'Unknown' && b.label !== 'Unknown') return 1;
-    if (a.label !== 'Unknown' && b.label === 'Unknown') return -1;
+    if (a.label === "Unknown" && b.label !== "Unknown") return 1;
+    if (a.label !== "Unknown" && b.label === "Unknown") return -1;
     return b.customers - a.customers;
   });
 
@@ -2653,7 +2926,10 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
     avgOrderValue: totalOrders > 0 ? Math.round(totalRevenue / totalOrders) : 0,
     period,
     hasBirthdayData,
-    periodLabel: startDate.toLocaleDateString('vi-VN') + ' → ' + endDate.toLocaleDateString('vi-VN'),
+    periodLabel:
+      startDate.toLocaleDateString("vi-VN") +
+      " → " +
+      endDate.toLocaleDateString("vi-VN"),
   };
 };
 
@@ -2666,13 +2942,20 @@ export const getCustomerAgeAnalytics = async (sellerId, period = '12months', cus
  * @param {Number} limit - Max products to return
  * @returns {Object} - { products, period, hasBirthdayData }
  */
-export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12months', customRange = null, limit = 10) => {
+export const getCustomerAgeAnalyticsByProduct = async (
+  sellerId,
+  period = "12months",
+  customRange = null,
+  limit = 10,
+) => {
   if (!sellerId) {
-    throw new ErrorResponse('Seller ID is required', 400);
+    throw new ErrorResponse("Seller ID is required", 400);
   }
 
   // Get seller's products
-  const sellerProducts = await Product.find({ sellerId }).select('_id name thumbnail shopPrice').lean();
+  const sellerProducts = await Product.find({ sellerId })
+    .select("_id name thumbnail shopPrice")
+    .lean();
   const sellerProductIds = sellerProducts.map((p) => p._id);
 
   if (sellerProductIds.length === 0) {
@@ -2689,19 +2972,31 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
     endDate = new Date(customRange.endDate);
   } else {
     switch (period) {
-      case '7days':
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+      case "7days":
+        startDate = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() - 6,
+        );
         break;
-      case '30days':
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
+      case "30days":
+        startDate = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() - 29,
+        );
         break;
-      case '90days':
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 89);
+      case "90days":
+        startDate = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() - 89,
+        );
         break;
-      case '12months':
+      case "12months":
         startDate = new Date(now.getFullYear(), now.getMonth() - 11, 1);
         break;
-      case 'yearly':
+      case "yearly":
         startDate = new Date(now.getFullYear() - 1, 0, 1);
         endDate = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59);
         break;
@@ -2711,13 +3006,13 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
   }
 
   const AGE_GROUPS = [
-    { label: 'Under 18', minAge: 0, maxAge: 17 },
-    { label: '18-24', minAge: 18, maxAge: 24 },
-    { label: '25-34', minAge: 25, maxAge: 34 },
-    { label: '35-44', minAge: 35, maxAge: 44 },
-    { label: '45-54', minAge: 45, maxAge: 54 },
-    { label: '55-64', minAge: 55, maxAge: 64 },
-    { label: '65+', minAge: 65, maxAge: 150 },
+    { label: "Under 18", minAge: 0, maxAge: 17 },
+    { label: "18-24", minAge: 18, maxAge: 24 },
+    { label: "25-34", minAge: 25, maxAge: 34 },
+    { label: "35-44", minAge: 35, maxAge: 44 },
+    { label: "45-54", minAge: 45, maxAge: 54 },
+    { label: "55-64", minAge: 55, maxAge: 64 },
+    { label: "65+", minAge: 65, maxAge: 150 },
   ];
 
   // Aggregation pipeline
@@ -2727,41 +3022,43 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
     {
       $match: {
         createdAt: { $gte: startDate, $lte: endDate },
-        status: { $in: ['completed', 'delivered'] },
+        status: { $in: ["completed", "delivered"] },
       },
     },
     {
       $lookup: {
-        from: 'orderitems',
-        localField: '_id',
-        foreignField: 'orderId',
-        as: 'items',
+        from: "orderitems",
+        localField: "_id",
+        foreignField: "orderId",
+        as: "items",
       },
     },
-    { $unwind: '$items' },
+    { $unwind: "$items" },
     {
       $match: {
-        'items.productId': { $in: sellerProductIds },
+        "items.productId": { $in: sellerProductIds },
       },
     },
     {
       $lookup: {
-        from: 'users',
-        localField: 'userId',
-        foreignField: '_id',
-        as: 'user',
+        from: "users",
+        localField: "userId",
+        foreignField: "_id",
+        as: "user",
       },
     },
-    { $unwind: '$user' },
+    { $unwind: "$user" },
     {
       $addFields: {
         buyerAge: {
           $cond: {
-            if: { $and: ['$user.dateOfBirth', { $ne: ['$user.dateOfBirth', null] }] },
+            if: {
+              $and: ["$user.dateOfBirth", { $ne: ["$user.dateOfBirth", null] }],
+            },
             then: {
               $floor: {
                 $divide: [
-                  { $subtract: [new Date(), '$user.dateOfBirth'] },
+                  { $subtract: [new Date(), "$user.dateOfBirth"] },
                   365.25 * 24 * 60 * 60 * 1000,
                 ],
               },
@@ -2774,45 +3071,85 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
     {
       $group: {
         _id: {
-          productId: '$items.productId',
+          productId: "$items.productId",
           ageGroup: {
             $switch: {
               branches: [
-                { case: { $eq: ['$buyerAge', null] }, then: 'Unknown' },
-                { case: { $lt: ['$buyerAge', 18] }, then: 'Under 18' },
-                { case: { $and: [{ $gte: ['$buyerAge', 18] }, { $lte: ['$buyerAge', 24] }] }, then: '18-24' },
-                { case: { $and: [{ $gte: ['$buyerAge', 25] }, { $lte: ['$buyerAge', 34] }] }, then: '25-34' },
-                { case: { $and: [{ $gte: ['$buyerAge', 35] }, { $lte: ['$buyerAge', 44] }] }, then: '35-44' },
-                { case: { $and: [{ $gte: ['$buyerAge', 45] }, { $lte: ['$buyerAge', 54] }] }, then: '45-54' },
-                { case: { $and: [{ $gte: ['$buyerAge', 55] }, { $lte: ['$buyerAge', 64] }] }, then: '55-64' },
-                { case: { $gte: ['$buyerAge', 65] }, then: '65+' },
+                { case: { $eq: ["$buyerAge", null] }, then: "Unknown" },
+                { case: { $lt: ["$buyerAge", 18] }, then: "Under 18" },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 18] },
+                      { $lte: ["$buyerAge", 24] },
+                    ],
+                  },
+                  then: "18-24",
+                },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 25] },
+                      { $lte: ["$buyerAge", 34] },
+                    ],
+                  },
+                  then: "25-34",
+                },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 35] },
+                      { $lte: ["$buyerAge", 44] },
+                    ],
+                  },
+                  then: "35-44",
+                },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 45] },
+                      { $lte: ["$buyerAge", 54] },
+                    ],
+                  },
+                  then: "45-54",
+                },
+                {
+                  case: {
+                    $and: [
+                      { $gte: ["$buyerAge", 55] },
+                      { $lte: ["$buyerAge", 64] },
+                    ],
+                  },
+                  then: "55-64",
+                },
+                { case: { $gte: ["$buyerAge", 65] }, then: "65+" },
               ],
-              default: 'Unknown',
+              default: "Unknown",
             },
           },
         },
         orderCount: { $sum: 1 },
-        revenue: { $sum: '$items.subtotal' },
-        quantity: { $sum: '$items.quantity' },
-        uniqueBuyers: { $addToSet: '$userId' },
+        revenue: { $sum: "$items.subtotal" },
+        quantity: { $sum: "$items.quantity" },
+        uniqueBuyers: { $addToSet: "$userId" },
       },
     },
     {
       $group: {
-        _id: '$_id.productId',
+        _id: "$_id.productId",
         ageDistribution: {
           $push: {
-            ageGroup: '$_id.ageGroup',
-            orderCount: '$orderCount',
-            revenue: '$revenue',
-            quantity: '$quantity',
-            customers: { $size: '$uniqueBuyers' },
+            ageGroup: "$_id.ageGroup",
+            orderCount: "$orderCount",
+            revenue: "$revenue",
+            quantity: "$quantity",
+            customers: { $size: "$uniqueBuyers" },
           },
         },
-        totalRevenue: { $sum: '$revenue' },
-        totalQuantity: { $sum: '$quantity' },
-        totalOrders: { $sum: '$orderCount' },
-        totalCustomers: { $sum: { $size: '$uniqueBuyers' } },
+        totalRevenue: { $sum: "$revenue" },
+        totalQuantity: { $sum: "$quantity" },
+        totalOrders: { $sum: "$orderCount" },
+        totalCustomers: { $sum: { $size: "$uniqueBuyers" } },
       },
     },
     {
@@ -2823,15 +3160,15 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
     },
     {
       $lookup: {
-        from: 'products',
-        localField: '_id',
-        foreignField: '_id',
-        as: 'product',
+        from: "products",
+        localField: "_id",
+        foreignField: "_id",
+        as: "product",
       },
     },
     {
       $addFields: {
-        productInfo: { $arrayElemAt: ['$product', 0] },
+        productInfo: { $arrayElemAt: ["$product", 0] },
       },
     },
     {
@@ -2847,12 +3184,26 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
   const products = results.map((r) => {
     const ageDistMap = {};
     AGE_GROUPS.forEach((g) => {
-      ageDistMap[g.label] = { label: g.label, customers: 0, orders: 0, revenue: 0, quantity: 0, percent: 0 };
+      ageDistMap[g.label] = {
+        label: g.label,
+        customers: 0,
+        orders: 0,
+        revenue: 0,
+        quantity: 0,
+        percent: 0,
+      };
     });
-    ageDistMap['Unknown'] = { label: 'Unknown', customers: 0, orders: 0, revenue: 0, quantity: 0, percent: 0 };
+    ageDistMap["Unknown"] = {
+      label: "Unknown",
+      customers: 0,
+      orders: 0,
+      revenue: 0,
+      quantity: 0,
+      percent: 0,
+    };
 
     (r.ageDistribution || []).forEach((d) => {
-      const label = d.ageGroup || 'Unknown';
+      const label = d.ageGroup || "Unknown";
       if (ageDistMap[label]) {
         ageDistMap[label].customers = d.customers || 0;
         ageDistMap[label].orders = d.orderCount || 0;
@@ -2863,11 +3214,11 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
 
     // Calculate percentages — base on revenue of known-age groups only
     const knownRevenueTotal = Object.values(ageDistMap)
-      .filter((g) => g.label !== 'Unknown')
+      .filter((g) => g.label !== "Unknown")
       .reduce((sum, g) => sum + g.revenue, 0);
     if (knownRevenueTotal > 0) {
       Object.values(ageDistMap).forEach((g) => {
-        if (g.label !== 'Unknown') {
+        if (g.label !== "Unknown") {
           g.percent = Math.round((g.revenue / knownRevenueTotal) * 1000) / 10;
         }
       });
@@ -2876,8 +3227,8 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
     const sortedAgeGroups = Object.values(ageDistMap)
       .filter((g) => g.customers > 0 || r.totalRevenue === 0)
       .sort((a, b) => {
-        if (a.label === 'Unknown' && b.label !== 'Unknown') return 1;
-        if (a.label !== 'Unknown' && b.label === 'Unknown') return -1;
+        if (a.label === "Unknown" && b.label !== "Unknown") return 1;
+        if (a.label !== "Unknown" && b.label === "Unknown") return -1;
         return b.customers - a.customers;
       });
 
@@ -2886,26 +3237,32 @@ export const getCustomerAgeAnalyticsByProduct = async (sellerId, period = '12mon
 
     return {
       productId: r._id,
-      productName: r.productInfo?.name || '—',
-      productImage: r.productInfo?.thumbnail || '',
+      productName: r.productInfo?.name || "—",
+      productImage: r.productInfo?.thumbnail || "",
       totalRevenue: r.totalRevenue || 0,
       totalOrders: r.totalOrders || 0,
       totalQuantity: r.totalQuantity || 0,
       totalCustomers: r.totalCustomers || 0,
-      avgOrderValue: r.totalOrders > 0 ? Math.round(r.totalRevenue / r.totalOrders) : 0,
-      dominantAgeGroup: dominant?.label || '—',
+      avgOrderValue:
+        r.totalOrders > 0 ? Math.round(r.totalRevenue / r.totalOrders) : 0,
+      dominantAgeGroup: dominant?.label || "—",
       dominantPercent: dominant?.percent || 0,
       ageGroups: sortedAgeGroups,
     };
   });
 
-  const hasBirthdayData = products.some((p) => p.ageGroups.some((g) => g.label !== 'Unknown' && g.customers > 0));
+  const hasBirthdayData = products.some((p) =>
+    p.ageGroups.some((g) => g.label !== "Unknown" && g.customers > 0),
+  );
 
   return {
     products,
     period,
     hasBirthdayData,
-    periodLabel: startDate.toLocaleDateString('vi-VN') + ' → ' + endDate.toLocaleDateString('vi-VN'),
+    periodLabel:
+      startDate.toLocaleDateString("vi-VN") +
+      " → " +
+      endDate.toLocaleDateString("vi-VN"),
   };
 };
 

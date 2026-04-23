@@ -10,6 +10,7 @@ import { rollbackOrderResources } from "../utils/orderInventory.js";
 import coinService from "./coin.service.js";
 import NotificationService from "./notification.service.js";
 import { getSocketIO } from "../utils/socketIO.js";
+import { applyOrderRefund } from "./financialSettlement.service.js";
 
 const emitRmaUpdate = (returnRequest, extra = {}) => {
   try {
@@ -77,6 +78,69 @@ const upsertLogisticsStep = (returnRequest, code, patch = {}) => {
   };
   returnRequest.logistics.steps.push(next);
   return next;
+};
+
+const DEFAULT_RMA_LEG_DURATION_SECONDS = 10;
+
+const getLogisticsStep = (returnRequest, code) => {
+  ensureLogisticsSteps(returnRequest);
+  return (
+    returnRequest.logistics.steps.find((step) => step.code === code) || null
+  );
+};
+
+const startLogisticsLeg = (
+  returnRequest,
+  code,
+  {
+    title,
+    durationSeconds = DEFAULT_RMA_LEG_DURATION_SECONDS,
+    note,
+    startedAt = new Date(),
+  } = {},
+) => {
+  const startTime = new Date(startedAt);
+  const safeDuration = Math.max(1, Number(durationSeconds || 1));
+  const autoCompleteAt = new Date(startTime.getTime() + safeDuration * 1000);
+
+  return upsertLogisticsStep(returnRequest, code, {
+    title: title || code,
+    startedAt: startTime,
+    durationSeconds: safeDuration,
+    autoCompleteAt,
+    completed: false,
+    completedAt: null,
+    note,
+  });
+};
+
+const markLogisticsStepCompleted = (
+  returnRequest,
+  code,
+  { title, completedAt = new Date(), note } = {},
+) => {
+  const existing = getLogisticsStep(returnRequest, code);
+  const finalizedAt = new Date(completedAt);
+  const hasDuration = Number.isFinite(Number(existing?.durationSeconds));
+  const durationSeconds =
+    hasDuration && Number(existing.durationSeconds) > 0
+      ? Number(existing.durationSeconds)
+      : null;
+
+  return upsertLogisticsStep(returnRequest, code, {
+    title: title || existing?.title || code,
+    startedAt: existing?.startedAt || finalizedAt,
+    durationSeconds,
+    autoCompleteAt:
+      existing?.autoCompleteAt ||
+      (durationSeconds
+        ? new Date(existing?.startedAt || finalizedAt).getTime() +
+          durationSeconds * 1000
+        : finalizedAt),
+    completed: true,
+    completedAt: finalizedAt,
+    note,
+  });
 };
 
 /**
@@ -306,6 +370,7 @@ export const respondToReturnRequest = async (
 
       returnRequest.type = resolutionType;
       returnRequest.status = "approved";
+      const now = new Date();
       returnRequest.logistics = {
         ...(returnRequest.logistics || {}),
         flowType: resolutionType,
@@ -319,6 +384,11 @@ export const respondToReturnRequest = async (
                 {
                   code: "seller_pack_and_handover",
                   title: "Seller packs replacement item and hands to shipper",
+                  startedAt: now,
+                  durationSeconds: DEFAULT_RMA_LEG_DURATION_SECONDS,
+                  autoCompleteAt: new Date(
+                    now.getTime() + DEFAULT_RMA_LEG_DURATION_SECONDS * 1000,
+                  ),
                   completed: false,
                 },
                 {
@@ -343,6 +413,11 @@ export const respondToReturnRequest = async (
                   code: "seller_to_buyer_in_transit",
                   title:
                     "Shipper is delivering return flow package from seller to buyer",
+                  startedAt: now,
+                  durationSeconds: DEFAULT_RMA_LEG_DURATION_SECONDS,
+                  autoCompleteAt: new Date(
+                    now.getTime() + DEFAULT_RMA_LEG_DURATION_SECONDS * 1000,
+                  ),
                   completed: false,
                 },
                 {
@@ -475,36 +550,35 @@ export const processRefund = async (returnRequestId) => {
           transactionId: order.payosTransactionDateTime || order.transactionId,
         },
       },
+      session,
     });
 
-    // 2. Update return request
+    // 2. Reverse marketplace settlement using frozen order snapshot
+    const settlementResult = await applyOrderRefund({
+      orderId: order._id,
+      refundAmount: returnRequest.refund.amount,
+      returnRequest,
+      session,
+    });
+
+    // 3. Update return request
     returnRequest.refund.refundedAt = new Date();
     returnRequest.refund.transactionId = coinResult.transaction._id;
+    returnRequest.refund.settlementTransactionId =
+      settlementResult.sellerTransaction?._id || null;
+    returnRequest.refund.adminSettlementTransactionId =
+      settlementResult.adminTransaction?._id || null;
+    returnRequest.refund.debtAmount =
+      settlementResult.snapshot?.debtAmount || 0;
     returnRequest.status = "completed";
     returnRequest.timeline.push({
       status: "completed",
-      description: `Refunded ${coinAmount} coins to wallet (no expiration)`,
+      description: `Refunded ${coinAmount} coins to wallet (no expiration) and reversed settlement`,
       updatedAt: new Date(),
       role: "system",
     });
 
     await returnRequest.save({ session });
-
-    // 3. Update order status
-    order.status = "refunded";
-    order.paymentStatus = "refunded";
-    order.refundedAt = new Date();
-    order.refundReason = returnRequest.reason;
-    order.refundAmount = returnRequest.refund.amount;
-
-    order.statusHistory.push({
-      status: "refunded",
-      changedByRole: "system",
-      changedAt: new Date(),
-      reason: `Return request ${returnRequest.requestNumber} processed`,
-    });
-
-    await order.save({ session });
 
     // 4. Rollback inventory if it was deducted
     if (order.resourcesDeducted) {
@@ -553,7 +627,7 @@ export const processRefund = async (returnRequestId) => {
 };
 
 /**
- * Process exchange - Create new order for exchange items
+ * Process exchange - Create a real replacement order with the same items
  */
 export const processExchange = async (returnRequestId) => {
   const session = await mongoose.startSession();
@@ -562,8 +636,15 @@ export const processExchange = async (returnRequestId) => {
     session.startTransaction();
 
     const returnRequest = await ReturnRequest.findById(returnRequestId)
-      .populate("orderId")
-      .populate("items.orderItemId")
+      .populate({
+        path: "orderId",
+        populate: { path: "userId", select: "fullName email phone address location" },
+      })
+      .populate({
+        path: "items.orderItemId",
+        populate: { path: "productId", select: "name images tiers models sellerId" },
+      })
+      .populate("items.productId")
       .session(session);
 
     if (!returnRequest) {
@@ -574,21 +655,162 @@ export const processExchange = async (returnRequestId) => {
       throw new Error("This is not an exchange request");
     }
 
-    // Must be in processing status (after seller confirms receiving items)
     if (returnRequest.status !== "processing") {
       throw new Error(
         `Cannot process exchange for status: ${returnRequest.status}. Must be 'processing' (seller must confirm receiving items first).`,
       );
     }
 
-    const order = returnRequest.orderId;
-    // Mark exchange flow as completed. In this codebase, replacement shipment is tracked via RMA
-    // timeline and logistics steps rather than creating a synthetic order record.
-    const priceDifference = 0;
+    const originalOrder = returnRequest.orderId;
 
+    // ── 1. Validate stock for each return item (exact same variant) ──
+    const itemsToCreate = [];
+    let newSubtotal = 0;
+
+    for (const rmaItem of returnRequest.items) {
+      const orderItem = rmaItem.orderItemId;
+      if (!orderItem) {
+        throw new Error(
+          `Original order item not found for RMA item ${rmaItem._id}`,
+        );
+      }
+
+      const productId = rmaItem.productId?._id || orderItem.productId?._id || orderItem.productId;
+      const modelId = orderItem.modelId;
+      const sku = orderItem.sku;
+      const quantity = rmaItem.quantity || orderItem.quantity;
+
+      if (!productId || !modelId) {
+        throw new Error(
+          `Missing productId or modelId for item ${orderItem._id}`,
+        );
+      }
+
+      // Check stock in InventoryItem
+      const inventory = await InventoryItem.findOne({
+        productId,
+        modelId,
+      }).session(session);
+
+      const availableQty =
+        inventory?.availableQuantity ?? inventory?.quantity ?? 0;
+
+      if (availableQty < quantity) {
+        const productName =
+          rmaItem.productName || orderItem.productName || "Product";
+        throw new Error(
+          `Insufficient stock for "${productName}" (need ${quantity}, available ${availableQty}). Cannot proceed with exchange.`,
+        );
+      }
+
+      // Deduct stock from InventoryItem
+      if (inventory) {
+        inventory.quantity = Math.max(0, inventory.quantity - quantity);
+        if (inventory.availableQuantity != null) {
+          inventory.availableQuantity = Math.max(
+            0,
+            inventory.availableQuantity - quantity,
+          );
+        }
+        await inventory.save({ session });
+      }
+
+      // Also deduct from Product.models[].stock
+      await Product.findOneAndUpdate(
+        {
+          _id: productId,
+          "models._id": modelId,
+          "models.stock": { $gte: quantity },
+        },
+        { $inc: { "models.$.stock": -quantity } },
+        { session },
+      );
+
+      const unitPrice = Number(orderItem.price || rmaItem.price || 0);
+      const lineSubtotal = unitPrice * quantity;
+      newSubtotal += lineSubtotal;
+
+      itemsToCreate.push({
+        productId,
+        modelId,
+        sku,
+        quantity,
+        price: unitPrice,
+        subtotal: lineSubtotal,
+        tierSelections: orderItem.tierSelections || new Map(),
+        originalPrice: orderItem.originalPrice || unitPrice,
+        isFlashSale: false,
+        isPreOrder: orderItem.isPreOrder || false,
+        preOrderDaysSnapshot: orderItem.preOrderDaysSnapshot || 0,
+      });
+    }
+
+    // ── 2. Generate order number ──
+    const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+    // ── 3. Determine sellerId ──
+    const sellerId =
+      originalOrder.sellerId ||
+      returnRequest.items?.[0]?.productId?.sellerId?._id ||
+      returnRequest.items?.[0]?.productId?.sellerId ||
+      null;
+
+    // ── 4. Create the new Order ──
+    const [newOrder] = await Order.create(
+      [
+        {
+          userId: returnRequest.userId,
+          sellerId,
+          orderNumber,
+          status: "confirmed",
+          totalPrice: newSubtotal,
+          subtotal: newSubtotal,
+          shippingAddress: originalOrder.shippingAddress || "Same as original",
+          shippingMethod: originalOrder.shippingMethod || "standard",
+          shippingCost: 0,
+          tax: 0,
+          discount: 0,
+          discountAmount: 0,
+          coinUsedAmount: 0,
+          payableBeforeCoin: 0,
+          paymentMethod: "cash_on_delivery",
+          paymentStatus: "paid",
+          paymentDate: new Date(),
+          trackingCoordinates: originalOrder.trackingCoordinates || {},
+          notes: `Exchange order from RMA ${returnRequest.requestNumber} (original: ${originalOrder.orderNumber})`,
+          items: [],
+          statusHistory: [
+            {
+              status: "confirmed",
+              changedByRole: "system",
+              changedAt: new Date(),
+              reason: `Auto-created exchange from ${returnRequest.requestNumber}`,
+              notes: "Free shipping, auto-confirmed",
+            },
+          ],
+          resourcesDeducted: true,
+        },
+      ],
+      { session },
+    );
+
+    // ── 5. Create OrderItems linked to the new Order ──
+    const createdOrderItems = [];
+    for (const itemData of itemsToCreate) {
+      const [orderItem] = await OrderItem.create(
+        [{ ...itemData, orderId: newOrder._id }],
+        { session },
+      );
+      createdOrderItems.push(orderItem);
+    }
+
+    newOrder.items = createdOrderItems.map((oi) => oi._id);
+    await newOrder.save({ session });
+
+    // ── 6. Update return request ──
     returnRequest.exchange = {
-      newOrderId: null,
-      priceDifference,
+      newOrderId: newOrder._id,
+      priceDifference: 0,
       additionalPaymentRequired: false,
       exchangedAt: new Date(),
     };
@@ -599,53 +821,61 @@ export const processExchange = async (returnRequestId) => {
     };
     returnRequest.timeline.push({
       status: "completed",
-      description: "Exchange processed successfully",
+      description: `Exchange processed. New order created: ${orderNumber}`,
       updatedAt: new Date(),
       role: "system",
     });
 
     await returnRequest.save({ session });
 
-    // Update original order
-    order.status = "refunded"; // Mark original as refunded/exchanged
-    order.statusHistory.push({
+    // ── 7. Update original order status ──
+    originalOrder.status = "refunded";
+    originalOrder.statusHistory.push({
       status: "refunded",
       changedByRole: "system",
       changedAt: new Date(),
       reason: `Exchanged via ${returnRequest.requestNumber}`,
-      notes: "Replacement flow completed",
+      notes: `Replacement order: ${orderNumber}`,
     });
 
-    await order.save({ session });
+    await originalOrder.save({ session });
+
+    // ── 8. Rollback inventory for original order if needed ──
+    if (originalOrder.resourcesDeducted) {
+      await rollbackOrderResources(originalOrder);
+    }
 
     await session.commitTransaction();
     session.endSession();
 
+    // ── 9. Notify buyer ──
     await NotificationService.createNotification(
       returnRequest.userId,
-      "Exchange Processed",
-      `Your exchange for order ${order.orderNumber} has been processed successfully.`,
+      "Exchange Processed — New Order Created",
+      `Your exchange for order ${originalOrder.orderNumber} is complete. New order ${orderNumber} has been created with free shipping.`,
       "ORDER",
       {
-        orderId: order._id,
-        newOrderId: null,
+        orderId: originalOrder._id,
+        newOrderId: newOrder._id,
         returnRequestId: returnRequest._id,
         returnStatus: returnRequest.status,
       },
     );
 
     console.log(
-      `[RMA] Exchange processed for request ${returnRequest.requestNumber}`,
+      `[RMA] Exchange processed for ${returnRequest.requestNumber}. New order: ${orderNumber}`,
     );
 
     emitRmaUpdate(returnRequest, {
       event: "exchange_completed",
+      newOrderId: newOrder._id,
+      newOrderNumber: orderNumber,
     });
 
     return {
       returnRequest,
-      newOrder: null,
-      priceDifference,
+      newOrder,
+      priceDifference: 0,
     };
   } catch (error) {
     await session.abortTransaction();
@@ -948,22 +1178,18 @@ export const confirmBuyerHandover = async (returnRequestId, userId, notes) => {
     const now = new Date();
 
     if (returnRequest.type === "refund") {
-      upsertLogisticsStep(returnRequest, "seller_to_buyer_in_transit", {
+      markLogisticsStepCompleted(returnRequest, "seller_to_buyer_in_transit", {
         title: "Shipper is delivering return flow package from seller to buyer",
-        completed: true,
-        completedAt: now,
       });
 
-      upsertLogisticsStep(returnRequest, "buyer_confirmed_handover", {
+      markLogisticsStepCompleted(returnRequest, "buyer_confirmed_handover", {
         title: "Buyer confirmed handover of faulty item",
-        completed: true,
-        completedAt: now,
         note: notes,
       });
 
-      upsertLogisticsStep(returnRequest, "buyer_to_seller_in_transit", {
+      startLogisticsLeg(returnRequest, "buyer_to_seller_in_transit", {
         title: "Shipper is returning faulty item from buyer back to seller",
-        completed: false,
+        startedAt: now,
       });
 
       returnRequest.status = "items_returned";
@@ -983,22 +1209,18 @@ export const confirmBuyerHandover = async (returnRequestId, userId, notes) => {
         notes,
       });
     } else if (returnRequest.type === "exchange") {
-      upsertLogisticsStep(returnRequest, "seller_pack_and_handover", {
+      markLogisticsStepCompleted(returnRequest, "seller_pack_and_handover", {
         title: "Seller packs replacement item and hands to shipper",
-        completed: true,
-        completedAt: now,
       });
 
-      upsertLogisticsStep(returnRequest, "shipper_deliver_and_collect", {
+      markLogisticsStepCompleted(returnRequest, "shipper_deliver_and_collect", {
         title: "Shipper delivers replacement to buyer and collects faulty item",
-        completed: true,
-        completedAt: now,
         note: notes,
       });
 
-      upsertLogisticsStep(returnRequest, "shipper_return_to_seller", {
+      startLogisticsLeg(returnRequest, "shipper_return_to_seller", {
         title: "Shipper returns faulty item back to seller warehouse",
-        completed: false,
+        startedAt: now,
       });
 
       upsertLogisticsStep(returnRequest, "exchange_completed", {
@@ -1046,12 +1268,14 @@ export const confirmBuyerHandover = async (returnRequestId, userId, notes) => {
 };
 
 /**
- * Seller confirms receiving returned items
+ * Seller confirms receiving returned items.
+ * Optional `resolution` parameter allows seller to choose refund or exchange at this step.
  */
 export const confirmItemsReceived = async (
   returnRequestId,
   sellerId,
   notes,
+  resolution,
 ) => {
   const session = await mongoose.startSession();
 
@@ -1065,37 +1289,89 @@ export const confirmItemsReceived = async (
       throw new Error("Return request not found");
     }
 
-    // Can only confirm if items_returned
+    // If seller explicitly chose a resolution, update the type now
+    if (resolution && ["refund", "exchange"].includes(resolution)) {
+      if (returnRequest.type !== resolution) {
+        returnRequest.type = resolution;
+        returnRequest.timeline.push({
+          status: returnRequest.status,
+          description: `Seller chose ${resolution.toUpperCase()} resolution at confirm-receipt step`,
+          updatedAt: new Date(),
+          updatedBy: sellerId,
+          role: "seller",
+        });
+      }
+    }
+
+    const effectiveType = returnRequest.type;
+
+    // Idempotent behavior:
+    // - items_returned: normal transition to processing then auto-process
+    // - processing: retry auto-process directly
+    // - completed: return current state
+    if (returnRequest.status === "completed") {
+      await session.commitTransaction();
+      session.endSession();
+      return returnRequest;
+    }
+
+    if (returnRequest.status === "processing") {
+      // Save any type change before committing
+      await returnRequest.save({ session });
+      await session.commitTransaction();
+      session.endSession();
+
+      if (effectiveType === "refund") {
+        const refundResult = await processRefund(returnRequestId);
+        return {
+          ...refundResult,
+          autoRefund: true,
+          retriedFromProcessing: true,
+        };
+      }
+
+      if (effectiveType === "exchange") {
+        const exchangeResult = await processExchange(returnRequestId);
+        return {
+          ...exchangeResult,
+          autoExchange: true,
+          retriedFromProcessing: true,
+        };
+      }
+
+      throw new Error(`Unsupported return request type: ${effectiveType}`);
+    }
+
     if (returnRequest.status !== "items_returned") {
       throw new Error(
-        `Cannot confirm items for status: ${returnRequest.status}. Must be items_returned.`,
+        `Cannot confirm items for status: ${returnRequest.status}. Must be items_returned or processing.`,
       );
     }
 
-    if (returnRequest.type === "refund") {
-      upsertLogisticsStep(returnRequest, "buyer_to_seller_in_transit", {
-        title: "Shipper is returning faulty item from buyer back to seller",
-        completed: true,
-        completedAt: new Date(),
-      });
-
-      upsertLogisticsStep(returnRequest, "seller_confirmed_faulty_received", {
-        title: "Seller confirmed receiving faulty item",
-        completed: true,
-        completedAt: new Date(),
-        note: notes,
-      });
-    } else if (returnRequest.type === "exchange") {
-      upsertLogisticsStep(returnRequest, "shipper_return_to_seller", {
+    // Mark logistics steps completed based on the logistics flow that was used
+    // (always refund logistics since we approve with 'refund' to get items back)
+    if (returnRequest.logistics?.flowType === "exchange") {
+      markLogisticsStepCompleted(returnRequest, "shipper_return_to_seller", {
         title: "Shipper returns faulty item back to seller warehouse",
-        completed: true,
-        completedAt: new Date(),
       });
 
       upsertLogisticsStep(returnRequest, "exchange_completed", {
         title: "Exchange flow is completed",
         completed: false,
       });
+    } else {
+      markLogisticsStepCompleted(returnRequest, "buyer_to_seller_in_transit", {
+        title: "Shipper is returning faulty item from buyer back to seller",
+      });
+
+      markLogisticsStepCompleted(
+        returnRequest,
+        "seller_confirmed_faulty_received",
+        {
+          title: "Seller confirmed receiving faulty item",
+          note: notes,
+        },
+      );
     }
 
     // Update shipping info
@@ -1106,13 +1382,13 @@ export const confirmItemsReceived = async (
     returnRequest.logistics = {
       ...(returnRequest.logistics || {}),
       currentStep:
-        returnRequest.type === "exchange"
+        returnRequest.logistics?.flowType === "exchange"
           ? "shipper_return_to_seller"
           : "seller_confirmed_faulty_received",
     };
     returnRequest.timeline.push({
       status: "processing",
-      description: "Seller confirmed receiving returned items",
+      description: `Seller confirmed receiving returned items. Resolution: ${effectiveType}`,
       updatedAt: new Date(),
       updatedBy: sellerId,
       role: "seller",
@@ -1124,8 +1400,8 @@ export const confirmItemsReceived = async (
     await session.commitTransaction();
     session.endSession();
 
-    // Refund flow: auto credit GZCoin immediately after seller confirms receipt.
-    if (returnRequest.type === "refund") {
+    // Auto-process based on the effective type (seller's choice)
+    if (effectiveType === "refund") {
       const refundResult = await processRefund(returnRequestId);
       return {
         ...refundResult,
@@ -1133,7 +1409,7 @@ export const confirmItemsReceived = async (
       };
     }
 
-    if (returnRequest.type === "exchange") {
+    if (effectiveType === "exchange") {
       const exchangeResult = await processExchange(returnRequestId);
       return {
         ...exchangeResult,
@@ -1156,6 +1432,106 @@ export const confirmItemsReceived = async (
     console.error("[RMA] Error confirming items received:", error);
     throw error;
   }
+};
+
+/**
+ * Auto-progress active logistics legs based on startedAt + durationSeconds.
+ * This allows both buyer/seller tracking maps to stay in sync even when pages are not open.
+ */
+export const autoProgressActiveLogisticsLegs = async () => {
+  const now = new Date();
+
+  const activeRequests = await ReturnRequest.find({
+    isActive: true,
+    status: { $in: ["approved", "items_returned"] },
+    "logistics.steps": {
+      $elemMatch: {
+        completed: false,
+        startedAt: { $ne: null },
+        durationSeconds: { $gt: 0 },
+      },
+    },
+  });
+
+  let progressedCount = 0;
+
+  for (const request of activeRequests) {
+    let requestChanged = false;
+    ensureLogisticsSteps(request);
+
+    for (const step of request.logistics.steps) {
+      if (step.completed || !step.startedAt || !step.durationSeconds) {
+        continue;
+      }
+
+      const stepStart = new Date(step.startedAt).getTime();
+      const stepEnd = stepStart + Number(step.durationSeconds) * 1000;
+
+      if (Number.isFinite(stepEnd) && now.getTime() >= stepEnd) {
+        step.completed = true;
+        step.completedAt = step.completedAt || new Date(stepEnd);
+        step.autoCompleteAt = step.autoCompleteAt || new Date(stepEnd);
+        requestChanged = true;
+
+        if (
+          request.type === "refund" &&
+          step.code === "seller_to_buyer_in_transit"
+        ) {
+          request.logistics.currentStep = "buyer_confirmed_handover";
+        }
+
+        if (
+          request.type === "exchange" &&
+          step.code === "seller_pack_and_handover"
+        ) {
+          startLogisticsLeg(request, "shipper_deliver_and_collect", {
+            title:
+              "Shipper delivers replacement to buyer and collects faulty item",
+            startedAt: step.completedAt || now,
+          });
+          request.logistics.currentStep = "shipper_deliver_and_collect";
+        }
+
+        if (
+          request.type === "exchange" &&
+          step.code === "shipper_deliver_and_collect"
+        ) {
+          startLogisticsLeg(request, "shipper_return_to_seller", {
+            title: "Shipper returns faulty item back to seller warehouse",
+            startedAt: step.completedAt || now,
+          });
+          request.logistics.currentStep = "shipper_return_to_seller";
+          if (request.status === "approved") {
+            request.status = "items_returned";
+            request.timeline.push({
+              status: "items_returned",
+              description:
+                "Auto-progress: shipper completed delivery & collection leg",
+              updatedAt: new Date(),
+              role: "system",
+            });
+          }
+        }
+
+        if (
+          request.type === "refund" &&
+          step.code === "buyer_to_seller_in_transit"
+        ) {
+          request.logistics.currentStep = "seller_confirmed_faulty_received";
+        }
+      }
+    }
+
+    if (requestChanged) {
+      await request.save();
+      progressedCount += 1;
+      emitRmaUpdate(request, {
+        event: "logistics_auto_progressed",
+      });
+    }
+  }
+
+  return progressedCount;
 };
 
 /**
@@ -1210,5 +1586,6 @@ export default {
   updateReturnShipping,
   confirmBuyerHandover,
   confirmItemsReceived,
+  autoProgressActiveLogisticsLegs,
   autoApproveExpiredRequests,
 };

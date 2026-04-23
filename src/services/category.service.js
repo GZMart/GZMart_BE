@@ -317,3 +317,72 @@ export const reorderCategories = async (items) => {
   await Category.bulkWrite(bulkOps);
   return { updated: items.length };
 };
+
+/**
+ * Get categories for Mega Menu
+ */
+export const getMegaMenuCategories = async () => {
+  // 1. Get top-level categories
+  const categories = await Category.find({ parentId: null, status: "active" })
+    .sort({ order: 1, name: 1 })
+    .limit(6)
+    .lean();
+
+  const result = [];
+
+  for (const cat of categories) {
+    // 2. Get subcategories
+    const subcats = await Category.find({ parentId: cat._id, status: "active" })
+      .sort({ order: 1, name: 1 })
+      .limit(6)
+      .lean();
+
+    const subcategories = [];
+
+    for (const sub of subcats) {
+      // 3. Get products for this subcategory
+      const products = await Product.find({ categoryId: sub._id, status: "active" })
+        .select("name brand images models originalPrice")
+        .sort({ sold: -1, viewCount: -1 })
+        .limit(5)
+        .lean();
+
+      subcategories.push({
+        id: sub._id,
+        name: sub.name,
+        products: products.map(p => ({
+          id: p._id,
+          name: p.name,
+          brand: p.brand || 'No Brand',
+          image: p.images?.[0] || '',
+          price: p.models?.length > 0 ? Math.min(...p.models.map(m => m.price)) : 0,
+          originalPrice: p.originalPrice || null
+        }))
+      });
+    }
+
+    // 4. Get featured products for this category
+    const catIds = [cat._id, ...subcats.map(s => s._id)];
+    const featuredProducts = await Product.find({ categoryId: { $in: catIds }, status: "active" })
+        .select("name brand images models originalPrice")
+        .sort({ sold: -1, viewCount: -1 })
+        .limit(4)
+        .lean();
+
+    result.push({
+      id: cat._id,
+      name: cat.name,
+      subcategories,
+      featuredProducts: featuredProducts.map(p => ({
+        id: p._id,
+        name: p.name,
+        brand: p.brand || 'No Brand',
+        image: p.images?.[0] || '',
+        price: p.models?.length > 0 ? Math.min(...p.models.map(m => m.price)) : 0,
+        originalPrice: p.originalPrice || null
+      }))
+    });
+  }
+
+  return result;
+};

@@ -26,6 +26,10 @@ import {
   orderHasPreOrderSlaBreach,
   isPreOrderProduct,
 } from "../utils/preOrderSla.js";
+import {
+  applyOrderSettlement,
+  computeOrderFinancialSnapshot,
+} from "../services/financialSettlement.service.js";
 
 function emitLivestreamSessionStatsTick(liveSessionId) {
   if (!liveSessionId) {
@@ -137,6 +141,9 @@ const buildOrderRequestSignature = ({
 // Helper: Generate Order Number
 const generateOrderNumber = () =>
   `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+const generateCheckoutGroupId = () =>
+  `CHK-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
 // Deduct GZCoin using packets with nearest expiration first.
 const deductCoinsForOrder = async ({
@@ -522,9 +529,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     );
   }
 
-  // Track live order item IDs (persisted inside transaction)
-  const liveOrderItemIds = [];
-  const orderItemIds = [];
+  const liveValidatedItems = [];
 
   /** Sum of (unit price × qty) for live lines — same logic as OrderItem.effectivePrice */
   let liveItemsMonetarySubtotal = 0;
@@ -596,10 +601,9 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           ),
         );
       }
-      if (
-        !isPreOrderProduct(product) &&
-        targetModel.stock < liveItem.quantity
-      ) {
+      const qty = Math.max(1, Number(liveItem.quantity) || 1);
+
+      if (!isPreOrderProduct(product) && targetModel.stock < qty) {
         return next(
           new ErrorResponse(
             `Insufficient stock for ${product.name} (${liveItem.color} / ${liveItem.size}). Available: ${targetModel.stock}`,
@@ -613,13 +617,22 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         Number.isFinite(clientPrice) && clientPrice > 0
           ? clientPrice
           : Number(targetModel.price) || 0;
-      const qty = Math.max(1, Number(liveItem.quantity) || 1);
       liveItemsMonetarySubtotal += lineUnit * qty;
 
       liveVirtualCartRows.push({
         productId: product,
         price: lineUnit,
         quantity: qty,
+      });
+
+      liveValidatedItems.push({
+        product,
+        targetModel,
+        quantity: qty,
+        price: lineUnit,
+        color: liveItem.color || "Default",
+        size: liveItem.size || "Default",
+        image: liveItem.image || product.images?.[0] || null,
       });
     }
   }
@@ -1034,10 +1047,70 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       appliedGiftBoxFee,
   );
 
+  const sellerBucketsMap = new Map();
+  const ensureSellerBucket = (sellerId) => {
+    if (!sellerBucketsMap.has(sellerId)) {
+      sellerBucketsMap.set(sellerId, {
+        sellerId,
+        subtotal: 0,
+      });
+    }
+    return sellerBucketsMap.get(sellerId);
+  };
+
+  for (const line of validItems) {
+    const sellerId = line.product?.sellerId?.toString();
+    if (!sellerId) {
+      return next(
+        new ErrorResponse("Cannot resolve seller for cart item", 400),
+      );
+    }
+    const bucket = ensureSellerBucket(sellerId);
+    bucket.subtotal +=
+      Number(line.finalPrice || 0) * Number(line.cartItem?.quantity || 0);
+  }
+
+  for (const line of liveValidatedItems) {
+    const sellerId = line.product?.sellerId?.toString();
+    if (!sellerId) {
+      return next(
+        new ErrorResponse("Cannot resolve seller for live item", 400),
+      );
+    }
+    const bucket = ensureSellerBucket(sellerId);
+    bucket.subtotal += Number(line.price || 0) * Number(line.quantity || 0);
+  }
+
+  const sellerBuckets = Array.from(sellerBucketsMap.values());
+  if (sellerBuckets.length === 0) {
+    return next(new ErrorResponse("No valid order items found", 400));
+  }
+
+  let remainingDiscount = totalDiscountAmount;
+  const sellerBucketPricing = sellerBuckets.map((bucket, index) => {
+    const bucketShipping = index === 0 ? appliedShippingCost : 0;
+    const bucketGiftBox = index === 0 && includeGiftBox ? appliedGiftBoxFee : 0;
+    const bucketTax = index === 0 ? tax : 0;
+    const gross =
+      Number(bucket.subtotal || 0) + bucketShipping + bucketGiftBox + bucketTax;
+    const bucketDiscount = Math.min(remainingDiscount, gross);
+    remainingDiscount -= bucketDiscount;
+
+    return {
+      ...bucket,
+      shippingCost: bucketShipping,
+      giftBoxFee: bucketGiftBox,
+      tax: bucketTax,
+      discountAmount: bucketDiscount,
+      payableBeforeCoin: Math.max(0, gross - bucketDiscount),
+    };
+  });
+
   // 5. Create Order with Transaction Support
   const appliedCodes = validVouchers.map((v) => v.code).join(", ");
+  const checkoutGroupId = generateCheckoutGroupId();
   const session = await mongoose.startSession();
-  let createdOrder = null;
+  let createdOrders = [];
 
   try {
     await session.withTransaction(async () => {
@@ -1050,58 +1123,88 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         ? Math.min(Math.max(0, userInTx.reward_point || 0), payableBeforeCoin)
         : 0;
 
-      const order = await Order.create(
-        [
-          {
-            userId: req.user._id,
-            orderNumber: generateOrderNumber(),
-            status: "pending",
-            totalPrice: payableBeforeCoin,
-            payableBeforeCoin,
-            subtotal,
-            shippingAddress,
-            shippingMethod: shippingMethod || undefined,
-            shippingCost: appliedShippingCost,
-            giftBoxFee: includeGiftBox ? appliedGiftBoxFee : 0,
-            paymentMethod,
-            notes,
-            discount: totalDiscountAmount,
-            discountAmount: totalDiscountAmount,
-            discountCode:
-              [appliedCodes, liveVoucherCode].filter(Boolean).join(", ") ||
-              undefined,
-            isActive: true,
-            requestSignature,
-            items: [],
-            resourcesDeducted: false,
-            liveSessionId: resolvedLiveSessionId || null,
-            liveSessionVoucherId: liveSessionVoucherId || null,
-            fromLiveSession:
-              fromLiveSession != null && fromLiveSession !== ""
-                ? String(fromLiveSession)
-                : null,
-          },
-        ],
-        { session },
-      );
+      const orderBySeller = new Map();
+      const orderItemsByOrderId = new Map();
 
-      createdOrder = order[0];
-      const preOrderAnchor = createdOrder.createdAt || new Date();
+      for (const bucket of sellerBucketPricing) {
+        const order = await Order.create(
+          [
+            {
+              userId: req.user._id,
+              orderNumber: generateOrderNumber(),
+              checkoutGroupId,
+              sellerId: bucket.sellerId,
+              status: "pending",
+              totalPrice: bucket.payableBeforeCoin,
+              payableBeforeCoin: bucket.payableBeforeCoin,
+              subtotal: bucket.subtotal,
+              shippingAddress,
+              shippingMethod: shippingMethod || undefined,
+              shippingCost: bucket.shippingCost,
+              giftBoxFee: bucket.giftBoxFee,
+              tax: bucket.tax,
+              paymentMethod,
+              notes,
+              discount: bucket.discountAmount,
+              discountAmount: bucket.discountAmount,
+              discountCode:
+                [appliedCodes, liveVoucherCode].filter(Boolean).join(", ") ||
+                undefined,
+              isActive: true,
+              requestSignature,
+              items: [],
+              resourcesDeducted: false,
+              liveSessionId: resolvedLiveSessionId || null,
+              liveSessionVoucherId: liveSessionVoucherId || null,
+              fromLiveSession:
+                fromLiveSession != null && fromLiveSession !== ""
+                  ? String(fromLiveSession)
+                  : null,
+              financialSnapshot: computeOrderFinancialSnapshot({
+                subtotal: bucket.subtotal,
+                shippingCost: bucket.shippingCost,
+                giftBoxFee: bucket.giftBoxFee,
+                tax: bucket.tax,
+                discountAmount: bucket.discountAmount,
+                payableBeforeCoin: bucket.payableBeforeCoin,
+                financialSnapshot: {
+                  baseAmount: bucket.payableBeforeCoin,
+                  adminRate: 0.1,
+                  sellerRate: 0.9,
+                },
+              }),
+            },
+          ],
+          { session },
+        );
+
+        const created = order[0];
+        createdOrders.push(created);
+        orderBySeller.set(bucket.sellerId, created);
+        orderItemsByOrderId.set(String(created._id), []);
+      }
+
+      const primaryOrder = createdOrders[0];
+      const preOrderAnchor = primaryOrder.createdAt || new Date();
 
       const coinDeduction = await deductCoinsForOrder({
         user: userInTx,
         requestedAmount: coinPlanAmount,
-        orderId: createdOrder._id,
-        orderNumber: createdOrder.orderNumber,
+        orderId: primaryOrder._id,
+        orderNumber: primaryOrder.orderNumber,
         session,
       });
 
-      createdOrder.coinUsedAmount = coinDeduction.deductedAmount;
-      createdOrder.coinUsageDetails = coinDeduction.usageDetails;
-      createdOrder.totalPrice = Math.max(
-        0,
-        payableBeforeCoin - coinDeduction.deductedAmount,
-      );
+      let remainingCoin = coinDeduction.deductedAmount;
+      createdOrders = createdOrders.map((order, idx) => {
+        const payable = Number(order.payableBeforeCoin || 0);
+        const usedCoin = Math.min(remainingCoin, payable);
+        remainingCoin -= usedCoin;
+        order.coinUsedAmount = usedCoin;
+        order.coinUsageDetails = idx === 0 ? coinDeduction.usageDetails : [];
+        order.totalPrice = Math.max(0, payable - usedCoin);
+        return order;
+      });
 
       for (const {
         cartItem,
@@ -1111,13 +1214,19 @@ export const createOrder = asyncHandler(async (req, res, next) => {
         finalPrice,
         isShopProgram,
       } of validItems) {
+        const sellerId = product?.sellerId?.toString();
+        const targetOrder = orderBySeller.get(sellerId);
+        if (!targetOrder) {
+          throw new ErrorResponse("Cannot map cart item to seller order", 500);
+        }
+
         if (!isPreOrderProduct(product)) {
           await reserveVariantStock({
             session,
             product,
             model,
             quantity: cartItem.quantity,
-            order: createdOrder,
+            order: targetOrder,
             userId: req.user._id,
             itemLabel: `${product.name} (${cartItem.color} / ${cartItem.size})`,
           });
@@ -1128,19 +1237,25 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           preOrderAnchor,
         );
 
+        const cartTierSelections = new Map();
+        if (product.tiers && product.tiers.length > 0 && model && model.tierIndex) {
+          product.tiers.forEach((tier, idx) => {
+            const optIdx = model.tierIndex[idx];
+            const val = (optIdx != null && optIdx >= 0) ? tier.options[optIdx] : "Default";
+            cartTierSelections.set(tier.name, String(val));
+          });
+        }
+
         const orderItem = await OrderItem.create(
           [
             {
-              orderId: createdOrder._id,
+              orderId: targetOrder._id,
               productId: product._id,
               modelId: model._id,
               sku: model.sku,
               quantity: cartItem.quantity,
               price: finalPrice,
-              tierSelections: {
-                size: cartItem.size,
-                color: cartItem.color,
-              },
+              tierSelections: cartTierSelections,
               subtotal: finalPrice * cartItem.quantity,
               originalPrice: model.price,
               isFlashSale: flashSaleInfo.isFlashSale,
@@ -1151,68 +1266,17 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           { session },
         );
 
-        orderItemIds.push(orderItem[0]._id);
+        orderItemsByOrderId.get(String(targetOrder._id)).push(orderItem[0]._id);
       }
 
-      for (const liveItem of liveItems || []) {
-        const product = await Product.findById(liveItem.productId)
-          .select("name models sellerId images tiers preOrderDays")
-          .lean()
-          .session(session);
+      for (const liveItem of liveValidatedItems) {
+        const product = liveItem.product;
+        const targetModel = liveItem.targetModel;
+        const sellerId = product?.sellerId?.toString();
+        const targetOrder = orderBySeller.get(sellerId);
 
-        if (!product) {
-          throw new ErrorResponse(
-            `Product ${liveItem.productId} not found`,
-            400,
-          );
-        }
-
-        let targetModel = null;
-        if (product.models && product.models.length > 0) {
-          if (product.tiers && product.tiers.length > 0) {
-            const colorIdx = product.tiers.findIndex((t) =>
-              /color|màu|mau/.test(t.name.toLowerCase()),
-            );
-            const sizeIdx = product.tiers.findIndex((t) =>
-              /size|kích|kich/.test(t.name.toLowerCase()),
-            );
-
-            targetModel = product.models.find((m) => {
-              if (!m.tierIndex || m.tierIndex.length === 0) {
-                return false;
-              }
-              const colorMatch =
-                colorIdx === -1 ||
-                m.tierIndex[colorIdx] ===
-                  product.tiers[colorIdx].options?.findIndex(
-                    (o) =>
-                      String(o).toLowerCase() ===
-                      String(liveItem.color || "Default").toLowerCase(),
-                  );
-              const sizeMatch =
-                sizeIdx === -1 ||
-                m.tierIndex[sizeIdx] ===
-                  product.tiers[sizeIdx].options?.findIndex(
-                    (o) =>
-                      String(o).toLowerCase() ===
-                      String(liveItem.size || "Default").toLowerCase(),
-                  );
-              return colorMatch && sizeMatch;
-            });
-          }
-        }
-
-        if (!targetModel) {
-          targetModel =
-            product.models?.find((m) => m.isActive !== false) ||
-            product.models?.[0];
-        }
-
-        if (!targetModel) {
-          throw new ErrorResponse(
-            `Variant not found for product ${product.name}`,
-            400,
-          );
+        if (!targetOrder) {
+          throw new ErrorResponse("Cannot map live item to seller order", 500);
         }
 
         if (!isPreOrderProduct(product)) {
@@ -1221,7 +1285,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
             product,
             model: targetModel,
             quantity: liveItem.quantity,
-            order: createdOrder,
+            order: targetOrder,
             userId: req.user._id,
             itemLabel: `${product.name} (${liveItem.color} / ${liveItem.size})`,
           });
@@ -1233,29 +1297,23 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           preOrderAnchor,
         );
 
+        const liveTierSelections = new Map();
+        if (product.tiers && product.tiers.length > 0 && targetModel && targetModel.tierIndex) {
+          product.tiers.forEach((tier, idx) => {
+            const optIdx = targetModel.tierIndex[idx];
+            const val = (optIdx != null && optIdx >= 0) ? tier.options[optIdx] : "Default";
+            liveTierSelections.set(tier.name, String(val));
+          });
+        }
+
         const orderItem = await OrderItem.create(
           [
             {
-              orderId: createdOrder._id,
-              productId: liveItem.productId,
+              orderId: targetOrder._id,
+              productId: product._id,
               modelId: targetModel._id,
               sku: targetModel.sku || null,
-              tierSelections: new Map(
-                (product.tiers || []).map((tier, idx) => [
-                  tier.name,
-                  idx ===
-                  product.tiers.findIndex((t) =>
-                    /color|màu|mau/.test(t.name.toLowerCase()),
-                  )
-                    ? String(liveItem.color || "Default")
-                    : idx ===
-                        product.tiers.findIndex((t) =>
-                          /size|kích|kich/.test(t.name.toLowerCase()),
-                        )
-                      ? String(liveItem.size || "Default")
-                      : "Default",
-                ]),
-              ),
+              tierSelections: liveTierSelections,
               quantity: liveItem.quantity,
               subtotal: effectivePrice * liveItem.quantity,
               originalPrice: targetModel.price || effectivePrice,
@@ -1272,45 +1330,54 @@ export const createOrder = asyncHandler(async (req, res, next) => {
           { session },
         );
 
-        liveOrderItemIds.push(orderItem[0]._id);
+        orderItemsByOrderId.get(String(targetOrder._id)).push(orderItem[0]._id);
       }
-
-      createdOrder.items = [...orderItemIds, ...liveOrderItemIds];
-      createdOrder.resourcesDeducted = true;
 
       const isCOD =
         paymentMethod === "cod" || paymentMethod === "cash_on_delivery";
-      const isFullyPaidByCoin = createdOrder.totalPrice <= 0;
 
-      if (isFullyPaidByCoin) {
-        createdOrder.paymentStatus = "paid";
-        createdOrder.paymentDate = new Date();
-        createdOrder.status = "pending";
-      } else if (isCOD) {
-        createdOrder.paymentStatus = "pending";
+      let allFullyPaidByCoin = true;
+      for (const order of createdOrders) {
+        const itemIds = orderItemsByOrderId.get(String(order._id)) || [];
+        order.items = itemIds;
+        order.resourcesDeducted = true;
+
+        const paidByCoin = Number(order.totalPrice || 0) <= 0;
+        if (paidByCoin) {
+          order.paymentStatus = "paid";
+          order.paymentDate = new Date();
+          order.status = "pending";
+        } else {
+          allFullyPaidByCoin = false;
+          if (isCOD) {
+            order.paymentStatus = "pending";
+          }
+        }
+
+        await order.save({ session });
       }
 
-      await createdOrder.save({ session });
-
-      if (isCOD || isFullyPaidByCoin) {
+      if (isCOD || allFullyPaidByCoin) {
         await clearUserCart(req.user._id, session);
       }
     });
 
     // After successful transaction, do non-critical operations
 
-    // Notify seller about new order via Socket.io
     const user = await User.findById(req.user._id);
-    orderTrackingService.notifySellerNewOrder(createdOrder._id.toString(), {
-      orderNumber: createdOrder.orderNumber,
-      totalPrice: createdOrder.totalPrice,
-      items: orderItemIds,
-      createdAt: createdOrder.createdAt,
-      customerName: user?.fullName || "Customer",
-    });
 
-    if (createdOrder.liveSessionId) {
-      emitLivestreamSessionStatsTick(createdOrder.liveSessionId);
+    for (const order of createdOrders) {
+      orderTrackingService.notifySellerNewOrder(order._id.toString(), {
+        orderNumber: order.orderNumber,
+        totalPrice: order.totalPrice,
+        items: order.items || [],
+        createdAt: order.createdAt,
+        customerName: user?.fullName || "Customer",
+      });
+    }
+
+    if (createdOrders[0]?.liveSessionId) {
+      emitLivestreamSessionStatsTick(createdOrders[0].liveSessionId);
     }
 
     // Notify Buyer via New Notification System
@@ -1318,25 +1385,44 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       await NotificationService.createNotification(
         req.user._id,
         "Đặt hàng thành công",
-        `Đơn hàng ${createdOrder.orderNumber} của bạn đã được tiếp nhận và đang chờ xác nhận.`,
+        createdOrders.length > 1
+          ? `Đã tạo ${createdOrders.length} đơn hàng từ một lần checkout. Nhấn để xem chi tiết.`
+          : `Đơn hàng ${createdOrders[0].orderNumber} của bạn đã được tiếp nhận và đang chờ xác nhận.`,
         "ORDER",
-        { orderId: createdOrder._id.toString() },
+        {
+          orderId: createdOrders[0]._id.toString(),
+          checkoutGroupId,
+        },
       );
     } catch (notifErr) {
       console.error("Failed to send buyer notification:", notifErr);
     }
 
-    // Populate order items before sending response
-    await createdOrder.populate("items");
+    const createdOrderIds = createdOrders.map((o) => o._id);
+    const populatedOrders = await Order.find({ _id: { $in: createdOrderIds } })
+      .populate("items")
+      .sort({ createdAt: 1 });
+
+    const primaryOrder = populatedOrders[0];
+    const coinUsedTotal = populatedOrders.reduce(
+      (sum, order) => sum + Number(order.coinUsedAmount || 0),
+      0,
+    );
+    const amountDueTotal = populatedOrders.reduce(
+      (sum, order) => sum + Number(order.totalPrice || 0),
+      0,
+    );
 
     res.status(201).json({
       success: true,
-      data: createdOrder,
+      data: primaryOrder,
+      checkoutGroupId,
+      orders: populatedOrders,
       payment: {
         payableBeforeCoin,
-        coinUsed: createdOrder.coinUsedAmount || 0,
-        amountDue: createdOrder.totalPrice,
-        fullyPaidByCoin: createdOrder.totalPrice <= 0,
+        coinUsed: coinUsedTotal,
+        amountDue: amountDueTotal,
+        fullyPaidByCoin: amountDueTotal <= 0,
       },
     });
   } catch (error) {
@@ -1572,7 +1658,9 @@ export const getOrderById = asyncHandler(async (req, res, next) => {
   try {
     const items = await OrderItem.find({ orderId: order._id }).populate({
       path: "productId",
-      select: "name slug images sellerId",
+      // Include tiers and models so the frontend can reconstruct variant labels
+      select:
+        "name slug images sellerId tiers models preOrderDays originalPrice",
       populate: {
         path: "sellerId",
         select: "fullName email avatar address location",
@@ -1720,50 +1808,64 @@ export const cancelOrder = asyncHandler(async (req, res, next) => {
 // @route   PUT /api/orders/:id/confirm-receipt
 // @access  Private (Buyer only)
 export const confirmReceipt = asyncHandler(async (req, res, next) => {
-  const order = await Order.findById(req.params.id);
+  const session = await mongoose.startSession();
+  let order;
 
-  if (!order) {
-    return next(new ErrorResponse("Order not found", 404));
+  try {
+    await session.withTransaction(async () => {
+      order = await Order.findById(req.params.id).session(session);
+
+      if (!order) {
+        throw new ErrorResponse("Order not found", 404);
+      }
+
+      // Verify ownership
+      if (order.userId.toString() !== req.user._id.toString()) {
+        throw new ErrorResponse("Not authorized", 401);
+      }
+
+      // Must be delivered before confirming
+      if (order.status !== "delivered") {
+        throw new ErrorResponse(
+          `Cannot confirm receipt for order with status: ${order.status}`,
+          400,
+        );
+      }
+
+      // Update to completed
+      order.status = "completed";
+      order.completedAt = new Date();
+      order.customerConfirmedAt = new Date();
+
+      // CRITICAL FIX: Mark COD orders as paid when buyer confirms receipt
+      if (
+        order.paymentMethod === "cod" ||
+        order.paymentMethod === "cash_on_delivery"
+      ) {
+        order.paymentStatus = "paid";
+        order.paidAt = new Date();
+      }
+
+      order.statusHistory.push({
+        status: "completed",
+        changedBy: req.user._id,
+        changedByRole: req.user.role,
+        changedAt: new Date(),
+        notes: "Người mua đã xác nhận nhận hàng",
+      });
+
+      await order.save({ session });
+      await applyOrderSettlement({ orderId: order._id, session });
+    });
+  } catch (error) {
+    session.endSession();
+    if (error instanceof ErrorResponse) {
+      return next(error);
+    }
+    return next(error);
   }
 
-  // Verify ownership
-  if (order.userId.toString() !== req.user._id.toString()) {
-    return next(new ErrorResponse("Not authorized", 401));
-  }
-
-  // Must be delivered before confirming
-  if (order.status !== "delivered") {
-    return next(
-      new ErrorResponse(
-        `Cannot confirm receipt for order with status: ${order.status}`,
-        400,
-      ),
-    );
-  }
-
-  // Update to completed
-  order.status = "completed";
-  order.completedAt = new Date();
-  order.customerConfirmedAt = new Date();
-
-  // CRITICAL FIX: Mark COD orders as paid when buyer confirms receipt
-  if (
-    order.paymentMethod === "cod" ||
-    order.paymentMethod === "cash_on_delivery"
-  ) {
-    order.paymentStatus = "paid";
-    order.paidAt = new Date();
-  }
-
-  order.statusHistory.push({
-    status: "completed",
-    changedBy: req.user._id,
-    changedByRole: req.user.role,
-    changedAt: new Date(),
-    notes: "Người mua đã xác nhận nhận hàng",
-  });
-
-  await order.save();
+  session.endSession();
 
   // Notify via Socket
   // Derive sellerId from order items if order.sellerId not present

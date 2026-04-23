@@ -344,12 +344,13 @@ export const getOrderReturnRequest = asyncHandler(async (req, res, next) => {
  * @access  Private (Seller/Admin)
  */
 export const confirmItemsReceived = asyncHandler(async (req, res, next) => {
-  const { notes } = req.body;
+  const { notes, resolution } = req.body;
 
   const result = await rmaService.confirmItemsReceived(
     req.params.id,
     req.user._id,
     notes,
+    resolution,
   );
 
   const isAutoCompleted = Boolean(result?.autoRefund || result?.autoExchange);
@@ -385,10 +386,11 @@ export const processRefund = asyncHandler(async (req, res, next) => {
  */
 export const processExchange = asyncHandler(async (req, res, next) => {
   const result = await rmaService.processExchange(req.params.id);
+  const newOrderNumber = result?.newOrder?.orderNumber || "N/A";
 
   res.status(200).json({
     success: true,
-    message: `Exchange processed successfully. New order created: ${result.newOrder.orderNumber}`,
+    message: `Exchange processed successfully. New order created: ${newOrderNumber}`,
     data: result,
   });
 });
@@ -499,9 +501,7 @@ export const getAllReturnRequests = asyncHandler(async (req, res, next) => {
 
   const q = String(search || "").trim();
   if (q.length >= 2) {
-    const or = [
-      { requestNumber: { $regex: escapeRegex(q), $options: "i" } },
-    ];
+    const or = [{ requestNumber: { $regex: escapeRegex(q), $options: "i" } }];
     const orderMatches = await Order.find({
       orderNumber: { $regex: escapeRegex(q), $options: "i" },
     })

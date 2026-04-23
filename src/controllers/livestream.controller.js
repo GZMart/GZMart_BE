@@ -181,6 +181,34 @@ export async function getActiveByShop(req, res, next) {
   }
 }
 
+/** GET /api/livestream/sessions/live — public: all live sessions for discovery (homepage) */
+export async function listPublicLiveSessions(req, res, next) {
+  try {
+    const { limit } = req.query;
+    const rows = await livestreamService.listPublicLiveSessions(limit);
+    const data = await Promise.all(
+      rows.map(async (s) => ({
+        ...s,
+        viewerCount: await livestreamRedisService.getCachedViewerCount(String(s._id)),
+      })),
+    );
+    data.sort((a, b) => {
+      const va = Number(a.viewerCount) || 0;
+      const vb = Number(b.viewerCount) || 0;
+      if (vb !== va) {
+        return vb - va;
+      }
+      const ta = a.startedAt ? new Date(a.startedAt).getTime() : 0;
+      const tb = b.startedAt ? new Date(b.startedAt).getTime() : 0;
+      return tb - ta;
+    });
+    res.setHeader("Cache-Control", "public, max-age=15");
+    res.json({ success: true, data });
+  } catch (e) {
+    next(e);
+  }
+}
+
 // GET /api/livestream/health — stream health + viewer stats for monitoring
 export const getStreamHealth = async (req, res) => {
   try {

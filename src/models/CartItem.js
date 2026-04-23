@@ -14,6 +14,10 @@ const cartItemSchema = new mongoose.Schema(
       required: [true, 'Product ID is required'],
       index: true,
     },
+    modelId: {
+      type: mongoose.Schema.Types.ObjectId,
+      index: true,
+    },
     quantity: {
       type: Number,
       required: [true, 'Quantity is required'],
@@ -46,7 +50,7 @@ const cartItemSchema = new mongoose.Schema(
 );
 
 // Compound index to prevent duplicate items with same specs in the same cart
-cartItemSchema.index({ cartId: 1, productId: 1, size: 1, color: 1 }, { unique: true });
+cartItemSchema.index({ cartId: 1, productId: 1, size: 1, color: 1, modelId: 1 }, { unique: true });
 
 const CartItem = mongoose.model('CartItem', cartItemSchema);
 
