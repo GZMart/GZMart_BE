@@ -2,6 +2,126 @@ import Product from "../models/Product.js";
 import Deal from "../models/Deal.js";
 import * as productService from "./product.service.js";
 
+/** 1 từ — thường là màu nền / màu chung, không dùng để ưu tiên "loại hàng" */
+const SINGLE_COLOR_NOISE_EN = new Set([
+  "black", "white", "beige", "red", "blue", "green", "yellow", "pink", "purple",
+  "brown", "orange", "navy", "grey", "gray", "cream", "nude", "tan", "khaki",
+  "burgundy", "maroon", "ivory", "offwhite", "off-white", "charcoal", "coral", "lilac",
+  "magenta", "olive", "teal", "aqua", "multi", "multicolor", "print",
+]);
+const SINGLE_COLOR_NOISE_VI = new Set([
+  "đen", "trắng", "đỏ", "xanh", "vàng", "hồng", "nâu", "cam", "tím", "xám", "kem", "nude",
+  "be", "kaki", "gạch", "chanh", "bạc", "ngà", "rêu",
+]);
+
+function isSingleTokenColorNoise(phrase) {
+  const t = String(phrase || "")
+    .toLowerCase()
+    .trim();
+  if (!t || t.includes(" ")) {
+    return false;
+  }
+  if (SINGLE_COLOR_NOISE_EN.has(t) || SINGLE_COLOR_NOISE_VI.has(t)) {
+    return true;
+  }
+  if (/^[0-9]+$/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+function buildLexicalTypePhrases(analyzed) {
+  const out = [];
+  const push = (s) => {
+    const u = String(s || "").trim();
+    if (u.length >= 2) {
+      out.push(u);
+    }
+  };
+  if (analyzed.product_type) {
+    push(analyzed.product_type);
+  }
+  for (const k of analyzed.keywords_en || []) {
+    if (!isSingleTokenColorNoise(k)) {
+      push(k);
+    }
+  }
+  for (const k of analyzed.keywords_vi || []) {
+    if (!isSingleTokenColorNoise(k)) {
+      push(k);
+    }
+  }
+  if (analyzed.caption_en) {
+    push(analyzed.caption_en);
+  }
+  if (analyzed.caption_vi) {
+    push(analyzed.caption_vi);
+  }
+  const seen = new Set();
+  return out.filter((p) => {
+    const k = p.toLowerCase();
+    if (seen.has(k)) {
+      return false;
+    }
+    seen.add(k);
+    return true;
+  });
+}
+
+function productTextHaystack(p) {
+  const cat = p.categoryId && typeof p.categoryId === "object" ? p.categoryId.name : "";
+  const parts = [p.name, p.brand, p.description, cat, ...(p.tags || [])].filter(Boolean);
+  return parts.join(" | ").toLowerCase();
+}
+
+function countPhraseHits(hay, phrases) {
+  if (!hay || !phrases.length) {
+    return 0;
+  }
+  let n = 0;
+  for (const ph of phrases) {
+    const p = ph.toLowerCase();
+    if (p.length < 2) {
+      continue;
+    }
+    if (hay.includes(p)) {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/**
+ * Gộp điểm vector với trùng từ loại sản phẩm (caption/keyword, không ưu tiên 1 từ màu nền).
+ */
+function reRankImageVectorResults(products, analyzed) {
+  if (!Array.isArray(products) || products.length === 0) {
+    return products;
+  }
+  const wEnv = Number(process.env.IMAGE_SEARCH_LEXICAL_WEIGHT);
+  const lexicalW = Number.isFinite(wEnv) && wEnv >= 0 && wEnv <= 1 ? wEnv : 0.42;
+  const phrases = buildLexicalTypePhrases(analyzed);
+  if (phrases.length === 0) {
+    return products;
+  }
+  const denom = Math.max(3, Math.ceil(phrases.length * 0.45));
+  return products
+    .map((p) => {
+      const v = typeof p.vectorScore === "number" ? p.vectorScore : 0;
+      const hits = countPhraseHits(productTextHaystack(p), phrases);
+      const lex = Math.min(1, hits / denom);
+      const combined = (1 - lexicalW) * v + lexicalW * lex;
+      return { p, combined, lex, hits };
+    })
+    .sort((a, b) => b.combined - a.combined)
+    .map(({ p, combined, lex, hits }) => {
+      p.matchScore = Math.round(combined * 1000) / 1000;
+      p._lex = lex;
+      p._typeHits = hits;
+      return p;
+    });
+}
+
 class SearchService {
   /**
    * Search products with full-text search and filters
@@ -374,15 +494,27 @@ class SearchService {
   }
 
   /**
-   * AI Image Search — with multi-strategy fallback for bilingual (VI/EN) product data
+   * AI Image Search — Groq vision (bilingual keys) + global vector search (similarity order).
+   * Fallback: text / regex / tags, then popular products.
    */
   async searchByImage(imageBuffer, mimeType) {
     const { imageSearchService } = await import("./imageSearch.service.js");
-    
+    const { default: embeddingService } = await import("./embedding.service.js");
+
+    const RESULT_LIMIT = 16;
+    const VECTOR_NUM_CANDIDATES = Math.min(
+      400,
+      Math.max(100, parseInt(process.env.IMAGE_SEARCH_VECTOR_NUM_CANDIDATES || "200", 10) || 200),
+    );
+    /** Lấy nhiều ứng viên từ ANN, sau đó re-rank theo từ loại sản phẩm */
+    const VECTOR_RERANK_POOL = Math.min(
+      200,
+      Math.max(40, parseInt(process.env.IMAGE_SEARCH_VECTOR_RERANK_POOL || "100", 10) || 100),
+    );
+
     let analyzedData = null;
     let aiAnalysisFailed = false;
 
-    // 1. Try to analyze image with AI (Gemini SDK → CF proxy fallback)
     try {
       analyzedData = await imageSearchService.analyzeProductImage(imageBuffer, mimeType);
     } catch (err) {
@@ -390,224 +522,183 @@ class SearchService {
       aiAnalysisFailed = true;
     }
 
-    // 2. Build search keywords
     let matchedProducts = [];
 
     if (analyzedData) {
-      const { category, brand, colors, material, features, vi_keywords } = analyzedData;
+      const searchText = (analyzedData.searchText || "").trim();
+      const vectorQueryText = (analyzedData.vectorQueryText || searchText).trim();
+      const keywordsEn = Array.isArray(analyzedData.keywords_en) ? analyzedData.keywords_en : [];
+      const keywordsVi = Array.isArray(analyzedData.keywords_vi) ? analyzedData.keywords_vi : [];
+      const typeForText = [
+        analyzedData.product_type,
+        analyzedData.category,
+        analyzedData.brand,
+        ...keywordsEn,
+        ...keywordsVi,
+        analyzedData.caption_en,
+        analyzedData.caption_vi,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      const englishSearchStr = typeForText;
+      const bilingualLine = [englishSearchStr, ...keywordsVi, analyzedData.caption_vi]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
 
-      // EN → VI keyword dictionary for common product types
-      const EN_TO_VI = {
-        // Footwear
-        shoes: "giày", sneakers: "giày", boots: "giày bốt", sandals: "dép", slippers: "dép",
-        heels: "giày cao gót", loafers: "giày lười", oxford: "giày oxford",
-        derby: "giày da", pumps: "giày cao gót",
-        // Clothing
-        shirt: "áo", tshirt: "áo phông", dress: "váy", skirt: "váy",
-        pants: "quần", jeans: "quần jean", shorts: "quần short",
-        jacket: "áo khoác", coat: "áo khoác", hoodie: "áo hoodie",
-        blouse: "áo blouse", sweater: "áo len", cardigan: "áo cardigan",
-        // Accessories
-        bag: "túi", handbag: "túi xách", backpack: "balo", wallet: "ví",
-        belt: "thắt lưng", hat: "mũ", cap: "mũ", scarf: "khăn",
-        watch: "đồng hồ", sunglasses: "kính mát", necklace: "dây chuyền",
-        ring: "nhẫn", earrings: "bông tai", bracelet: "vòng tay",
-        // Electronics
-        phone: "điện thoại", laptop: "laptop", tablet: "máy tính bảng",
-        headphones: "tai nghe", speaker: "loa",
-        // Colors
-        black: "đen", white: "trắng", red: "đỏ", blue: "xanh", green: "xanh lá",
-        yellow: "vàng", pink: "hồng", purple: "tím", brown: "nâu", grey: "xám",
-        gray: "xám", orange: "cam", navy: "xanh navy", beige: "be",
-        // Materials
-        leather: "da", cotton: "cotton", denim: "jean", silk: "lụa",
-        wool: "len", polyester: "polyester", canvas: "vải",
-        // Common adj
-        sport: "thể thao", casual: "thường ngày", fashion: "thời trang",
-        formal: "công sở", men: "nam", women: "nữ", kids: "trẻ em",
-        lace: "ren", high: "cao", low: "thấp", chunky: "đế chunky",
-      };
+      console.log(
+        "[SearchByImage] provider=%s vectorQuery.length=%d",
+        analyzedData.provider || "?",
+        vectorQueryText.length,
+      );
 
-      // Build EN + mapped VI keyword set
-      const allEnKeywords = [
-        category, brand, ...(colors || []), material, features,
-        ...(features ? features.split(/[\s,\-]+/) : []),
-        ...(category ? category.split(/[\s,\-]+/) : []),
-      ].filter(Boolean).map(k => k.toLowerCase().trim());
-
-      let viKeywords = allEnKeywords
-        .map(k => EN_TO_VI[k])
-        .filter(Boolean);
-
-      // Add natively generated vi_keywords from Gemini
-      if (Array.isArray(vi_keywords)) {
-        viKeywords = [...viKeywords, ...vi_keywords.map(k => k.toLowerCase().trim())];
-      }
-      
-      // Deduplicate
-      viKeywords = [...new Set(viKeywords)];
-
-
-      const englishSearchStr = allEnKeywords.join(" ");
-
-      console.log("[SearchByImage] English keywords:", englishSearchStr);
-      console.log("[SearchByImage] Vietnamese mapped keywords:", viKeywords);
-
-      // Stage 1: Build text candidate pool from name/brand match.
-      // This prevents unrelated categories (shoes leaking into shirt results)
-      // before vector search even runs.
-      const engRegexParts = allEnKeywords.filter(k => k.length > 2).slice(0, 6);
-      const viRegexParts = viKeywords.filter(k => k.length > 1).slice(0, 6);
-
-      const candidateMatch = {
-        status: "active",
-        $or: [
-          ...(engRegexParts.length > 0 ? [{ name: { $regex: engRegexParts.join("|"), $options: "i" } }] : []),
-          ...(viRegexParts.length > 0 ? [{ name: { $regex: viRegexParts.join("|"), $options: "i" } }] : []),
-          ...(engRegexParts.length > 0 ? [{ brand: { $regex: engRegexParts.join("|"), $options: "i" } }] : []),
-          ...(viRegexParts.length > 0 ? [{ brand: { $regex: viRegexParts.join("|"), $options: "i" } }] : []),
-        ],
-      };
-
-      let candidateIds = [];
-      if (candidateMatch.$or.length > 0) {
-        const candidates = await Product.find(candidateMatch)
-          .select("_id")
-          .limit(60)
-          .lean();
-        candidateIds = candidates.map(c => c._id);
-      }
-
-      // Strategy 0: Vector rank over the candidate pool (two-stage)
       let vectorEmbedding = null;
       try {
-        const { default: embeddingService } = await import("./embedding.service.js");
-        const vectorQuery = `${category || ""} ${brand || ""} ${englishSearchStr} ${viKeywords.join(" ")}`.trim();
-        vectorEmbedding = await embeddingService.getEmbedding(vectorQuery);
+        vectorEmbedding = await embeddingService.getEmbedding(
+          vectorQueryText || bilingualLine,
+        );
       } catch (e) {
-        console.warn("[SearchByImage] Vector embedding generation failed:", e.message);
+        console.warn("[SearchByImage] query embedding failed:", e.message);
       }
 
-      // Strategy 1: MongoDB text index (works if product name has English terms)
-      const textSearchFilter = {
-        $text: { $search: englishSearchStr },
-        isAvailable: true,
+      const textSearchFilter = englishSearchStr
+        ? { $text: { $search: englishSearchStr }, isAvailable: true }
+        : null;
+
+      const fromTerms = (keywordsEn.length ? keywordsEn : [analyzedData.category].filter(Boolean))
+        .map((k) => String(k).toLowerCase().trim())
+        .filter((k) => k.length > 2)
+        .slice(0, 6);
+      const fromTermsVi = keywordsVi
+        .map((k) => String(k).toLowerCase().trim())
+        .filter((k) => k.length > 1)
+        .slice(0, 6);
+      const engRegex = fromTerms.length > 0 ? new RegExp(fromTerms.join("|"), "i") : null;
+      const viRegex = fromTermsVi.length > 0 ? new RegExp(fromTermsVi.join("|"), "i") : null;
+      const allTagsKeywords = [...fromTerms, ...fromTermsVi].slice(0, 12);
+
+      const productFields = {
+        name: 1, slug: 1, categoryId: 1, sellerId: 1,
+        description: 1, attributes: 1, originalPrice: 1,
+        rating: 1, reviewCount: 1, sold: 1, brand: 1,
+        tags: 1, "models.price": 1, "models.sku": 1, "models.stock": 1, images: 1, isAvailable: 1,
       };
 
-      // engRegexParts & viRegexParts already declared in Stage 1 above
-      const engRegex = engRegexParts.length > 0
-        ? new RegExp(engRegexParts.join("|"), "i")
-        : null;
-
-      const viRegex = viRegexParts.length > 0
-        ? new RegExp(viRegexParts.join("|"), "i")
-        : null;
-
-      // Strategy 4: Tags search
-      const allTagsKeywords = [...allEnKeywords, ...viKeywords].slice(0, 10);
-
       const searchStrategies = [
-        // S0: Two-stage: Vector rank over text-filtered candidate pool
-        ...(vectorEmbedding && candidateIds.length > 0 ? [{
-          name: "Two-Stage Vector Rank",
-          find: async () => {
-            const results = await Product.aggregate([
+        ...(vectorEmbedding
+          ? [
               {
-                $vectorSearch: {
-                  index: "product_vector_index",
-                  path: "embedding",
-                  queryVector: vectorEmbedding,
-                  numCandidates: candidateIds.length,
-                  limit: Math.min(16 * 2, candidateIds.length),
-                  filter: { _id: { $in: candidateIds } },
+                name: "Global vector (similarity desc)",
+                find: async () => {
+                  const results = await Product.aggregate([
+                    {
+                      $vectorSearch: {
+                        index: "product_vector_index",
+                        path: "embedding",
+                        queryVector: vectorEmbedding,
+                        numCandidates: VECTOR_NUM_CANDIDATES,
+                        limit: VECTOR_RERANK_POOL,
+                        filter: { status: "active" },
+                      },
+                    },
+                    { $addFields: { vectorScore: { $meta: "vectorSearchScore" } } },
+                    { $project: { ...productFields, vectorScore: 1 } },
+                    { $sort: { vectorScore: -1 } },
+                    { $limit: VECTOR_RERANK_POOL },
+                  ]);
+                  const populated = await Product.populate(results, {
+                    path: "categoryId",
+                    select: "name slug",
+                  });
+                  return reRankImageVectorResults(
+                    populated,
+                    analyzedData,
+                  ).slice(0, RESULT_LIMIT);
                 },
               },
+            ]
+          : []),
+        ...(textSearchFilter
+          ? [
               {
-                $addFields: {
-                  score: { $meta: "vectorSearchScore" },
-                },
+                name: "Text index (EN+)",
+                find: () =>
+                  Product.find(textSearchFilter, { score: { $meta: "textScore" } })
+                    .populate("categoryId", "name slug")
+                    .sort({ score: { $meta: "textScore" } })
+                    .limit(RESULT_LIMIT)
+                    .lean(),
               },
+            ]
+          : []),
+        ...(engRegex
+          ? [
               {
-                $match: {
-                  score: { $gte: 0.88 },
-                },
+                name: "Regex (EN keywords)",
+                find: () =>
+                  Product.find({
+                    $or: [
+                      { name: { $regex: engRegex } },
+                      { description: { $regex: engRegex } },
+                    ],
+                    isAvailable: true,
+                  })
+                    .populate("categoryId", "name slug")
+                    .sort({ sold: -1 })
+                    .limit(RESULT_LIMIT)
+                    .lean(),
               },
+            ]
+          : []),
+        ...(viRegex
+          ? [
               {
-                $project: {
-                  name: 1, slug: 1, categoryId: 1, sellerId: 1,
-                  description: 1, attributes: 1, originalPrice: 1,
-                  rating: 1, reviewCount: 1, sold: 1, brand: 1,
-                  tags: 1, "models.price": 1, "models.sku": 1,
-                  "models.stock": 1, images: 1, isAvailable: 1,
-                },
+                name: "Regex (VI keywords)",
+                find: () =>
+                  Product.find({
+                    $or: [
+                      { name: { $regex: viRegex } },
+                      { description: { $regex: viRegex } },
+                    ],
+                    isAvailable: true,
+                  })
+                    .populate("categoryId", "name slug")
+                    .sort({ sold: -1 })
+                    .limit(RESULT_LIMIT)
+                    .lean(),
               },
-              { $sort: { score: -1 } },
-              { $limit: 16 },
-            ]);
-            return Product.populate(results, { path: "categoryId", select: "name slug" });
-          }
-        }] : []),
-
-        // S1: Text index search with English
-        ...(englishSearchStr ? [{
-          name: "Text index (EN)",
-          find: () => Product.find(textSearchFilter, { score: { $meta: "textScore" } })
-            .populate("categoryId", "name slug")
-            .sort({ score: { $meta: "textScore" } })
-            .limit(16)
-            .lean(),
-        }] : []),
-
-        // S2: Regex search on name+description (English)
-        ...(engRegex ? [{
-          name: "Name regex (EN)",
-          find: () => Product.find({
-            $or: [{ name: { $regex: engRegex } }, { description: { $regex: engRegex } }],
-            isAvailable: true,
-          })
-            .populate("categoryId", "name slug")
-            .sort({ sold: -1 })
-            .limit(16)
-            .lean(),
-        }] : []),
-
-        // S3: Regex search on name+description (Vietnamese)
-        ...(viRegex ? [{
-          name: "Name regex (VI)",
-          find: () => Product.find({
-            $or: [{ name: { $regex: viRegex } }, { description: { $regex: viRegex } }],
-            isAvailable: true,
-          })
-            .populate("categoryId", "name slug")
-            .sort({ sold: -1 })
-            .limit(16)
-            .lean(),
-        }] : []),
-
-        // S4: Tags array search
-        ...(allTagsKeywords.length > 0 ? [{
-          name: "Tags match",
-          find: () => Product.find({
-            tags: { $in: allTagsKeywords.map(k => new RegExp(k, "i")) },
-            isAvailable: true,
-          })
-            .populate("categoryId", "name slug")
-            .sort({ sold: -1 })
-            .limit(16)
-            .lean(),
-        }] : []),
+            ]
+          : []),
+        ...(allTagsKeywords.length > 0
+          ? [
+              {
+                name: "Tags match",
+                find: () =>
+                  Product.find({
+                    tags: { $in: allTagsKeywords.map((k) => new RegExp(k, "i")) },
+                    isAvailable: true,
+                  })
+                    .populate("categoryId", "name slug")
+                    .sort({ sold: -1 })
+                    .limit(RESULT_LIMIT)
+                    .lean(),
+              },
+            ]
+          : []),
       ];
 
       for (const strategy of searchStrategies) {
         try {
           const products = await strategy.find();
           if (products.length > 0) {
-            console.log(`[SearchByImage] ✅ ${strategy.name} → ${products.length} products`);
+            console.log(
+              `[SearchByImage] ✅ ${strategy.name} → ${products.length} products`,
+            );
             matchedProducts = products;
             break;
-          } else {
-            console.log(`[SearchByImage] ❌ ${strategy.name} → 0 results`);
           }
+          console.log(`[SearchByImage] ❌ ${strategy.name} → 0 results`);
         } catch (e) {
           console.error(`[SearchByImage] Strategy "${strategy.name}" error:`, e.message);
         }
@@ -644,6 +735,8 @@ class SearchService {
       allDeals.forEach(deal => { dealsByProduct[deal.productId.toString()] = deal; });
 
       matchedProducts = matchedProducts.map((product) => {
+        delete product._lex;
+        delete product._typeHits;
         // Map _id to id for Frontend components (like ProductCard)
         if (product._id) {
           product.id = product._id.toString();
@@ -676,11 +769,10 @@ class SearchService {
       products: matchedProducts,
       ...(aiAnalysisFailed && {
         aiAnalysisFailed: true,
-        aiError: "AI image analysis is currently unavailable. Showing popular products instead.",
+        aiError: "AI image analysis is unavailable (configure GROQ_API_KEY or vision fallback). Showing popular products instead.",
       }),
     };
   }
 }
 
 export default new SearchService();
-
