@@ -124,6 +124,52 @@ export async function getActiveSessionByShop(shopId) {
   return LiveSession.findOne({ shopId, status: "live" }).sort({ startedAt: -1 });
 }
 
+/**
+ * Public listing: all sessions with status "live", newest first.
+ * @param {number|string} [limit=10] — clamped 1..50
+ * @returns {Promise<Array<object>>} lean docs + coverImage (first session product thumb if any)
+ */
+export async function listPublicLiveSessions(limit = 10) {
+  const n = Number(limit);
+  const cap = Math.min(Math.max(Number.isFinite(n) && n > 0 ? Math.floor(n) : 10, 1), 50);
+  const sessions = await LiveSession.find({ status: "live" })
+    .sort({ startedAt: -1 })
+    .limit(cap)
+    .populate("shopId", "fullName avatar")
+    .select("_id title shopId startedAt status products")
+    .lean();
+
+  const firstIds = [
+    ...new Set(
+      sessions
+        .map((s) => s.products?.[0])
+        .filter(Boolean)
+        .map((id) => id.toString()),
+    ),
+  ];
+
+  if (firstIds.length === 0) {
+    return sessions.map((s) => ({ ...s, coverImage: null }));
+  }
+
+  const products = await Product.find({ _id: { $in: firstIds } })
+    .select("thumbnail images")
+    .lean();
+
+  const thumbs = Object.fromEntries(
+    products.map((p) => [
+      String(p._id),
+      p.thumbnail || (Array.isArray(p.images) && p.images[0]) || null,
+    ]),
+  );
+
+  return sessions.map((s) => {
+    const pid = s.products?.[0];
+    const coverImage = pid ? thumbs[String(pid)] ?? null : null;
+    return { ...s, coverImage };
+  });
+}
+
 export async function addSessionProducts(sessionId, shopId, productIds) {
   const session = await LiveSession.findOne({ _id: sessionId, shopId });
   if (!session) throw new Error("Session not found or unauthorized");
