@@ -22,6 +22,7 @@ import {
   getRevenueData,
   getUserGrowth,
   getQuickStats,
+  getAdminLowStockItems,
   getAllDashboardData,
   getSellerOrderCounts,
   getSellerRecentOrders,
@@ -197,10 +198,7 @@ router.get(
  * @query   limit: number (default: 8), period: '7days' | '30days' | '90days' | '12months' | 'yearly' (default: '12months')
  * @returns { categories: [], totalRevenue, totalQuantity, totalProfit, period }
  */
-router.get(
-  "/product-by-category",
-  asyncHandler(getProductAnalyticsByCategory),
-);
+router.get("/product-by-category", asyncHandler(getProductAnalyticsByCategory));
 
 // ============= ADMIN DASHBOARD ENDPOINTS =============
 
@@ -339,6 +337,18 @@ router.get("/user-growth", authorize("admin"), asyncHandler(getUserGrowth));
 router.get("/quick-stats", authorize("admin"), asyncHandler(getQuickStats));
 
 /**
+ * @route   GET /api/dashboard/admin/low-stock-items
+ * @desc    Get low stock item list across marketplace (admin)
+ * @access  Private (Admin only)
+ * @query   threshold: number (default 20), limit: number (default 30)
+ */
+router.get(
+  "/admin/low-stock-items",
+  authorize("admin"),
+  asyncHandler(getAdminLowStockItems),
+);
+
+/**
  * @swagger
  * /api/dashboard/admin/all:
  *   get:
@@ -393,7 +403,10 @@ router.get("/seller-balance", asyncHandler(getSellerBalance));
  * @access  Private (Seller, Admin)
  * @query   limit: number (default: 10), skip: number (default: 0)
  */
-router.get("/seller-wallet-transactions", asyncHandler(getSellerWalletTransactions));
+router.get(
+  "/seller-wallet-transactions",
+  asyncHandler(getSellerWalletTransactions),
+);
 
 /**
  * @route   POST /api/dashboard/reward-point-withdrawal/request
@@ -401,7 +414,10 @@ router.get("/seller-wallet-transactions", asyncHandler(getSellerWalletTransactio
  * @access  Private (Seller, Admin)
  * @body    { amount, rewardPointAmount, targetUserId, conversionRate, withdrawalMethod, bankAccount, requestNote }
  */
-router.post("/reward-point-withdrawal/request", asyncHandler(requestRewardPointWithdrawal));
+router.post(
+  "/reward-point-withdrawal/request",
+  asyncHandler(requestRewardPointWithdrawal),
+);
 
 /**
  * @route   GET /api/dashboard/reward-point-withdrawals
@@ -409,7 +425,10 @@ router.post("/reward-point-withdrawal/request", asyncHandler(requestRewardPointW
  * @access  Private (Seller, Admin)
  * @query   limit: number (default: 10), skip: number (default: 0)
  */
-router.get("/reward-point-withdrawals", asyncHandler(getRewardPointWithdrawals));
+router.get(
+  "/reward-point-withdrawals",
+  asyncHandler(getRewardPointWithdrawals),
+);
 
 /**
  * @route   GET /api/dashboard/admin/reward-point-withdrawals
@@ -454,6 +473,9 @@ router.get("/customer-age-analytics", asyncHandler(getCustomerAgeAnalytics));
  * @query   endDate: ISO date string (custom range)
  * @query   limit: number (default: 10)
  */
-router.get("/customer-age-analytics-by-product", asyncHandler(getCustomerAgeAnalyticsByProduct));
+router.get(
+  "/customer-age-analytics-by-product",
+  asyncHandler(getCustomerAgeAnalyticsByProduct),
+);
 
 export default router;

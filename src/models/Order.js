@@ -7,10 +7,24 @@ const orderSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    sellerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+      default: null,
+      description: "Primary seller for split order slice",
+    },
     orderNumber: {
       type: String,
       unique: true,
       required: true,
+    },
+    checkoutGroupId: {
+      type: String,
+      index: true,
+      default: null,
+      description:
+        "Logical checkout transaction group id for multi-seller split orders",
     },
     status: {
       type: String,
@@ -95,6 +109,70 @@ const orderSchema = new mongoose.Schema(
     },
     discountCode: {
       type: String,
+    },
+    financialSnapshot: {
+      baseAmount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      adminRate: {
+        type: Number,
+        default: 0.1,
+        min: 0,
+        max: 1,
+      },
+      sellerRate: {
+        type: Number,
+        default: 0.9,
+        min: 0,
+        max: 1,
+      },
+      adminAmount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      sellerAmount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      settledAt: {
+        type: Date,
+        default: null,
+      },
+      refundedAt: {
+        type: Date,
+        default: null,
+      },
+      refundAmount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      debtAmount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      settlementStatus: {
+        type: String,
+        enum: ["pending", "settled", "refunded", "reversed"],
+        default: "pending",
+      },
+      settlementBatchId: {
+        type: String,
+        default: null,
+      },
+      refundBatchId: {
+        type: String,
+        default: null,
+      },
+      settlementNote: {
+        type: String,
+        default: null,
+      },
     },
     paymentMethod: {
       type: String,

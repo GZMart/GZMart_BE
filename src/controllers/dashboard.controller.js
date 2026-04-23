@@ -38,9 +38,7 @@ export const getRevenueStats = asyncHandler(async (req, res) => {
 export const getRevenueOverTime = asyncHandler(async (req, res) => {
   const { period, startDate, endDate } = req.query;
 
-  const customRange = startDate && endDate
-    ? { startDate, endDate }
-    : null;
+  const customRange = startDate && endDate ? { startDate, endDate } : null;
 
   const revenueData = await dashboardService.getRevenueOverTime(
     req.user._id,
@@ -174,9 +172,7 @@ export const getSalesTrend = asyncHandler(async (req, res) => {
 export const getComparisonStats = asyncHandler(async (req, res) => {
   const { period, startDate, endDate } = req.query;
 
-  const customRange = startDate && endDate
-    ? { startDate, endDate }
-    : null;
+  const customRange = startDate && endDate ? { startDate, endDate } : null;
 
   const comparison = await dashboardService.getComparisonStats(
     req.user._id,
@@ -200,9 +196,7 @@ export const getComparisonStats = asyncHandler(async (req, res) => {
 export const getGrowthComparison = asyncHandler(async (req, res) => {
   const { period, startDate, endDate } = req.query;
 
-  const customRange = startDate && endDate
-    ? { startDate, endDate }
-    : null;
+  const customRange = startDate && endDate ? { startDate, endDate } : null;
 
   const comparison = await dashboardService.getGrowthComparison(
     req.user._id,
@@ -226,9 +220,7 @@ export const getGrowthComparison = asyncHandler(async (req, res) => {
 export const getProfitLossAnalysis = asyncHandler(async (req, res) => {
   const { period, startDate, endDate } = req.query;
 
-  const customRange = startDate && endDate
-    ? { startDate, endDate }
-    : null;
+  const customRange = startDate && endDate ? { startDate, endDate } : null;
 
   const analysis = await dashboardService.getProfitLossAnalysis(
     req.user._id,
@@ -252,9 +244,7 @@ export const getProfitLossAnalysis = asyncHandler(async (req, res) => {
 export const getExpenseAnalysis = asyncHandler(async (req, res) => {
   const { period, startDate, endDate } = req.query;
 
-  const customRange = startDate && endDate
-    ? { startDate, endDate }
-    : null;
+  const customRange = startDate && endDate ? { startDate, endDate } : null;
 
   const analysis = await dashboardService.getExpenseAnalysis(
     req.user._id,
@@ -275,22 +265,24 @@ export const getExpenseAnalysis = asyncHandler(async (req, res) => {
  * @route   GET /api/dashboard/top-products-profit
  * @access  Private (Seller, Admin)
  */
-export const getTopSellingProductsWithProfit = asyncHandler(async (req, res) => {
-  const { limit, period } = req.query;
+export const getTopSellingProductsWithProfit = asyncHandler(
+  async (req, res) => {
+    const { limit, period } = req.query;
 
-  const products = await dashboardService.getTopSellingProductsWithProfit(
-    req.user._id,
-    parseInt(limit) || 10,
-    period || "monthly",
-  );
+    const products = await dashboardService.getTopSellingProductsWithProfit(
+      req.user._id,
+      parseInt(limit) || 10,
+      period || "monthly",
+    );
 
-  res.status(200).json({
-    success: true,
-    count: products.length,
-    period: period || "monthly",
-    data: products,
-  });
-});
+    res.status(200).json({
+      success: true,
+      count: products.length,
+      period: period || "monthly",
+      data: products,
+    });
+  },
+);
 
 /**
  * @desc    Get product analytics grouped by category
@@ -386,7 +378,7 @@ export const getCategorySales = asyncHandler(async (req, res) => {
  * @access  Private (Admin only)
  */
 export const getRevenueData = asyncHandler(async (req, res) => {
-  const { period } = req.query; // 'monthly' or 'yearly'
+  const { period } = req.query; // 'weekly' | 'monthly' | 'quarterly' | 'yearly'
 
   const revenueData = await dashboardService.getRevenueData(
     period || "monthly",
@@ -406,7 +398,7 @@ export const getRevenueData = asyncHandler(async (req, res) => {
  * @access  Private (Admin only)
  */
 export const getUserGrowth = asyncHandler(async (req, res) => {
-  const { period } = req.query; // 'monthly' or 'yearly'
+  const { period } = req.query; // 'weekly' | 'monthly' | 'quarterly' | 'yearly'
 
   const userGrowth = await dashboardService.getUserGrowth(period || "monthly");
 
@@ -433,26 +425,45 @@ export const getQuickStats = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Get low stock item list for admin drawer
+ * @route   GET /api/dashboard/admin/low-stock-items
+ * @access  Private (Admin only)
+ */
+export const getAdminLowStockItems = asyncHandler(async (req, res) => {
+  const { threshold, limit } = req.query;
+
+  const lowStockItems = await dashboardService.getAdminLowStockItems(
+    parseInt(threshold) || 20,
+    parseInt(limit) || 30,
+  );
+
+  res.status(200).json({
+    success: true,
+    count: lowStockItems.length,
+    data: lowStockItems,
+  });
+});
+
+/**
  * @desc    Get all dashboard data in one request (batch)
  * @route   GET /api/dashboard/admin/all
  * @access  Private (Admin only)
  */
 export const getAllDashboardData = asyncHandler(async (req, res) => {
-  const {
-    topProductsLimit = 5,
-    recentOrdersLimit = 5,
-    revenueDataPeriod = "monthly",
-    userGrowthPeriod = "monthly",
-  } = req.query;
+  const { topProductsLimit = 5, recentOrdersLimit = 5 } = req.query;
 
   const [
     overviewStats,
     topProducts,
     recentOrders,
     categorySales,
+    revenueDataWeekly,
     revenueDataMonthly,
+    revenueDataQuarterly,
     revenueDataYearly,
+    userGrowthDataWeekly,
     userGrowthDataMonthly,
+    userGrowthDataQuarterly,
     userGrowthDataYearly,
     quickStats,
   ] = await Promise.all([
@@ -460,9 +471,13 @@ export const getAllDashboardData = asyncHandler(async (req, res) => {
     dashboardService.getTopProducts(parseInt(topProductsLimit)),
     dashboardService.getRecentOrders(parseInt(recentOrdersLimit)),
     dashboardService.getCategorySales(),
+    dashboardService.getRevenueData("weekly"),
     dashboardService.getRevenueData("monthly"),
+    dashboardService.getRevenueData("quarterly"),
     dashboardService.getRevenueData("yearly"),
+    dashboardService.getUserGrowth("weekly"),
     dashboardService.getUserGrowth("monthly"),
+    dashboardService.getUserGrowth("quarterly"),
     dashboardService.getUserGrowth("yearly"),
     dashboardService.getQuickStats(),
   ]);
@@ -475,11 +490,15 @@ export const getAllDashboardData = asyncHandler(async (req, res) => {
       recentOrders,
       categorySales,
       revenueData: {
+        weekly: revenueDataWeekly,
         monthly: revenueDataMonthly,
+        quarterly: revenueDataQuarterly,
         yearly: revenueDataYearly,
       },
       userGrowth: {
+        weekly: userGrowthDataWeekly,
         monthly: userGrowthDataMonthly,
+        quarterly: userGrowthDataQuarterly,
         yearly: userGrowthDataYearly,
       },
       quickStats,
@@ -671,9 +690,10 @@ export const processRewardPointWithdrawal = asyncHandler(async (req, res) => {
 
   res.status(200).json({
     success: true,
-    message: action === "approve"
-      ? "Yêu cầu đã được duyệt, reward_point đã được cộng cho user"
-      : "Yêu cầu đã bị từ chối, số dư đã được hoàn",
+    message:
+      action === "approve"
+        ? "Yêu cầu đã được duyệt, reward_point đã được cộng cho user"
+        : "Yêu cầu đã bị từ chối, số dư đã được hoàn",
     data: transaction,
   });
 });
@@ -687,11 +707,9 @@ export const processRewardPointWithdrawal = asyncHandler(async (req, res) => {
  * @query   endDate: ISO date string (custom range)
  */
 export const getCustomerAgeAnalytics = asyncHandler(async (req, res) => {
-  const { period = '12months', startDate, endDate } = req.query;
+  const { period = "12months", startDate, endDate } = req.query;
 
-  const customRange = startDate && endDate
-    ? { startDate, endDate }
-    : null;
+  const customRange = startDate && endDate ? { startDate, endDate } : null;
 
   const analytics = await dashboardService.getCustomerAgeAnalytics(
     req.user._id,
@@ -716,24 +734,24 @@ export const getCustomerAgeAnalytics = asyncHandler(async (req, res) => {
  * @query   endDate: ISO date string (custom range)
  * @query   limit: number (default: 10)
  */
-export const getCustomerAgeAnalyticsByProduct = asyncHandler(async (req, res) => {
-  const { period = '12months', startDate, endDate, limit = 10 } = req.query;
+export const getCustomerAgeAnalyticsByProduct = asyncHandler(
+  async (req, res) => {
+    const { period = "12months", startDate, endDate, limit = 10 } = req.query;
 
-  const customRange = startDate && endDate
-    ? { startDate, endDate }
-    : null;
+    const customRange = startDate && endDate ? { startDate, endDate } : null;
 
-  const analytics = await dashboardService.getCustomerAgeAnalyticsByProduct(
-    req.user._id,
-    period,
-    customRange,
-    parseInt(limit),
-  );
+    const analytics = await dashboardService.getCustomerAgeAnalyticsByProduct(
+      req.user._id,
+      period,
+      customRange,
+      parseInt(limit),
+    );
 
-  res.status(200).json({
-    success: true,
-    period,
-    customRange,
-    data: analytics,
-  });
-});
+    res.status(200).json({
+      success: true,
+      period,
+      customRange,
+      data: analytics,
+    });
+  },
+);

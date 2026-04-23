@@ -247,3 +247,18 @@ export const reorderCategories = asyncHandler(async (req, res) => {
     data: result,
   });
 });
+
+/**
+ * @desc    Get mega menu categories with products
+ * @route   GET /api/categories/mega-menu
+ * @access  Public
+ */
+export const getMegaMenuCategories = asyncHandler(async (req, res, next) => {
+  const categories = await categoryService.getMegaMenuCategories();
+
+  res.status(200).json({
+    success: true,
+    count: categories.length,
+    data: categories,
+  });
+});

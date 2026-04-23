@@ -14,6 +14,7 @@ import {
   getCategoriesWithCounts,
   getCategoryProducts,
   reorderCategories,
+  getMegaMenuCategories,
 } from "../controllers/category.controller.js";
 
 import { protect } from "../middlewares/auth.middleware.js";
@@ -52,6 +53,18 @@ router.get("/", getCategories);
  *         description: Success
  */
 router.get("/tree", getCategoryTree);
+
+/**
+ * @swagger
+ * /api/categories/mega-menu:
+ *   get:
+ *     tags: [Categories]
+ *     summary: Get categories for Mega Menu
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get("/mega-menu", getMegaMenuCategories);
 
 /**
  * @swagger
