@@ -1,5 +1,7 @@
 import * as categoryService from "../services/category.service.js";
+import * as categoryImageSuggestService from "../services/categoryImageSuggest.service.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
+import { ErrorResponse } from "../utils/errorResponse.js";
 
 /**
  * @desc    Create a new category
@@ -260,5 +262,28 @@ export const getMegaMenuCategories = asyncHandler(async (req, res, next) => {
     success: true,
     count: categories.length,
     data: categories,
+  });
+});
+
+/**
+ * @desc    Gợi ý danh mục từ ảnh (Groq vision)
+ * @route   POST /api/categories/suggest-from-image
+ * @access  Private (seller, admin)
+ * @body    multipart field "image" (jpg/png/webp, tối đa ~3MB)
+ */
+export const suggestCategoriesFromImage = asyncHandler(async (req, res) => {
+  if (!req.file?.buffer) {
+    throw new ErrorResponse("Vui lòng gửi file ảnh (field: image).", 400);
+  }
+
+  const result = await categoryImageSuggestService.suggestCategoriesFromImageBuffer({
+    buffer: req.file.buffer,
+    mimeType: req.file.mimetype,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Gợi ý danh mục từ ảnh",
+    data: result,
   });
 });
