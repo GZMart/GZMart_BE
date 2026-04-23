@@ -15,10 +15,12 @@ import {
   getCategoryProducts,
   reorderCategories,
   getMegaMenuCategories,
+  suggestCategoriesFromImage,
 } from "../controllers/category.controller.js";
 
 import { protect } from "../middlewares/auth.middleware.js";
 import { requireRoles } from "../middlewares/role.middleware.js";
+import { uploadCategorySuggestImage } from "../middlewares/uploadCategorySuggest.middleware.js";
 
 const router = express.Router();
 
@@ -101,6 +103,14 @@ router.get("/featured", getFeaturedCategories);
  *         description: Success
  */
 router.get("/with-counts", getCategoriesWithCounts);
+
+router.post(
+  "/suggest-from-image",
+  protect,
+  requireRoles("seller", "admin"),
+  uploadCategorySuggestImage.single("image"),
+  suggestCategoriesFromImage,
+);
 
 /**
  * @swagger
