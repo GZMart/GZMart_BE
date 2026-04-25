@@ -5,6 +5,8 @@ import Product from "../models/Product.js";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import InventoryItem from "../models/InventoryItem.js";
 import User from "../models/User.js";
+import SubscriptionPayment from "../models/SubscriptionPayment.js";
+import BuyerSubscription from "../models/BuyerSubscription.js";
 import Category from "../models/Category.js";
 import ReturnRequest from "../models/ReturnRequest.js";
 import {
@@ -1710,6 +1712,86 @@ export const getOverviewStats = async () => {
       isPositive: lastMonthProducts >= previousMonthProducts,
     },
   ];
+};
+
+/**
+ * Thống kê doanh thu gói VIP (SubscriptionPayment) cho admin
+ */
+export const getSubscriptionRevenueStats = async () => {
+  const now = new Date();
+  const lastMonth = new Date(now);
+  lastMonth.setMonth(lastMonth.getMonth() - 1);
+  const twoMonthsAgo = new Date(now);
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+  const calculateTrend = (lastM, prevM) => {
+    if (prevM === 0) return lastM > 0 ? 100 : 0;
+    return parseFloat(
+      (((lastM - prevM) / prevM) * 100).toFixed(1),
+    );
+  };
+
+  const [totalRow, lastMonthRow, previousMonthRow, activeCount] =
+    await Promise.all([
+      SubscriptionPayment.aggregate([
+        { $match: { status: "completed" } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      SubscriptionPayment.aggregate([
+        { $match: { status: "completed", createdAt: { $gte: lastMonth } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      SubscriptionPayment.aggregate([
+        {
+          $match: {
+            status: "completed",
+            createdAt: { $gte: twoMonthsAgo, $lt: lastMonth },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      BuyerSubscription.countDocuments({ status: "active" }),
+    ]);
+
+  const total = totalRow[0]?.total || 0;
+  const lastM = lastMonthRow[0]?.total || 0;
+  const prevM = previousMonthRow[0]?.total || 0;
+
+  return {
+    totalRevenue: total,
+    lastMonthRevenue: lastM,
+    previousMonthRevenue: prevM,
+    trend: calculateTrend(lastM, prevM),
+    isPositive: lastM >= prevM,
+    activeSubscribers: activeCount,
+  };
+};
+
+/**
+ * Giao dịch VIP gần đây (đã thanh toán) cho bảng admin
+ */
+export const getRecentSubscriptionPayments = async (limit = 10) => {
+  const rows = await SubscriptionPayment.find({ status: "completed" })
+    .sort({ updatedAt: -1 })
+    .limit(Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50))
+    .populate("userId", "fullName email")
+    .populate("planId", "name priceVnd durationDays")
+    .lean();
+
+  return rows.map((r) => ({
+    _id: r._id,
+    orderCode: r.orderCode,
+    amount: r.amount,
+    status: r.status,
+    paidAt: r.updatedAt || r.createdAt,
+    createdAt: r.createdAt,
+    customer:
+      r.userId?.fullName ||
+      (r.userId?.email ? r.userId.email.split("@")[0] : null) ||
+      "Unknown",
+    email: r.userId?.email || "",
+    planName: r.planId?.name || "GZMart VIP",
+  }));
 };
 
 /**

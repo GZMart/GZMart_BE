@@ -1,6 +1,7 @@
 import asyncHandler from "express-async-handler";
 import VoucherCampaign from "../models/VoucherCampaign.js";
 import User from "../models/User.js";
+import BuyerSubscription from "../models/BuyerSubscription.js";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
@@ -71,6 +72,15 @@ export const createCampaign = asyncHandler(async (req, res) => {
     throw new Error("Campaign code already exists");
   }
 
+  if (triggerType === "vip_subscription_daily") {
+    if (voucherType !== "system_vip_daily") {
+      res.status(400);
+      throw new Error(
+        "Voucher type must be system_vip_daily for VIP subscription daily campaigns"
+      );
+    }
+  }
+
   const campaign = new VoucherCampaign({
     name,
     code,
@@ -119,6 +129,16 @@ export const updateCampaign = asyncHandler(async (req, res) => {
       campaign[field] = req.body[field];
     }
   });
+
+  if (
+    campaign.triggerType === "vip_subscription_daily" &&
+    campaign.voucherType !== "system_vip_daily"
+  ) {
+    res.status(400);
+    throw new Error(
+      "Voucher type must be system_vip_daily for VIP subscription daily campaigns"
+    );
+  }
 
   await campaign.save();
   res.status(200).json({ success: true, data: campaign });
@@ -174,13 +194,38 @@ export const previewCampaign = asyncHandler(async (req, res) => {
     });
   }
 
-  // occasion
-  estimatedRecipients = await User.countDocuments({ isDeleted: false });
+  if (campaign.triggerType === "vip_subscription_daily") {
+    const now = new Date();
+    estimatedRecipients = await BuyerSubscription.countDocuments({
+      status: "active",
+      validFrom: { $lte: now },
+      validUntil: { $gte: now },
+    });
+    return res.status(200).json({
+      success: true,
+      data: {
+        estimatedRecipients,
+        message: `${estimatedRecipients} buyer(s) with active VIP subscription (today).`,
+      },
+    });
+  }
+
+  if (campaign.triggerType === "occasion") {
+    estimatedRecipients = await User.countDocuments({ isDeleted: false });
+    return res.status(200).json({
+      success: true,
+      data: {
+        estimatedRecipients,
+        message: `${estimatedRecipients} active user(s) will receive "${campaign.voucherName}".`,
+      },
+    });
+  }
+
   return res.status(200).json({
     success: true,
     data: {
-      estimatedRecipients,
-      message: `${estimatedRecipients} active user(s) will receive "${campaign.voucherName}".`,
+      estimatedRecipients: 0,
+      message: "Unknown trigger type for preview.",
     },
   });
 });
@@ -207,11 +252,19 @@ export const triggerCampaign = asyncHandler(async (req, res) => {
       "../services/autoVoucher.service.js"
     );
     created = await processBirthdayCampaign(campaign);
-  } else {
+  } else if (campaign.triggerType === "vip_subscription_daily") {
+    const { processVipSubscriptionDailyCampaign } = await import(
+      "../services/autoVoucher.service.js"
+    );
+    created = await processVipSubscriptionDailyCampaign(campaign);
+  } else if (campaign.triggerType === "occasion") {
     const { processOccasionCampaign } = await import(
       "../services/autoVoucher.service.js"
     );
     created = await processOccasionCampaign(campaign);
+  } else {
+    res.status(400);
+    throw new Error("Unsupported campaign trigger type");
   }
 
   res.status(200).json({

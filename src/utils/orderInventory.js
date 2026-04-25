@@ -38,6 +38,36 @@ async function resolveOrderLineItems(order) {
  * @param {String} userId - User ID who created the order
  * @returns {Promise<void>}
  */
+/**
+ * Tăng usageCount mỗi mã 1 lần cho cả checkout (dù tách nhiều Order theo seller).
+ * Gọi khi tạo đơn thành công; webhook PayOS sẽ bỏ qua toàn bộ khi resourcesDeducted === true.
+ * @param {string[]} rawCodes
+ * @param {{ session?: import('mongoose').ClientSession } | null} options
+ */
+export async function incrementVoucherUsageForCheckout(rawCodes, options = null) {
+  const session = options?.session;
+  const seen = new Set();
+  for (const c of rawCodes || []) {
+    const code = String(c || "")
+      .trim()
+      .toUpperCase();
+    if (!code || seen.has(code)) {
+      continue;
+    }
+    seen.add(code);
+    const result = await Voucher.findOneAndUpdate(
+      { code },
+      { $inc: { usageCount: 1 } },
+      session ? { session } : undefined,
+    );
+    if (!result) {
+      console.warn(
+        `[OrderInventory] No voucher found to increment usage for code: ${code}`,
+      );
+    }
+  }
+}
+
 export const deductOrderResources = async (
   order,
   validItems,

@@ -71,7 +71,8 @@ class RecommendationService {
 
       const centroidVector = this._calculateCentroid(embeddings);
 
-      // Atlas Vector Search
+      // Atlas Vector Search: filter chỉ được dùng các trường đã khai báo filter trong index Atlas.
+      // _id trong filter gây lỗi "Path '_id' needs to be indexed as filter" — lọc _id ở $match sau.
       const vectorResults = await Product.aggregate([
         {
           $vectorSearch: {
@@ -79,10 +80,11 @@ class RecommendationService {
             path: "embedding",
             queryVector: centroidVector,
             numCandidates: 100,
-            limit: limit * 2,
-            filter: { status: "active", _id: { $nin: uniqueIds } }, // Loại trừ những món đã tương tác
+            limit: limit * 3,
+            filter: { status: "active" },
           },
         },
+        { $match: { _id: { $nin: uniqueIds } } },
         {
           $addFields: { score: { $meta: "vectorSearchScore" } },
         },

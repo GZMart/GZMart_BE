@@ -29,6 +29,7 @@ const voucherSchema = new mongoose.Schema(
         "follower",
         "system_shipping",
         "system_order",
+        "system_vip_daily",
       ],
       required: true,
       default: "shop",

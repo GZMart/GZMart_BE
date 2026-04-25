@@ -279,10 +279,12 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
 
   // 4. Query applicable vouchers (public + user's saved private vouchers)
   const now = new Date();
-  const systemTypes = ["system_shipping", "system_order"];
+  const systemTypes = ["system_shipping", "system_order", "system_vip_daily"];
   const allTypes = ["shop", "product", "new_buyer", "repeat_buyer", "follower", ...systemTypes];
 
-  // Query 1: public vouchers from shops in cart
+  // Query 1: public vouchers from shops in cart + system vouchers (no shopId)
+  // IMPORTANT: { shopId: null } branch MUST be restricted to system types only —
+  // otherwise shop-type vouchers with missing shopId (bad data) would appear for everyone.
   const publicVouchers = await Voucher.find({
     status: "active",
     startTime: { $lte: now },
@@ -290,17 +292,20 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
     displaySetting: "public",
     type: { $in: allTypes },
     $or: [
-      // Vouchers tied to shops in cart
+      // Shop-scoped vouchers: only from shops present in the cart
       { shopId: { $in: sellerIds } },
-      // OR system vouchers (no shopId = global)
-      ...(sellerIds.length > 0 ? [{ shopId: null }] : []),
+      // System vouchers (system_shipping / system_order / system_vip_daily) have no shopId
+      ...(sellerIds.length > 0
+        ? [{ shopId: null, type: { $in: systemTypes } }]
+        : []),
     ],
     $expr: { $lt: ["$usageCount", "$usageLimit"] },
   })
     .populate("appliedProducts", "name")
     .lean();
 
-  // Query 2: user's saved private vouchers (valid only, not expired)
+  // Query 2: user's saved private vouchers — only those from shops in current cart OR system vouchers.
+  // Restricting at DB level avoids loading irrelevant shop-A saved vouchers into memory.
   const savedPrivateVoucherDocs = savedVoucherIds.length > 0
     ? await Voucher.find({
         _id: { $in: savedVoucherIds },
@@ -308,6 +313,10 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
         startTime: { $lte: now },
         endTime: { $gte: now },
         displaySetting: "private",
+        $or: [
+          { shopId: { $in: sellerIds } },
+          { type: { $in: systemTypes } },
+        ],
         $expr: { $lt: ["$usageCount", "$usageLimit"] },
       })
         .populate("appliedProducts", "name")
@@ -377,7 +386,11 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
   const applicableVouchers = [];
   for (const voucher of vouchers) {
     const shopId = voucher.shopId?.toString();
-    const isSystemType = ["system_shipping", "system_order"].includes(voucher.type);
+    const isSystemType = [
+      "system_shipping",
+      "system_order",
+      "system_vip_daily",
+    ].includes(voucher.type);
     const shopSubtotal = isSystemType ? cartSubtotal : (sellerSubtotals[shopId] || 0);
 
     // Filter product vouchers with specific appliedProducts
@@ -393,6 +406,22 @@ export const getApplicableVouchers = asyncHandler(async (req, res, next) => {
       applicableProductNames = matchingProducts.map(
         (item) => item.productId.name,
       );
+    }
+
+    // Shop-scoped: ẩn voucher nếu giỏ không có SẢN PHẨM NÀO của shop đó.
+    // Khi giỏ có cả A lẫn B, voucher A vẫn hiện — UI nhóm theo seller riêng.
+    // Mã hệ thống (system_*) áp toàn giỏ — không lọc theo shop.
+    if (!isSystemType) {
+      if (!shopId) {
+        // Non-system voucher without shopId = bad data
+        continue;
+      }
+      const hasLineFromShop = cartItems.some(
+        (it) => it.productId?.sellerId?.toString() === shopId,
+      );
+      if (!hasLineFromShop) {
+        continue;
+      }
     }
 
     // Filter by buyer eligibility for buyer voucher types
@@ -566,7 +595,19 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
     status: "active",
     startTime: { $lte: now },
     endTime: { $gte: now },
-    type: { $in: ["shop", "product", "private", "new_buyer", "repeat_buyer", "follower", "system_shipping", "system_order"] },
+    type: {
+      $in: [
+        "shop",
+        "product",
+        "private",
+        "new_buyer",
+        "repeat_buyer",
+        "follower",
+        "system_shipping",
+        "system_order",
+        "system_vip_daily",
+      ],
+    },
   })
     .populate("appliedProducts", "name")
     .lean();
@@ -600,6 +641,14 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
     if (!eligible) {
       throw new ApiError("You must follow this shop to use this voucher", 400);
     }
+  } else if (voucher.type === "system_vip_daily") {
+    const isSaved = await SavedVoucher.exists({
+      userId: req.user._id,
+      voucherId: voucher._id,
+    });
+    if (!isSaved) {
+      throw new ApiError("This VIP voucher is not in your account", 403);
+    }
   }
 
   // Get cart to check applicability
@@ -614,10 +663,15 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
   });
 
   // Check if voucher's shop has products in cart
-  const shopItems = cartItems.filter(
-    (item) =>
-      item.productId?.sellerId?.toString() === voucher.shopId?.toString(),
+  const isSystemVoucher = ["system_shipping", "system_order", "system_vip_daily"].includes(
+    voucher.type,
   );
+  const shopItems = isSystemVoucher
+    ? cartItems
+    : cartItems.filter(
+        (item) =>
+          item.productId?.sellerId?.toString() === voucher.shopId?.toString(),
+      );
 
   if (shopItems.length === 0) {
     throw new ApiError(
@@ -674,10 +728,9 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
     !voucher.minBasketPrice || applicableSubtotal >= voucher.minBasketPrice;
 
   // Get shop name
-  const seller = await User.findById(
-    voucher.shopId,
-    "fullName shopName",
-  ).lean();
+  const seller = voucher.shopId
+    ? await User.findById(voucher.shopId, "fullName shopName").lean()
+    : null;
 
   res.status(200).json({
     success: true,
@@ -690,7 +743,9 @@ export const validateVoucherCode = asyncHandler(async (req, res, next) => {
       discountValue: voucher.discountValue,
       maxDiscountAmount: voucher.maxDiscountAmount || null,
       minBasketPrice: voucher.minBasketPrice || 0,
-      shopName: seller?.shopName || seller?.fullName || "Shop",
+      shopName: isSystemVoucher
+        ? "GZMart"
+        : seller?.shopName || seller?.fullName || "Shop",
       shopId: voucher.shopId,
       endTime: voucher.endTime,
       applicableProductNames,
@@ -911,4 +966,91 @@ export const getSavedVoucherIds = asyncHandler(async (req, res) => {
     .lean();
   const ids = saved.map((s) => s.voucherId.toString());
   res.json({ success: true, data: { ids } });
+});
+
+// @desc    Get full details of all vouchers saved by current buyer (unused/valid only)
+// @route   GET /api/vouchers/saved
+// @access  Private (Buyer)
+export const getSavedVouchers = asyncHandler(async (req, res) => {
+  const now = new Date();
+  const userId = req.user._id;
+
+  // 1. Saved vouchers (shop, private, VIP daily, live, etc.)
+  const savedDocs = await SavedVoucher.find({ userId })
+    .populate({
+      path: "voucherId",
+      populate: { path: "shopId", select: "shopName fullName" },
+    })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // 2. Public system vouchers available to all buyers (không cần lưu)
+  const systemPublicVouchers = await Voucher.find({
+    status: "active",
+    startTime: { $lte: now },
+    endTime: { $gte: now },
+    displaySetting: "public",
+    type: { $in: ["system_shipping", "system_order"] },
+    shopId: null,
+    $expr: { $lt: ["$usageCount", "$usageLimit"] },
+  }).lean();
+
+  // 3. Lấy tất cả discountCode buyer này đã dùng — đúng logic của voucherValidator
+  // discountCode được lưu dạng "CODE1, CODE2" (join nhiều voucher cùng order)
+  const usedOrders = await Order.find({
+    userId,
+    discountCode: { $exists: true, $ne: "" },
+    status: { $nin: ["cancelled", "refunded"] },
+  })
+    .select("discountCode")
+    .lean();
+
+  const enrichVoucher = (v, savedAt = null) => {
+    const isExpired = v.endTime < now;
+    const isGlobalUsedUp = v.usageCount >= v.usageLimit;
+    const buyerUsageCount = usedOrders.filter((o) =>
+      (o.discountCode || "")
+        .split(",")
+        .map((c) => c.trim().toUpperCase())
+        .includes((v.code || "").toUpperCase())
+    ).length;
+    const isBuyerUsed = v.maxPerBuyer
+      ? buyerUsageCount >= v.maxPerBuyer
+      : buyerUsageCount >= 1;
+
+    return {
+      ...v,
+      _id: v._id.toString(),
+      savedAt,
+      isExpired,
+      isUsedUp: isGlobalUsedUp || isBuyerUsed,
+      shopId: v.shopId
+        ? {
+            _id: v.shopId._id?.toString?.() ?? v.shopId._id,
+            shopName: v.shopId.shopName,
+            fullName: v.shopId.fullName,
+          }
+        : null,
+    };
+  };
+
+  // 4. Enrich saved vouchers
+  const savedVoucherMap = new Map();
+  for (const sv of savedDocs) {
+    if (!sv.voucherId || sv.voucherId.status === "deleted") continue;
+    const enriched = enrichVoucher(sv.voucherId, sv.createdAt);
+    savedVoucherMap.set(enriched._id, enriched);
+  }
+
+  // 5. Merge system public vouchers (deduplicate — may already be in savedVoucherMap via VIP daily)
+  for (const v of systemPublicVouchers) {
+    const id = v._id.toString();
+    if (!savedVoucherMap.has(id)) {
+      savedVoucherMap.set(id, enrichVoucher(v, null));
+    }
+  }
+
+  const vouchers = Array.from(savedVoucherMap.values());
+
+  res.json({ success: true, data: vouchers });
 });
