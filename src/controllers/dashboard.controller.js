@@ -450,7 +450,11 @@ export const getAdminLowStockItems = asyncHandler(async (req, res) => {
  * @access  Private (Admin only)
  */
 export const getAllDashboardData = asyncHandler(async (req, res) => {
-  const { topProductsLimit = 5, recentOrdersLimit = 5 } = req.query;
+  const {
+    topProductsLimit = 5,
+    recentOrdersLimit = 5,
+    recentSubscriptionsLimit = 10,
+  } = req.query;
 
   const [
     overviewStats,
@@ -466,6 +470,8 @@ export const getAllDashboardData = asyncHandler(async (req, res) => {
     userGrowthDataQuarterly,
     userGrowthDataYearly,
     quickStats,
+    subscriptionStats,
+    recentSubscriptionPayments,
   ] = await Promise.all([
     dashboardService.getOverviewStats(),
     dashboardService.getTopProducts(parseInt(topProductsLimit)),
@@ -480,6 +486,10 @@ export const getAllDashboardData = asyncHandler(async (req, res) => {
     dashboardService.getUserGrowth("quarterly"),
     dashboardService.getUserGrowth("yearly"),
     dashboardService.getQuickStats(),
+    dashboardService.getSubscriptionRevenueStats(),
+    dashboardService.getRecentSubscriptionPayments(
+      parseInt(recentSubscriptionsLimit, 10) || 10,
+    ),
   ]);
 
   res.status(200).json({
@@ -502,6 +512,8 @@ export const getAllDashboardData = asyncHandler(async (req, res) => {
         yearly: userGrowthDataYearly,
       },
       quickStats,
+      subscriptionStats,
+      recentSubscriptionPayments,
     },
     timestamp: new Date().toISOString(),
   });

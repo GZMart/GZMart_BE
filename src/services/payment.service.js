@@ -3,6 +3,11 @@ import Cart from "../models/Cart.js";
 import CartItem from "../models/CartItem.js";
 import User from "../models/User.js";
 import TopupRequest from "../models/TopupRequest.js";
+import SubscriptionPayment from "../models/SubscriptionPayment.js";
+import {
+  createPendingSubscriptionPayment,
+  markSubscriptionPaymentPaid,
+} from "./subscription.service.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { emailTemplates } from "../templates/email.templates.js";
@@ -243,11 +248,39 @@ class PaymentService {
         };
       }
 
+      const subPay = await SubscriptionPayment.findOne({ orderCode });
+      if (subPay) {
+        if (subPay.status !== "pending") {
+          console.log("[Webhook] Subscription payment already processed, skipping");
+          return { processed: false, reason: "Subscription already processed" };
+        }
+
+        const subPaidAmount = Number(verifiedData.amount);
+        if (!isAmountValidForPayOs(subPaidAmount, subPay.amount)) {
+          console.warn("[Webhook] Subscription amount mismatch, skipping", {
+            orderCode,
+            expected: Math.round(subPay.amount),
+            actual: Math.round(subPaidAmount),
+          });
+          return { processed: false, reason: "Subscription amount mismatch" };
+        }
+
+        await markSubscriptionPaymentPaid(subPay);
+        return {
+          processed: true,
+          orderCode: orderCode,
+          isSubscription: true,
+        };
+      }
+
       console.error(
-        "[Webhook] No Order or TopupRequest found for orderCode:",
+        "[Webhook] No Order, TopupRequest, or SubscriptionPayment for orderCode:",
         orderCode,
       );
-      throw new ErrorResponse("Order or TopupRequest not found", 404);
+      throw new ErrorResponse(
+        "Order, TopupRequest, or SubscriptionPayment not found",
+        404,
+      );
     }
 
     const pendingOrders = orders.filter(
@@ -434,6 +467,23 @@ class PaymentService {
     );
 
     if (!order) {
+      const subPay = await SubscriptionPayment.findOne({
+        orderCode: String(orderCode),
+      });
+      if (subPay) {
+        if (subPay.userId.toString() !== userId.toString()) {
+          throw new ErrorResponse("Bạn không có quyền hủy giao dịch này", 403);
+        }
+        if (subPay.status !== "pending") {
+          throw new ErrorResponse("Không thể hủy giao dịch đã xử lý", 400);
+        }
+        subPay.status = "failed";
+        await subPay.save();
+        return {
+          kind: "subscription",
+          status: "cancelled",
+        };
+      }
       throw new ErrorResponse("Không tìm thấy đơn hàng", 404);
     }
 
@@ -508,6 +558,12 @@ class PaymentService {
     );
 
     if (!order) {
+      const subPay = await SubscriptionPayment.findOne({
+        orderCode: String(orderCode),
+      });
+      if (subPay) {
+        return this.checkSubscriptionPayOsStatus(orderCode, userId, subPay);
+      }
       console.error("[PayOS Check] Order not found for orderCode:", orderCode);
       throw new ErrorResponse("Không tìm thấy đơn hàng", 404);
     }
@@ -856,6 +912,148 @@ class PaymentService {
         "Không thể tạo link nạp xu. Vui lòng thử lại sau.",
         500,
       );
+    }
+  }
+
+  /**
+   * Tạo link PayOS mua gói VIP (SubscriptionPayment, không tạo Order vận chuyển).
+   */
+  async createSubscriptionLink(userId, options = {}) {
+    if (!isPayOsConfigured()) {
+      throw new ErrorResponse(
+        "Hệ thống thanh toán PayOS chưa được cấu hình. Vui lòng cấu hình PAYOS_*.",
+        503,
+      );
+    }
+    if (!payOs) {
+      throw new ErrorResponse(
+        "Hệ thống thanh toán PayOS chưa được cấu hình",
+        500,
+      );
+    }
+
+    const { plan, amount } = await createPendingSubscriptionPayment(userId);
+    const orderCode = parseInt(
+      "8" +
+        Date.now().toString().slice(0, 8) +
+        Math.floor(Math.random() * 1000),
+    );
+    const user = await User.findById(userId);
+    const buyerName = user.fullName || user.email.split("@")[0];
+    const description = `GZMart VIP ${plan.durationDays}d`;
+    const baseUrl = (process.env.FRONTEND_URL || "").replace(/\/+$/, "");
+    const redirectAfter =
+      options?.redirectAfterSuccess ?? options?.returnPath ?? "/buyer/vip";
+    const successQs = new URLSearchParams();
+    successQs.set("orderCode", String(orderCode));
+    if (redirectAfter) {
+      successQs.set("redirect", redirectAfter);
+    }
+    const cancelQs = new URLSearchParams();
+    cancelQs.set("orderCode", String(orderCode));
+    if (redirectAfter) {
+      cancelQs.set("redirect", redirectAfter);
+    }
+    const payosOrder = {
+      amount: 2000,
+      description: description.substring(0, 25),
+      orderCode: orderCode,
+      returnUrl: `${baseUrl}/buyer/payment/success?${successQs.toString()}`,
+      cancelUrl: `${baseUrl}/buyer/payment/cancelled?${cancelQs.toString()}`,
+      buyerName: buyerName,
+      buyerEmail: user.email,
+    };
+
+    try {
+      const paymentLinkResponse =
+        await payOs.paymentRequests.create(payosOrder);
+
+      const sp = new SubscriptionPayment({
+        userId,
+        planId: plan._id,
+        orderCode: String(orderCode),
+        amount,
+        payosCheckoutUrl: paymentLinkResponse.checkoutUrl,
+        payosQrCode: paymentLinkResponse.qrCode || "",
+        payosPaymentLinkId: paymentLinkResponse.paymentLinkId || "",
+      });
+      await sp.save();
+
+      return {
+        orderCode: String(orderCode),
+        checkoutUrl: paymentLinkResponse.checkoutUrl,
+        amountDue: amount,
+        planId: plan._id,
+      };
+    } catch (error) {
+      console.error("Lỗi tạo link thanh toán VIP PayOS:", error);
+      throw new ErrorResponse(
+        "Không thể tạo link thanh toán VIP. Vui lòng thử lại sau.",
+        500,
+      );
+    }
+  }
+
+  /**
+   * Kiểm tra thanh toán VIP (SubscriptionPayment) — cùng response.localPaymentStatus với đơn hàng để FE polling.
+   */
+  async checkSubscriptionPayOsStatus(orderCode, userId, subPay) {
+    console.log("[PayOS Check] Subscription branch, orderCode:", orderCode);
+    if (!payOs) {
+      throw new ErrorResponse(
+        "Hệ thống thanh toán PayOS chưa được cấu hình",
+        500,
+      );
+    }
+    if (subPay.userId.toString() !== userId.toString()) {
+      throw new ErrorResponse("Bạn không có quyền truy cập giao dịch này", 403);
+    }
+
+    if (subPay.status === "completed") {
+      return {
+        kind: "subscription",
+        localPaymentStatus: "paid",
+        payosPaymentInfo: null,
+        updated: false,
+      };
+    }
+
+    try {
+      const paymentInfo = await payOs.paymentRequests.get(parseInt(orderCode, 10));
+      const paidAmount = Number(paymentInfo.amount);
+      if (!isAmountValidForPayOs(paidAmount, subPay.amount)) {
+        throw new ErrorResponse(
+          `Sai lệch số tiền subscription PayOS. expected=${Math.round(subPay.amount)}, actual=${Math.round(paidAmount)}`,
+          409,
+        );
+      }
+      if (
+        Number.isFinite(paymentInfo.orderCode) &&
+        Number(paymentInfo.orderCode) !== Number(orderCode)
+      ) {
+        throw new ErrorResponse("Sai lệch orderCode subscription từ PayOS", 409);
+      }
+
+      if (paymentInfo.status === "PAID" && subPay.status === "pending") {
+        await markSubscriptionPaymentPaid(subPay);
+      }
+
+      const updated = await SubscriptionPayment.findById(subPay._id);
+
+      return {
+        kind: "subscription",
+        localPaymentStatus:
+          updated.status === "completed" ? "paid" : "pending",
+        payosPaymentInfo: paymentInfo,
+        updated:
+          paymentInfo.status === "PAID" && updated.status === "completed",
+      };
+    } catch (error) {
+      console.error("[PayOS Check] Subscription check error:", error);
+      if (error instanceof ErrorResponse) {
+        throw error;
+      }
+      throw new ErrorResponse("Không thể kiểm tra trạng thái VIP từ PayOS", 500);
     }
   }
 

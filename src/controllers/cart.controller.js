@@ -79,7 +79,11 @@ export const getCart = asyncHandler(async (req, res, next) => {
     path: "items",
     populate: {
       path: "productId",
-      select: "name slug tiers models images preOrderDays",
+      select: "name slug tiers models images preOrderDays sellerId",
+      populate: {
+        path: "sellerId",
+        select: "fullName shopName",
+      },
     },
   });
 
@@ -115,16 +119,21 @@ export const getCart = asyncHandler(async (req, res, next) => {
     total += item.price * item.quantity;
 
     const preOrder = isPreOrderProduct(product);
+    const sellerDoc = product.sellerId; // populated User doc
+    const sellerId = sellerDoc?._id?.toString() || null;
+    const sellerName = sellerDoc?.shopName || sellerDoc?.fullName || 'Shop';
+
     enrichedItems.push({
       ...item.toObject(),
       productId: {
         _id: product._id,
         name: product.name,
         slug: product.slug,
-        images: product.images, // Top level images
+        images: product.images,
         preOrderDays: product.preOrderDays ?? 0,
-        // Remove tiers, models, etc from response
       },
+      sellerId,
+      sellerName,
       stockAvailable: stockInfo.currentStock,
       isAvailable: stockInfo.available,
       exceedsStock: preOrder ? false : item.quantity > stockInfo.currentStock,
