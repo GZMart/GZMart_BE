@@ -967,3 +967,90 @@ export const getSavedVoucherIds = asyncHandler(async (req, res) => {
   const ids = saved.map((s) => s.voucherId.toString());
   res.json({ success: true, data: { ids } });
 });
+
+// @desc    Get full details of all vouchers saved by current buyer (unused/valid only)
+// @route   GET /api/vouchers/saved
+// @access  Private (Buyer)
+export const getSavedVouchers = asyncHandler(async (req, res) => {
+  const now = new Date();
+  const userId = req.user._id;
+
+  // 1. Saved vouchers (shop, private, VIP daily, live, etc.)
+  const savedDocs = await SavedVoucher.find({ userId })
+    .populate({
+      path: "voucherId",
+      populate: { path: "shopId", select: "shopName fullName" },
+    })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // 2. Public system vouchers available to all buyers (không cần lưu)
+  const systemPublicVouchers = await Voucher.find({
+    status: "active",
+    startTime: { $lte: now },
+    endTime: { $gte: now },
+    displaySetting: "public",
+    type: { $in: ["system_shipping", "system_order"] },
+    shopId: null,
+    $expr: { $lt: ["$usageCount", "$usageLimit"] },
+  }).lean();
+
+  // 3. Lấy tất cả discountCode buyer này đã dùng — đúng logic của voucherValidator
+  // discountCode được lưu dạng "CODE1, CODE2" (join nhiều voucher cùng order)
+  const usedOrders = await Order.find({
+    userId,
+    discountCode: { $exists: true, $ne: "" },
+    status: { $nin: ["cancelled", "refunded"] },
+  })
+    .select("discountCode")
+    .lean();
+
+  const enrichVoucher = (v, savedAt = null) => {
+    const isExpired = v.endTime < now;
+    const isGlobalUsedUp = v.usageCount >= v.usageLimit;
+    const buyerUsageCount = usedOrders.filter((o) =>
+      (o.discountCode || "")
+        .split(",")
+        .map((c) => c.trim().toUpperCase())
+        .includes((v.code || "").toUpperCase())
+    ).length;
+    const isBuyerUsed = v.maxPerBuyer
+      ? buyerUsageCount >= v.maxPerBuyer
+      : buyerUsageCount >= 1;
+
+    return {
+      ...v,
+      _id: v._id.toString(),
+      savedAt,
+      isExpired,
+      isUsedUp: isGlobalUsedUp || isBuyerUsed,
+      shopId: v.shopId
+        ? {
+            _id: v.shopId._id?.toString?.() ?? v.shopId._id,
+            shopName: v.shopId.shopName,
+            fullName: v.shopId.fullName,
+          }
+        : null,
+    };
+  };
+
+  // 4. Enrich saved vouchers
+  const savedVoucherMap = new Map();
+  for (const sv of savedDocs) {
+    if (!sv.voucherId || sv.voucherId.status === "deleted") continue;
+    const enriched = enrichVoucher(sv.voucherId, sv.createdAt);
+    savedVoucherMap.set(enriched._id, enriched);
+  }
+
+  // 5. Merge system public vouchers (deduplicate — may already be in savedVoucherMap via VIP daily)
+  for (const v of systemPublicVouchers) {
+    const id = v._id.toString();
+    if (!savedVoucherMap.has(id)) {
+      savedVoucherMap.set(id, enrichVoucher(v, null));
+    }
+  }
+
+  const vouchers = Array.from(savedVoucherMap.values());
+
+  res.json({ success: true, data: vouchers });
+});

@@ -66,6 +66,8 @@ import { startCoinJobs } from "./jobs/coinExpirationJob.js";
 import { startLivestreamCleanupJob } from "./jobs/livestreamCleanup.job.js";
 import { startBirthdayVoucherJob } from "./jobs/birthdayVoucher.job.js";
 import { startOccasionVoucherJob } from "./jobs/occasionVoucher.job.js";
+import { startVipSubscriptionVoucherJob } from "./jobs/vipSubscriptionVoucher.job.js";
+import subscriptionRoutes from "./routes/subscription.routes.js";
 import { setSocketIO } from "./utils/socketIO.js";
 import { runBatchEmbedding } from "./jobs/batchEmbedding.job.js";
 import { initProductSoldReconcileJob } from "./jobs/productSoldReconcile.job.js";
@@ -231,6 +233,7 @@ app.use("/api/seller/shop-decoration", shopDecorationRoutes);
 app.use("/api/seller/combos", comboPromotionRoutes);
 app.use("/api/seller/addons", addOnDealRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
 app.use("/api/exchange-rate", exchangeRateRoutes);
@@ -332,6 +335,7 @@ server.listen(PORT, HOST, () => {
   startLivestreamCleanupJob();
   startBirthdayVoucherJob();
   startOccasionVoucherJob();
+  startVipSubscriptionVoucherJob();
   // [Phase 3 - 5.2] Batch embedding cron — registered at import time
   runBatchEmbedding();
   // Banner Ads status sync: APPROVED→RUNNING, RUNNING→COMPLETED (every 5 minutes)

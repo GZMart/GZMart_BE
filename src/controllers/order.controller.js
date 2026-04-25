@@ -17,7 +17,10 @@ import { getShopProgramPriceForVariant } from "../services/product.service.js";
 import { validateAndCalculateVouchers } from "../utils/voucherValidator.js";
 import * as orderTrackingService from "../services/orderTracking.service.js";
 import NotificationService from "../services/notification.service.js";
-import { clearUserCart } from "../utils/orderInventory.js";
+import {
+  clearUserCart,
+  incrementVoucherUsageForCheckout,
+} from "../utils/orderInventory.js";
 import mongoose from "mongoose";
 import { isPayOsConfigured } from "../config/payos.config.js";
 import { getSocketIO } from "../utils/socketIO.js";
@@ -1360,6 +1363,16 @@ export const createOrder = asyncHandler(async (req, res, next) => {
       if (isCOD || allFullyPaidByCoin) {
         await clearUserCart(req.user._id, session);
       }
+
+      // Global usageCount trên Voucher; maxPerBuyer vẫn dựa Order.discountCode (tách riêng)
+      // Phải gọi trong transaction vì mặc định resourcesDeducted=true nên PayOS webhook không gọi deduct… voucher.
+      await incrementVoucherUsageForCheckout(
+        [
+          ...validVouchers.map((v) => v.code),
+          ...(liveVoucherCode ? [liveVoucherCode] : []),
+        ],
+        { session },
+      );
     });
 
     // After successful transaction, do non-critical operations

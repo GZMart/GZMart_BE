@@ -19,7 +19,7 @@ const voucherCampaignSchema = new mongoose.Schema(
     // Trigger type
     triggerType: {
       type: String,
-      enum: ["birthday", "occasion"],
+      enum: ["birthday", "occasion", "vip_subscription_daily"],
       required: true,
     },
 
@@ -73,7 +73,7 @@ const voucherCampaignSchema = new mongoose.Schema(
     },
     voucherType: {
       type: String,
-      enum: ["system_shipping", "system_order"],
+      enum: ["system_shipping", "system_order", "system_vip_daily"],
       required: true,
     },
     discountType: {
