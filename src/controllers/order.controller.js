@@ -1030,6 +1030,22 @@ export const createOrder = asyncHandler(async (req, res, next) => {
     }
   }
 
+  // Inherit liveSessionId from cartItems if not already resolved via voucher / liveItems
+  if (!resolvedLiveSessionId && cartItems.length > 0) {
+    const cartLiveSessionId = cartItems
+      .map((ci) => ci.liveSessionId)
+      .find((sid) => sid != null);
+
+    if (cartLiveSessionId) {
+      // Validate session vẫn tồn tại (không cần active — cho phép order sau khi session kết thúc)
+      const LiveSession = (await import('../models/LiveSession.js')).default;
+      const ls = await LiveSession.findById(cartLiveSessionId).select('_id').lean();
+      if (ls) {
+        resolvedLiveSessionId = cartLiveSessionId;
+      }
+    }
+  }
+
   // Include live voucher discount in total discount
   const totalDiscountAmount = discount + liveVoucherDiscount;
 
