@@ -30,17 +30,22 @@ const getPublicProductQuery = (extra = {}) => ({
  */
 export const getActiveFlashSaleForProduct = async (productId, originalPrice = 0) => {
   const now = new Date();
+  // Accept any deal type to match getCampaignPrice (cart/checkout) behavior
   const deal = await Deal.findOne({
     productId,
-    type: "flash_sale",
     status: "active",
     startDate: { $lte: now },
-    endDate: { $gt: now },
-  }).lean();
+    endDate: { $gte: now },
+  })
+    .sort({ priority: -1, dealPrice: 1 })
+    .lean();
 
   if (!deal) return null;
 
-  const salePrice = deal.dealPrice ?? originalPrice;
+  // Use dealPrice if set, otherwise derive from discountPercent (mirrors getCampaignPrice)
+  const salePrice =
+    deal.dealPrice ||
+    originalPrice * (1 - (deal.discountPercent || 0) / 100);
   const discount =
     originalPrice > 0
       ? Math.round(((originalPrice - salePrice) / originalPrice) * 10000) / 100
@@ -48,6 +53,7 @@ export const getActiveFlashSaleForProduct = async (productId, originalPrice = 0)
 
   return {
     flashSaleId: deal._id,
+    dealType: deal.type,
     salePrice,
     originalPrice,
     discountPercent: discount,
@@ -1428,7 +1434,7 @@ export const getActivePromotionsForProduct = async (productId) => {
     const nums = productForFlash.models
       .map((m) => Number(m.price))
       .filter(Number.isFinite);
-    if (nums.length) refPrice = Math.min(...nums);
+    if (nums.length) refPrice = Math.max(...nums);
   }
 
   const flashSale = await getActiveFlashSaleForProduct(productId, refPrice);
