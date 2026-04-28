@@ -2,6 +2,8 @@ import * as productService from "../services/product.service.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import ViewHistory from "../models/ViewHistory.js";
+import Product from "../models/Product.js";
+import * as campaignService from "../services/campaign.service.js";
 
 /**
  * @desc    Create a new product
@@ -217,6 +219,71 @@ export const getProduct = asyncHandler(async (req, res, next) => {
   res.status(200).json({
     success: true,
     data: product,
+  });
+});
+
+const STOREFRONT_VISIBLE_STATUSES = ["active", "out_of_stock"];
+
+async function resolveStorefrontVariantPriceForBuyer(productId, modelIndexRaw) {
+  const idx = Number(modelIndexRaw);
+  if (!Number.isInteger(idx) || idx < 0) {
+    throw new ErrorResponse("Invalid modelIndex", 400);
+  }
+
+  const product = await Product.findById(productId).select("models status isHidden").lean();
+
+  if (
+    !product ||
+    product.isHidden ||
+    !STOREFRONT_VISIBLE_STATUSES.includes(product.status)
+  ) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
+  const model = product.models?.[idx];
+  if (!model) {
+    throw new ErrorResponse("Variant not found", 404);
+  }
+
+  let unitPrice = Number(model.price) || 0;
+
+  const flashSaleInfo = await campaignService.getCampaignPrice(
+    product._id,
+    unitPrice,
+  );
+
+  if (flashSaleInfo.isFlashSale) {
+    unitPrice = flashSaleInfo.price;
+  } else {
+    const spInfo = await productService.getShopProgramPriceForVariant(
+      product._id,
+      idx,
+      unitPrice,
+    );
+    if (spInfo.isShopProgram) {
+      unitPrice = spInfo.price;
+    }
+  }
+
+  return {
+    unitPrice,
+    baselineModelPrice: Number(model.price) || 0,
+    flashSale: flashSaleInfo,
+  };
+}
+
+/**
+ * @desc    Resolved storefront unit price for a variant (flash sale > shop program > model price)
+ * @route   GET /api/products/:id/buyer-variant-pricing
+ * @access  Public
+ */
+export const getBuyerVariantStorefrontPricing = asyncHandler(async (req, res) => {
+  const rawIndex = req.query.modelIndex ?? 0;
+  const data = await resolveStorefrontVariantPriceForBuyer(req.params.id, rawIndex);
+
+  res.status(200).json({
+    success: true,
+    data,
   });
 });
 
