@@ -1038,7 +1038,7 @@ export const createOrder = asyncHandler(async (req, res, next) => {
 
     if (cartLiveSessionId) {
       // Validate session vẫn tồn tại (không cần active — cho phép order sau khi session kết thúc)
-      const LiveSession = (await import('../models/LiveSession.js')).default;
+      const LiveSession = (await import("../models/LiveSession.js")).default;
       const ls = await LiveSession.findById(cartLiveSessionId).select('_id').lean();
       if (ls) {
         resolvedLiveSessionId = cartLiveSessionId;
