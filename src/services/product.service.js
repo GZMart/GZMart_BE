@@ -28,19 +28,24 @@ const getPublicProductQuery = (extra = {}) => ({
  * Fetch the currently active flash sale for a product, shaped for the FE.
  * Returns null when there is no active flash sale.
  */
-const getActiveFlashSaleForProduct = async (productId, originalPrice = 0) => {
+export const getActiveFlashSaleForProduct = async (productId, originalPrice = 0) => {
   const now = new Date();
+  // Accept any deal type to match getCampaignPrice (cart/checkout) behavior
   const deal = await Deal.findOne({
     productId,
-    type: "flash_sale",
     status: "active",
     startDate: { $lte: now },
-    endDate: { $gt: now },
-  }).lean();
+    endDate: { $gte: now },
+  })
+    .sort({ priority: -1, dealPrice: 1 })
+    .lean();
 
   if (!deal) return null;
 
-  const salePrice = deal.dealPrice ?? originalPrice;
+  // Use dealPrice if set, otherwise derive from discountPercent (mirrors getCampaignPrice)
+  const salePrice =
+    deal.dealPrice ||
+    originalPrice * (1 - (deal.discountPercent || 0) / 100);
   const discount =
     originalPrice > 0
       ? Math.round(((originalPrice - salePrice) / originalPrice) * 10000) / 100
@@ -48,6 +53,7 @@ const getActiveFlashSaleForProduct = async (productId, originalPrice = 0) => {
 
   return {
     flashSaleId: deal._id,
+    dealType: deal.type,
     salePrice,
     originalPrice,
     discountPercent: discount,
@@ -1288,7 +1294,7 @@ export const getAvailableOptions = async (productId, selection) => {
 
 /**
  * Get all active promotions for a product (public buyer API)
- * Returns: shopProgram, comboPromotions, addOnDeals
+ * Returns: shopProgram, comboPromotions, addOnDeals, flashSale
  */
 export const getActivePromotionsForProduct = async (productId) => {
   const now = new Date();
@@ -1413,6 +1419,26 @@ export const getActivePromotionsForProduct = async (productId) => {
     }),
   }));
 
+  const productForFlash = await Product.findById(productId)
+    .select("originalPrice models")
+    .lean();
+
+  let refPrice =
+    typeof productForFlash?.originalPrice === "number"
+      ? productForFlash.originalPrice
+      : 0;
+  if (
+    Array.isArray(productForFlash?.models) &&
+    productForFlash.models.length > 0
+  ) {
+    const nums = productForFlash.models
+      .map((m) => Number(m.price))
+      .filter(Number.isFinite);
+    if (nums.length) refPrice = Math.max(...nums);
+  }
+
+  const flashSale = await getActiveFlashSaleForProduct(productId, refPrice);
+
   return {
     shopProgram,
     comboPromotions: comboPromotions.map((c) => ({
@@ -1423,6 +1449,7 @@ export const getActivePromotionsForProduct = async (productId) => {
       endDate: c.endDate,
     })),
     addOnDeals: transformedAddOnDeals,
+    flashSale: flashSale ?? null,
   };
 };
 

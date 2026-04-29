@@ -8,6 +8,7 @@ import Voucher from "../models/Voucher.js";
 import crypto from "crypto";
 import * as livestreamHandoff from "../services/livestreamHandoff.service.js";
 import * as livestreamStatsService from "../services/livestreamStats.service.js";
+import { getActiveFlashSaleForProduct } from "../services/product.service.js";
 
 /** POST /api/livestream/session/:sessionId/handoff — mint one-time link token (scheduled sessions only). */
 export async function createSessionHandoff(req, res, next) {
@@ -285,6 +286,23 @@ export const getSessionProducts = async (req, res, next) => {
         .limit(5)
         .select('name thumbnail images originalPrice models tiers')
         .lean({ virtuals: true });
+    }
+
+    const enrichWithFlash = async (prod) => {
+      if (!prod?._id) return prod;
+      const refPrice =
+        typeof prod.price === "number" && !Number.isNaN(prod.price)
+          ? prod.price
+          : typeof prod.originalPrice === "number"
+            ? prod.originalPrice
+            : 0;
+      const flashSale = await getActiveFlashSaleForProduct(prod._id, refPrice);
+      return { ...prod, flashSale };
+    };
+
+    products = await Promise.all((products || []).map((p) => enrichWithFlash(p)));
+    if (pinnedProduct) {
+      pinnedProduct = await enrichWithFlash(pinnedProduct);
     }
 
     const likeCount = await livestreamRedisService.getLikeCount(sessionId);
