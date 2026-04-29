@@ -1,5 +1,5 @@
 /**
- * Cột chuẩn bulk upload — không có cột danh mục (AI gợi ý sau khi upload).
+ * Cột chuẩn bulk upload — không có cột danh mục (AI gợi ý sau) và không có cột status (luôn tạo draft).
  * Dùng chung cho CSV và Excel mẫu (định dạng đẹp).
  */
 
@@ -8,7 +8,6 @@ export const BULK_UPLOAD_HEADERS = [
   "name",
   "brand",
   "description",
-  "status",
   "tier1_name",
   "tier1_options",
   "tier2_name",
@@ -34,7 +33,8 @@ export const BULK_UPLOAD_HEADERS = [
 
 const COL_COUNT = BULK_UPLOAD_HEADERS.length;
 
-const MODEL_PREFIX = () => Array(17).fill("");
+/** Số cột từ productType → weightUnit (để trống trên dòng model variant) — không còn cột status. */
+const MODEL_PREFIX = () => Array(16).fill("");
 
 const escapeCsv = (field) => {
   const s = field == null ? "" : String(field);
@@ -58,7 +58,6 @@ const ROW_SINGLE_1 = [
   "Example Product 1",
   "Brand Name",
   "Product description here",
-  "draft",
   "",
   "",
   "",
@@ -87,7 +86,6 @@ const ROW_SINGLE_2 = [
   "Example Product 2",
   "Brand Name",
   "Another product",
-  "draft",
   "",
   "",
   "",
@@ -116,7 +114,6 @@ const ROW_SINGLE_3 = [
   "Example Product 3",
   "Brand Name",
   "Third product",
-  "draft",
   "",
   "",
   "",
@@ -145,7 +142,6 @@ const ROW_VARIANT_MAIN = [
   "Premium Cotton T-Shirt",
   "Nike",
   "High quality cotton",
-  "draft",
   "Size",
   "S;M;L;XL",
   "Color",
@@ -183,7 +179,6 @@ const ROW_MIXED_SINGLE = [
   "Basic T-Shirt",
   "Nike",
   "Plain tee",
-  "draft",
   "",
   "",
   "",
@@ -212,7 +207,6 @@ const ROW_MIXED_VARIANT = [
   "Premium T-Shirt",
   "Nike",
   "Two tiers",
-  "draft",
   "Size",
   "S;M;L",
   "Color",
