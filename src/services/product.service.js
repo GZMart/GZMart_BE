@@ -305,6 +305,62 @@ export const createProduct = async (productData, sellerId) => {
 };
 
 /**
+ * Chủ shop (đã auth) mở chi tiết sản phẩm của mình — bao gồm draft / inactive, không tăng view.
+ * Trả về null nếu không có SP hoặc SP không thuộc sellerId.
+ */
+export const tryGetOwnedProductById = async (productId, sellerId) => {
+  if (!productId || !sellerId) return null;
+  const product = await Product.findById(productId)
+    .populate("categoryId", "name slug")
+    .populate(
+      "sellerId",
+      "fullName avatar email provinceName createdAt aboutMe",
+    );
+  if (!product) return null;
+  const ownerId =
+    product.sellerId?._id?.toString?.() ?? String(product.sellerId ?? "");
+  if (ownerId !== String(sellerId)) return null;
+
+  const productObj = product.toObject();
+  if (productObj.sellerId && productObj.sellerId._id) {
+    const sid = productObj.sellerId._id;
+    const [shopStats, productCount, followerCount, followingCount] =
+      await Promise.all([
+        import("../models/ShopStatistic.js").then((m) =>
+          m.default.findOne({ sellerId: sid }),
+        ),
+        Product.countDocuments({
+          sellerId: sid,
+          status: { $in: PUBLIC_VISIBLE_STATUSES },
+        }),
+        import("../models/Follow.js").then((m) =>
+          m.default.countDocuments({ followingId: sid }),
+        ),
+        import("../models/Follow.js").then((m) =>
+          m.default.countDocuments({ followerId: sid }),
+        ),
+      ]);
+    productObj.sellerId.productCount = productCount;
+    productObj.sellerId.followerCount = followerCount;
+    productObj.sellerId.followingCount = followingCount;
+    if (shopStats) {
+      productObj.sellerId.isPreferred = shopStats.isPreferred;
+      productObj.sellerId.rating = shopStats.ratingAverage;
+      productObj.sellerId.ratingCount = shopStats.ratingCount;
+      productObj.sellerId.chatResponseRate = shopStats.chatResponseRate;
+      productObj.sellerId.cancelDutyRate = shopStats.cancelDutyRate;
+    } else {
+      productObj.sellerId.isPreferred = false;
+      productObj.sellerId.rating = 0;
+      productObj.sellerId.ratingCount = 0;
+      productObj.sellerId.chatResponseRate = 100;
+      productObj.sellerId.cancelDutyRate = 0;
+    }
+  }
+  return productObj;
+};
+
+/**
  * Get product by ID
  * (Merged: Dev logic + GZM-13 view increment)
  */
