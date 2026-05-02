@@ -2,6 +2,9 @@ import * as productService from "../services/product.service.js";
 import { ErrorResponse } from "../utils/errorResponse.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
 import ViewHistory from "../models/ViewHistory.js";
+import Product from "../models/Product.js";
+import * as campaignService from "../services/campaign.service.js";
+import { getImageGroupTierIndexForProductTiers } from "../utils/variantTiers.js";
 
 /**
  * @desc    Create a new product
@@ -59,25 +62,28 @@ export const createProduct = asyncHandler(async (req, res, next) => {
     });
   }
 
-  // Map variant images to models based on tier-0 option index.
-  // The frontend sends variantImages[N] where N = tier-0 option index,
-  // so one image applies to ALL models sharing tierIndex[0] === N.
+  // Map variant images: FE gửi variantImages[N] với N = chỉ số lựa chọn trên tier ảnh
+  // (ưu tiên Color khi có cả Size và Color).
   if (models && models.length > 0 && Object.keys(variantImagesMap).length > 0) {
+    const tiers = req.body.tiers;
+    const imageTierIdx = getImageGroupTierIndexForProductTiers(tiers || []);
     models.forEach((model) => {
       if (model.tierIndex && Array.isArray(model.tierIndex)) {
-        const t0Idx = String(model.tierIndex[0]);
-        if (variantImagesMap[t0Idx]) {
-          model.image = variantImagesMap[t0Idx];
+        const groupKey = String(model.tierIndex[imageTierIdx]);
+        if (variantImagesMap[groupKey]) {
+          model.image = variantImagesMap[groupKey];
         }
       }
     });
 
-    // Also persist images in tiers[0].images for the tier schema
-    const tiers = req.body.tiers;
     if (tiers && Array.isArray(tiers) && tiers.length > 0) {
-      if (!tiers[0].images) tiers[0].images = [];
+      const t = imageTierIdx;
+      if (!tiers[t].images) tiers[t].images = [];
       Object.entries(variantImagesMap).forEach(([idx, url]) => {
-        tiers[0].images[parseInt(idx)] = url;
+        const n = parseInt(idx, 10);
+        if (!Number.isNaN(n)) {
+          tiers[t].images[n] = url;
+        }
       });
     }
   }
@@ -202,8 +208,15 @@ export const getProductsAdvanced = asyncHandler(async (req, res, next) => {
  * @access  Public
  */
 export const getProduct = asyncHandler(async (req, res, next) => {
-  // Service handles 404 and View Increment
-  const product = await productService.getProductById(req.params.id);
+  const userId = req.user?._id;
+  let product = null;
+  if (userId) {
+    product = await productService.tryGetOwnedProductById(req.params.id, userId);
+  }
+  if (!product) {
+    // Storefront: chỉ active/out_of_stock; tăng view
+    product = await productService.getProductById(req.params.id);
+  }
 
   // Background task: log ViewHistory for authenticated users
   if (req.user && req.user._id) {
@@ -217,6 +230,71 @@ export const getProduct = asyncHandler(async (req, res, next) => {
   res.status(200).json({
     success: true,
     data: product,
+  });
+});
+
+const STOREFRONT_VISIBLE_STATUSES = ["active", "out_of_stock"];
+
+async function resolveStorefrontVariantPriceForBuyer(productId, modelIndexRaw) {
+  const idx = Number(modelIndexRaw);
+  if (!Number.isInteger(idx) || idx < 0) {
+    throw new ErrorResponse("Invalid modelIndex", 400);
+  }
+
+  const product = await Product.findById(productId).select("models status isHidden").lean();
+
+  if (
+    !product ||
+    product.isHidden ||
+    !STOREFRONT_VISIBLE_STATUSES.includes(product.status)
+  ) {
+    throw new ErrorResponse("Product not found", 404);
+  }
+
+  const model = product.models?.[idx];
+  if (!model) {
+    throw new ErrorResponse("Variant not found", 404);
+  }
+
+  let unitPrice = Number(model.price) || 0;
+
+  const flashSaleInfo = await campaignService.getCampaignPrice(
+    product._id,
+    unitPrice,
+  );
+
+  if (flashSaleInfo.isFlashSale) {
+    unitPrice = flashSaleInfo.price;
+  } else {
+    const spInfo = await productService.getShopProgramPriceForVariant(
+      product._id,
+      idx,
+      unitPrice,
+    );
+    if (spInfo.isShopProgram) {
+      unitPrice = spInfo.price;
+    }
+  }
+
+  return {
+    unitPrice,
+    baselineModelPrice: Number(model.price) || 0,
+    flashSale: flashSaleInfo,
+  };
+}
+
+/**
+ * @desc    Resolved storefront unit price for a variant (flash sale > shop program > model price)
+ * @route   GET /api/products/:id/buyer-variant-pricing
+ * @access  Public
+ */
+export const getBuyerVariantStorefrontPricing = asyncHandler(async (req, res) => {
+  const rawIndex = req.query.modelIndex ?? 0;
+  const data = await resolveStorefrontVariantPriceForBuyer(req.params.id, rawIndex);
+
+  res.status(200).json({
+    success: true,
+    data,
   });
 });
 
@@ -278,24 +356,28 @@ export const updateProduct = asyncHandler(async (req, res, next) => {
     });
   }
 
-  // Map variant images to models based on tier-0 option index.
+  // Map variant images: cùng quy tắc tier ảnh (ưu tiên Color) như create.
   const models = req.body.models;
   if (models && models.length > 0 && Object.keys(variantImagesMap).length > 0) {
+    const tiers = req.body.tiers;
+    const imageTierIdx = getImageGroupTierIndexForProductTiers(tiers || []);
     models.forEach((model) => {
       if (model.tierIndex && Array.isArray(model.tierIndex)) {
-        const t0Idx = String(model.tierIndex[0]);
-        if (variantImagesMap[t0Idx]) {
-          model.image = variantImagesMap[t0Idx];
+        const groupKey = String(model.tierIndex[imageTierIdx]);
+        if (variantImagesMap[groupKey]) {
+          model.image = variantImagesMap[groupKey];
         }
       }
     });
 
-    // Also persist images in tiers[0].images for the tier schema
-    const tiers = req.body.tiers;
     if (tiers && Array.isArray(tiers) && tiers.length > 0) {
-      if (!tiers[0].images) tiers[0].images = [];
+      const t = imageTierIdx;
+      if (!tiers[t].images) tiers[t].images = [];
       Object.entries(variantImagesMap).forEach(([idx, url]) => {
-        tiers[0].images[parseInt(idx)] = url;
+        const n = parseInt(idx, 10);
+        if (!Number.isNaN(n)) {
+          tiers[t].images[n] = url;
+        }
       });
     }
   }

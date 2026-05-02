@@ -265,7 +265,7 @@ export const transformRowsToProducts = (records) => {
         categoryId: null,
         description: row.description?.trim() || "",
         brand: row.brand?.trim() || null,
-        /* Bulk không có ảnh — luôn draft (cột status trong file bị bỏ qua). */
+        /* Hàng loạt: luôn tạo draft (không nhận cột trạng thái từ file; file mẫu cũng không còn cột status). */
         status: "draft",
         models: [
           {
@@ -370,7 +370,7 @@ export const transformRowsToProducts = (records) => {
         categoryId: null,
         description: row.description?.trim() || "",
         brand: row.brand?.trim() || null,
-        /* Bulk không có ảnh — luôn draft (cột status trong file bị bỏ qua). */
+        /* Hàng loạt: luôn tạo draft (không nhận cột trạng thái từ file; file mẫu cũng không còn cột status). */
         status: "draft",
         tiers,
         models,

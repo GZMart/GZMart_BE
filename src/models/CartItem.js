@@ -42,6 +42,12 @@ const cartItemSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    liveSessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'LiveSession',
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,

@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Cart from "../models/Cart.js";
 import CartItem from "../models/CartItem.js";
 import Product from "../models/Product.js";
@@ -161,7 +162,13 @@ export const getCart = asyncHandler(async (req, res, next) => {
 // @route   POST /api/cart
 // @access  Private
 export const addToCart = asyncHandler(async (req, res, next) => {
-  let { productId, quantity, color, size } = req.body;
+  let { productId, quantity, color, size, liveSessionId } = req.body;
+
+  // Validate liveSessionId nếu có
+  const resolvedLiveSessionId =
+    liveSessionId && mongoose.Types.ObjectId.isValid(liveSessionId)
+      ? new mongoose.Types.ObjectId(liveSessionId)
+      : null;
 
   if (!productId || !quantity) {
     return next(
@@ -319,6 +326,8 @@ export const addToCart = asyncHandler(async (req, res, next) => {
     existingItem.price = cartPrice;
     existingItem.image = model.image || product.images[0];
     if (!existingItem.modelId) existingItem.modelId = model._id;
+    // Ghi đè liveSessionId nếu lần này add từ live (không xóa attribution cũ nếu lần này không phải live)
+    if (resolvedLiveSessionId) existingItem.liveSessionId = resolvedLiveSessionId;
     await existingItem.save();
   } else {
     await CartItem.create({
@@ -330,6 +339,7 @@ export const addToCart = asyncHandler(async (req, res, next) => {
       color,
       price: cartPrice,
       image: model.image || product.images[0],
+      liveSessionId: resolvedLiveSessionId,
     });
   }
 

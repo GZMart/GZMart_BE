@@ -19,6 +19,7 @@ import {
   getMyProducts,
   getProductsBySeller,
   toggleProductStatus,
+  getBuyerVariantStorefrontPricing,
 } from "../controllers/product.controller.js";
 import { getPersonalizedRecommendations } from "../controllers/recommendation.controller.js";
 import { asyncHandler } from "../middlewares/async.middleware.js";
@@ -391,6 +392,11 @@ router.get(
  */
 // Get products by seller (Public)
 router.get("/seller/:sellerId", asyncHandler(getProductsBySeller));
+
+router.get(
+  "/:id/buyer-variant-pricing",
+  asyncHandler(getBuyerVariantStorefrontPricing),
+);
 
 router.get("/:id", optionalAuth, asyncHandler(getProduct));
 

@@ -28,19 +28,24 @@ const getPublicProductQuery = (extra = {}) => ({
  * Fetch the currently active flash sale for a product, shaped for the FE.
  * Returns null when there is no active flash sale.
  */
-const getActiveFlashSaleForProduct = async (productId, originalPrice = 0) => {
+export const getActiveFlashSaleForProduct = async (productId, originalPrice = 0) => {
   const now = new Date();
+  // Accept any deal type to match getCampaignPrice (cart/checkout) behavior
   const deal = await Deal.findOne({
     productId,
-    type: "flash_sale",
     status: "active",
     startDate: { $lte: now },
-    endDate: { $gt: now },
-  }).lean();
+    endDate: { $gte: now },
+  })
+    .sort({ priority: -1, dealPrice: 1 })
+    .lean();
 
   if (!deal) return null;
 
-  const salePrice = deal.dealPrice ?? originalPrice;
+  // Use dealPrice if set, otherwise derive from discountPercent (mirrors getCampaignPrice)
+  const salePrice =
+    deal.dealPrice ||
+    originalPrice * (1 - (deal.discountPercent || 0) / 100);
   const discount =
     originalPrice > 0
       ? Math.round(((originalPrice - salePrice) / originalPrice) * 10000) / 100
@@ -48,6 +53,7 @@ const getActiveFlashSaleForProduct = async (productId, originalPrice = 0) => {
 
   return {
     flashSaleId: deal._id,
+    dealType: deal.type,
     salePrice,
     originalPrice,
     discountPercent: discount,
@@ -296,6 +302,62 @@ export const createProduct = async (productData, sellerId) => {
   }
 
   return product;
+};
+
+/**
+ * Chủ shop (đã auth) mở chi tiết sản phẩm của mình — bao gồm draft / inactive, không tăng view.
+ * Trả về null nếu không có SP hoặc SP không thuộc sellerId.
+ */
+export const tryGetOwnedProductById = async (productId, sellerId) => {
+  if (!productId || !sellerId) return null;
+  const product = await Product.findById(productId)
+    .populate("categoryId", "name slug")
+    .populate(
+      "sellerId",
+      "fullName avatar email provinceName createdAt aboutMe",
+    );
+  if (!product) return null;
+  const ownerId =
+    product.sellerId?._id?.toString?.() ?? String(product.sellerId ?? "");
+  if (ownerId !== String(sellerId)) return null;
+
+  const productObj = product.toObject();
+  if (productObj.sellerId && productObj.sellerId._id) {
+    const sid = productObj.sellerId._id;
+    const [shopStats, productCount, followerCount, followingCount] =
+      await Promise.all([
+        import("../models/ShopStatistic.js").then((m) =>
+          m.default.findOne({ sellerId: sid }),
+        ),
+        Product.countDocuments({
+          sellerId: sid,
+          status: { $in: PUBLIC_VISIBLE_STATUSES },
+        }),
+        import("../models/Follow.js").then((m) =>
+          m.default.countDocuments({ followingId: sid }),
+        ),
+        import("../models/Follow.js").then((m) =>
+          m.default.countDocuments({ followerId: sid }),
+        ),
+      ]);
+    productObj.sellerId.productCount = productCount;
+    productObj.sellerId.followerCount = followerCount;
+    productObj.sellerId.followingCount = followingCount;
+    if (shopStats) {
+      productObj.sellerId.isPreferred = shopStats.isPreferred;
+      productObj.sellerId.rating = shopStats.ratingAverage;
+      productObj.sellerId.ratingCount = shopStats.ratingCount;
+      productObj.sellerId.chatResponseRate = shopStats.chatResponseRate;
+      productObj.sellerId.cancelDutyRate = shopStats.cancelDutyRate;
+    } else {
+      productObj.sellerId.isPreferred = false;
+      productObj.sellerId.rating = 0;
+      productObj.sellerId.ratingCount = 0;
+      productObj.sellerId.chatResponseRate = 100;
+      productObj.sellerId.cancelDutyRate = 0;
+    }
+  }
+  return productObj;
 };
 
 /**
@@ -1288,7 +1350,7 @@ export const getAvailableOptions = async (productId, selection) => {
 
 /**
  * Get all active promotions for a product (public buyer API)
- * Returns: shopProgram, comboPromotions, addOnDeals
+ * Returns: shopProgram, comboPromotions, addOnDeals, flashSale
  */
 export const getActivePromotionsForProduct = async (productId) => {
   const now = new Date();
@@ -1413,6 +1475,26 @@ export const getActivePromotionsForProduct = async (productId) => {
     }),
   }));
 
+  const productForFlash = await Product.findById(productId)
+    .select("originalPrice models")
+    .lean();
+
+  let refPrice =
+    typeof productForFlash?.originalPrice === "number"
+      ? productForFlash.originalPrice
+      : 0;
+  if (
+    Array.isArray(productForFlash?.models) &&
+    productForFlash.models.length > 0
+  ) {
+    const nums = productForFlash.models
+      .map((m) => Number(m.price))
+      .filter(Number.isFinite);
+    if (nums.length) refPrice = Math.max(...nums);
+  }
+
+  const flashSale = await getActiveFlashSaleForProduct(productId, refPrice);
+
   return {
     shopProgram,
     comboPromotions: comboPromotions.map((c) => ({
@@ -1423,6 +1505,7 @@ export const getActivePromotionsForProduct = async (productId) => {
       endDate: c.endDate,
     })),
     addOnDeals: transformedAddOnDeals,
+    flashSale: flashSale ?? null,
   };
 };
 

@@ -81,6 +81,7 @@ export async function buildStyledExcelTemplateBuffer(type) {
     "single: một dòng một sản phẩm. variant: một dòng đầu (productType=variant) kèm tier, các dòng sau là biến thể (để trống cột productType).",
     "Giữ định dạng số cho price/stock; phân tầng tier dùng dấu ; trong tierN_options.",
     "Lưu file và upload trong ứng dụng: Phân tích & xem trước → kiểm tra danh mục → Xác nhận.",
+    "Không có cột trạng thái (status) trong mẫu — người bán không cần nhập; hệ thống luôn tạo sản phẩm ở bản nháp (draft).",
     "Sau xác nhận, sản phẩm được tạo ở trạng thái nháp (draft) vì chưa có ảnh; thêm ảnh và chỉnh trên màn hình sản phẩm rồi mới hiển thị (active).",
   ];
 
