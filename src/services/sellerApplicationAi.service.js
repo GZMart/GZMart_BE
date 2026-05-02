@@ -1,7 +1,8 @@
 import SellerApplication from "../models/SellerApplication.js";
 import User from "../models/User.js";
 import { sanitizePromptInput } from "../utils/promptSanitizer.js";
-import { runLocalKycChecks } from "../utils/sellerApplicationKycHeuristics.js";
+import { runLocalKycChecks, formatVietQrCheck } from "../utils/sellerApplicationKycHeuristics.js";
+import { lookupBusiness } from "./vietqrCitizen.service.js";
 
 const tryParseJsonFromText = (rawText) => {
   if (!rawText || typeof rawText !== "string") return null;
@@ -79,6 +80,20 @@ function buildSellerScreeningPrompt(payload) {
     const safe = sanitizePromptInput(raw, { maxLength: 500 });
     lines.push(`${k}: ${safe.sanitized}`);
   }
+
+  // VietQR real-world identity verification result (Tax ID only)
+  const vietqr = payload.vietqrTaxResult;
+  if (vietqr) {
+    lines.push("vietqr_business_api (Tax ID):");
+    lines.push(`  checked: ${vietqr.checked}`);
+    if (vietqr.checked) {
+      lines.push(`  matched: ${vietqr.matched === null ? "indeterminate" : vietqr.matched}`);
+      lines.push(`  desc: ${vietqr.desc}`);
+    } else {
+      lines.push(`  skip_reason: ${vietqr.desc}`);
+    }
+  }
+
   const lc = payload.localChecks;
   if (lc?.checks?.length) {
     lines.push("local_format_checks:");
@@ -236,15 +251,33 @@ export async function runAiScreeningForApplication(applicationId) {
     return;
   }
 
+  // --- 1. Local format checks ---
   const local = runLocalKycChecks({
     phone: user.phone,
     citizenId: user.citizenId,
     taxId: user.taxId,
   });
 
+  // --- 2. VietQR real-world identity verification (MST only) ---
+  const vietqrTax = await lookupBusiness({
+    taxCode: user.taxId || "",
+  });
+
+  // Append VietQR results as KycCheck entries so the LLM sees them
+  const taxCheck = formatVietQrCheck(vietqrTax);
+  // Override check code for tax
+  taxCheck.code = "tax_api_verify";
+
+  const enrichedLocal = {
+    allPassed: local.allPassed && taxCheck.passed,
+    checks: [...local.checks, taxCheck],
+  };
+
+  // --- 3. LLM screening with enriched context ---
   const ai = await screenUserPayloadWithAi({
     ...user,
-    localChecks: local,
+    localChecks: enrichedLocal,
+    vietqrTaxResult: vietqrTax, // Explicitly pass tax lookup result
   });
 
   const evaluatedAt = new Date();
@@ -255,9 +288,24 @@ export async function runAiScreeningForApplication(applicationId) {
     "aiScreening.confidence": ai.confidence,
     "aiScreening.flags": ai.flags,
     "aiScreening.summary": ai.summary,
-    "aiScreening.localChecks": local.checks,
+    "aiScreening.localChecks": enrichedLocal.checks,
     "aiScreening.error": ai.error,
     "aiScreening.evaluatedAt": evaluatedAt,
+    // Store VietQR results separately for admin UI display
+    "aiScreening.vietqrCheck": {
+      taxId: {
+        checked: vietqrTax.checked,
+        matched: vietqrTax.matched,
+        code: vietqrTax.code,
+        desc: vietqrTax.desc,
+      },
+      citizenId: {
+        checked: false,
+        matched: null,
+        code: "endpoint_removed",
+        desc: "Endpoint tra cứu CCCD đã bị VietQR gỡ bỏ",
+      },
+    },
   };
 
   if (ai.provider === "skipped") {

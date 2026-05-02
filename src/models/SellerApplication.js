@@ -50,6 +50,20 @@ const sellerApplicationSchema = new Schema(
       ],
       error: { type: String, trim: true, maxlength: 1000 },
       evaluatedAt: { type: Date },
+      vietqrCheck: {
+        citizenId: {
+          checked: { type: Boolean },
+          matched: { type: Boolean, default: null },
+          code: { type: String, trim: true },
+          desc: { type: String, trim: true },
+        },
+        taxId: {
+          checked: { type: Boolean },
+          matched: { type: Boolean, default: null },
+          code: { type: String, trim: true },
+          desc: { type: String, trim: true },
+        },
+      },
     },
   },
   {
